@@ -13,7 +13,7 @@ try:
 except ImportError:
     raise ImportError("Unable to import jax. Please install from "
                       "https://github.com/google/jax")
-from jax import core
+from jax.extend import core
 import jax.numpy as jnp
 
 
