@@ -6,16 +6,25 @@ import numpy as np
 import time
 from functools import partial
 from cvxpylayers.utils import \
-    ForwardContext, BackwardContext, forward_numpy, backward_numpy
+    ForwardContext, BackwardContext, forward_numpy, backward_numpy, extract_linops_as_csr
 
 try:
     import jax
 except ImportError:
     raise ImportError("Unable to import jax. Please install from "
                       "https://github.com/google/jax")
-from jax import core
+from jax.extend import core
 import jax.numpy as jnp
 
+
+def GpuCvxpyLayer(problem, parameters, variables, solver='SCS', gp=False, **kwargs):
+    P, A = extract_linops_as_csr(prob, solver, kwargs)
+    param_order = parameters
+    param_ids = [p.id for p in param_order]
+
+    def GpuCvxpyLayerImpl(*params):
+        dtype, batch, batch_sizes, batch_size = batch_info(
+            params, param_order)
 
 def CvxpyLayer(problem, parameters, variables, gp=False, custom_method=None):
     """Construct a CvxpyLayer

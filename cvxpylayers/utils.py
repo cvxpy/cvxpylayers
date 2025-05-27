@@ -169,3 +169,8 @@ def backward_numpy(dvars_numpy, context):
                 grad[i] = grad[i].sum(axis=0)
     
     return grad, info
+
+def extract_linops_as_csr(prob, solver, kwargs):
+    data, *_ = prob.get_problem_data(solver, **kwargs)
+    param_prog = data['param_prog']
+    return param_prog.reduced_P.reduced_mat, param_prog.reduced_A.reduced_mat
