@@ -1,10 +1,13 @@
 from dataclass import dataclasses
 from typing import Callable
 import scipy.sparse as sp
-import jax
-import jax.experimental.sparse
-import jax.numpy as jnp
-import mpax
+try:
+    import jax
+    import jax.experimental.sparse
+    import jax.numpy as jnp
+    import mpax
+except ImportError:
+    pass
 
 class MPAX_ctx:
     Q_idxs: jnp.ndarray
@@ -27,7 +30,9 @@ class MPAX_ctx:
 
     solver: Callable
 
-    def __init__(objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, options):
+    output_slices: list[slice]
+
+    def __init__(objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
         obj_csr = sp.csc_array(np.arange(obj_indices.size), obj_indices, obj_ptr, shape=(n, n)).tocsr()
@@ -82,6 +87,9 @@ class MPAX_ctx:
             self.u,
             self.solver
         )
+
+    def solution_to_outputs(self, solution):
+        return (solution.x[s] for s in self.output_slices)
 
 
 @dataclass
