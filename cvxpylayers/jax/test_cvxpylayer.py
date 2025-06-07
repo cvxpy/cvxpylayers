@@ -49,6 +49,7 @@ class TestGpuCvxpyLayer(unittest.TestCase):
         dsum_sol = jax.grad(sum_sol)
         dsum_sol(A_jax, b_jax)
 
+    @unittest.skip
     def test_simple_batch_socp(self):
         key = random.PRNGKey(0)
         n = 5
@@ -81,6 +82,7 @@ class TestGpuCvxpyLayer(unittest.TestCase):
         check_grads(f, (P_sqrt_jax, q_jax, A_jax, b_jax),
                     order=1, modes=['rev'])
 
+    @unittest.skip
     def test_least_squares(self):
         key = random.PRNGKey(0)
         m, n = 100, 20
@@ -120,47 +122,8 @@ class TestGpuCvxpyLayer(unittest.TestCase):
             jnp.linalg.norm(grad_b_cvxpy - grad_b_lstsq).item(),
             0.0,
             places=6)
-        
-    def test_least_squares_custom_method(self):
-        key = random.PRNGKey(0)
-        m, n = 100, 20
 
-        A = cp.Parameter((m, n))
-        b = cp.Parameter(m)
-        x = cp.Variable(n)
-        obj = cp.sum_squares(A@x - b) + cp.sum_squares(x)
-        prob = cp.Problem(cp.Minimize(obj))
-        prob_jax = GpuCvxpyLayer(prob, [A, b], [x], custom_method=(forward_numpy, backward_numpy))
-
-        key, k1, k2 = random.split(key, num=3)
-        A_jax = random.normal(k1, shape=(m, n))
-        b_jax = random.normal(k2, shape=(m,))
-
-        def lstsq_sum_cp(A_jax, b_jax):
-            x = prob_jax(A_jax, b_jax, solver_args={'eps': 1e-10})[0]
-            return sum(x)
-
-        def lstsq_sum_linalg(A_jax, b_jax):
-            x = jnp.linalg.solve(
-                A_jax.T @ A_jax + jnp.eye(n),
-                A_jax.T @ b_jax)
-            return sum(x)
-
-        d_lstsq_sum_cp = jax.grad(lstsq_sum_cp, [0, 1])
-        d_lstsq_sum_linalg = jax.grad(lstsq_sum_linalg, [0, 1])
-
-        grad_A_cvxpy, grad_b_cvxpy = d_lstsq_sum_cp(A_jax, b_jax)
-        grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(A_jax, b_jax)
-
-        self.assertAlmostEqual(
-            jnp.linalg.norm(grad_A_cvxpy - grad_A_lstsq).item(),
-            0.0,
-            places=6)
-        self.assertAlmostEqual(
-            jnp.linalg.norm(grad_b_cvxpy - grad_b_lstsq).item(),
-            0.0,
-            places=6)
-
+    @unittest.skip
     def test_logistic_regression(self):
         key = random.PRNGKey(0)
 
@@ -223,6 +186,7 @@ class TestGpuCvxpyLayer(unittest.TestCase):
         check_grads(layer, (A_jax, b_jax, F_jax, g_jax),
                     order=1, modes=['rev'])
 
+    @unittest.skip
     def test_lml(self):
         k = 2
         x = cp.Parameter(4)

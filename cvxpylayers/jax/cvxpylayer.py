@@ -21,6 +21,8 @@ import jax.numpy as jnp
 
 
 def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwargs):
+    if len(problem.parameters()) != len(parameters):
+        raise ValueError
     P, c, A, data = extract_linops_as_csr(problem, solver, kwargs)
     Pjax, cjax, Ajax = BCSR.from_scipy_sparse(P.reduced_mat), BCSR.from_scipy_sparse(c), BCSR.from_scipy_sparse(A.reduced_mat)
     param_order = parameters
@@ -40,15 +42,15 @@ def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwa
         dtype, batch, batch_sizes, batch_size = batch_info(
             params, param_order)
         if len(params) != len(parameters):
-            raise TypeError("Wrong number of parameters")
+            raise ValueError("An array must be provided for each CVXPY parameter.")
         elif any(p1.shape != p2.shape for p1, p2 in zip(params, parameters)):
             raise ValueError("Invalid shape")
         elif any(p1.dtype != dtype for p1 in params):
-            raise ValueError("Invalid shape")
+            raise ValueError("Invalid dtype")
         vec = jnp.hstack(
-                itertools.chain(
-                    (params[i].reshape(-1, 'F') for _, i in param_id_to_orig_order.items()),
-                    (jnp.ones(1),))) # TODO(PTNobel): Add batching
+                list(itertools.chain(
+                    (params[i].reshape(-1, order='F') for _, i in param_id_to_orig_order.items()),
+                    (jnp.ones(1),)))) # TODO(PTNobel): Add batching
         Pvec = Pjax @ vec
         cvec = cjax @ vec
         Avec = Ajax @ vec

@@ -36,7 +36,7 @@ class MPAX_ctx:
     def __init__(self, objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
-        obj_csr = sp.csc_array((np.arange(obj_indices.size), (obj_indices, obj_ptr)), shape=(n, n)).tocsr()
+        obj_csr = sp.csc_array((np.arange(obj_indices.size), obj_indices, obj_ptr), shape=(n, n)).tocsr()
         self.Q_idxs = obj_csr.data
         self.Q_structure = obj_csr.indices, obj_csr.indptr
         self.Q_shape = (n, n)
@@ -47,22 +47,19 @@ class MPAX_ctx:
         self.b_slice = slice(con_slice_start, con_slice_start + dims.zero)
         self.h_slice = slice(con_slice_start + dims.zero, con_ptr[-1])
 
-        obj_indices = obj_indices[:obj_ptr[-2]]
-        obj_ptr = obj_ptr[:-1]
-        con_csr = sp.csc_array(np.arange(con_indices.size), con_indices, con_ptr, shape=(m, n)).tocsr()
-
-        split = con_csr.indptr[dims.zero + 1]
+        con_csr = sp.csc_array((np.arange(con_indices.size), con_indices, con_ptr[:-1]), shape=(m, n)).tocsr()
+        split = con_csr.indptr[dims.zero]
 
         self.A_idxs = con_csr.data[:split]
-        self.A_structure = con_csr.indices[:split], obj_csr.indptr[:dims.zero+1]
+        self.A_structure = con_csr.indices[:split], con_csr.indptr[:dims.zero+1]
         self.A_shape = (dims.zero, n)
 
         self.G_idxs = con_csr.data[split:]
-        self.G_structure = con_csr.indices[split:], obj_csr.indptr[dims.zero+1:]
+        self.G_structure = con_csr.indices[split:], con_csr.indptr[dims.zero:] - split
         self.G_shape = (m - dims.zero, n)
 
-        self.l = lower_bounds
-        self.u = upper_bounds
+        self.l = lower_bounds if lower_bounds is not None else -jnp.inf * jnp.ones(n)
+        self.u = upper_bounds if upper_bounds is not None else jnp.inf * jnp.ones(n)
 
         self.warm_start = options.pop('warm_start', False)
         assert self.warm_start is False
@@ -75,46 +72,36 @@ class MPAX_ctx:
             raise ValueError('Invalid MPAX algorithm')
         solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
+        self.output_slices = output_slices
 
     def jax_to_data(self, quad_obj_values, lin_obj_values, con_values):   # TODO: Add broadcasting  (will need jnp.tile to tile structures)
-        return MPAX_data(
-            jax.experimental.sparse((quad_obj_values[self.Q_idxs], *self.Q_structure), shape=self.Q_shape),
-            lin_obj_values[self.c_slice],
-            jax.experimental.sparse((obj_values[self.A_idxs], *self.A_structure), shape=self.A_shape),
-            obj_values[self.b_slice],
-            jax.experimental.sparse((obj_values[self.G_idxs], *self.G_structure), shape=self.G_shape),
-            obj_values[self.h_slice],
+        model = mpax.create_qp(
+            P:=jax.experimental.sparse.BCSR((quad_obj_values[self.Q_idxs], *self.Q_structure), shape=self.Q_shape),
+            q:=lin_obj_values[self.c_slice],
+            A:=jax.experimental.sparse.BCSR((con_values[self.A_idxs], *self.A_structure), shape=self.A_shape),
+            b:=con_values[self.b_slice],
+            G:=jax.experimental.sparse.BCSR((con_values[self.G_idxs], *self.G_structure), shape=self.G_shape),
+            h:=con_values[self.h_slice],
             self.l,
             self.u,
+        )
+        return MPAX_data(
+            model,
             self.solver
         )
 
     def solution_to_outputs(self, solution):
-        return (solution.x[s] for s in self.output_slices)
+        return (solution.primal_solution[s] for s in self.output_slices)
 
 
 @dataclass
 class MPAX_data:
-    Q: jnp.ndarray | jax.experimental.sparse.BCOO | jax.experimental.sparse.BCSR
-    c: jnp.ndarray
-    A: jnp.ndarray | jax.experimental.sparse.BCOO | jax.experimental.sparse.BCSR
-    b: jnp.ndarray
-    G: jnp.ndarray | jax.experimental.sparse.BCOO | jax.experimental.sparse.BCSR
-    h: jnp.ndarray
-    l: jnp.ndarray
-    u: jnp.ndarray
+    model: mpax.utils.QuadraticProgrammingProblem
     solver: Callable
 
     def solve(self):
         solution = self.solver(
-            self.Q,
-            self.c,
-            self.A,
-            self.b,
-            self.G,
-            self.h,
-            self.l,
-            self.u,
+            self.model
         )
         return solution
 
