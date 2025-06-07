@@ -1,1 +1,1 @@
-from cvxpylayers.jax.cvxpylayer import CvxpyLayer  # noqa: F401
+from cvxpylayers.jax.cvxpylayer import GpuCvxpyLayer, CvxpyLayer  # noqa: F401

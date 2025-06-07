@@ -1,4 +1,4 @@
-from cvxpylayers.solver_interfaces import MPAX_ctx
+from cvxpylayers.solver_interfaces.mpax_if import MPAX_ctx
 
 solver_map = {
         'MPAX': MPAX_ctx,

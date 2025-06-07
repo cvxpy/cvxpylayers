@@ -1,6 +1,7 @@
-from dataclass import dataclasses
+from dataclasses import dataclass
 from typing import Callable
 import scipy.sparse as sp
+import numpy as np
 try:
     import jax
     import jax.experimental.sparse
@@ -32,10 +33,10 @@ class MPAX_ctx:
 
     output_slices: list[slice]
 
-    def __init__(objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
+    def __init__(self, objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
-        obj_csr = sp.csc_array(np.arange(obj_indices.size), obj_indices, obj_ptr, shape=(n, n)).tocsr()
+        obj_csr = sp.csc_array((np.arange(obj_indices.size), (obj_indices, obj_ptr)), shape=(n, n)).tocsr()
         self.Q_idxs = obj_csr.data
         self.Q_structure = obj_csr.indices, obj_csr.indptr
         self.Q_shape = (n, n)
@@ -64,6 +65,7 @@ class MPAX_ctx:
         self.u = upper_bounds
 
         self.warm_start = options.pop('warm_start', False)
+        assert self.warm_start is False
         algorithm = options.pop('algorithm', 'raPDHG')
         if algorithm == 'raPDHG':
             alg = mpax.raPDHG
@@ -71,10 +73,9 @@ class MPAX_ctx:
             alg = mpax.r2HPDHG
         else:
             raise ValueError('Invalid MPAX algorithm')
-        solver = alg(warm_start=warm_start, **options)
+        solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
 
-    assert warm_start is False
     def jax_to_data(self, quad_obj_values, lin_obj_values, con_values):   # TODO: Add broadcasting  (will need jnp.tile to tile structures)
         return MPAX_data(
             jax.experimental.sparse((quad_obj_values[self.Q_idxs], *self.Q_structure), shape=self.Q_shape),
@@ -119,21 +120,3 @@ class MPAX_data:
 
     def derivative(self):
         return 
-    
-
-class MPAX_CL_if:
-
-    def jax_to_data(self, objective_values, constraints_values, context):
-        obj_array = 
-
-    def torch_to_data(self):
-        ...
-
-    def solve_with_data(self):
-        ...
-
-    def batch(self):
-        ...
-
-    def derivative(self):
-        ...

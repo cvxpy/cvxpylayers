@@ -7,12 +7,12 @@ import time
 import itertools
 from functools import partial
 from cvxpylayers.utils import \
-    ForwardContext, BackwardContext, forward_numpy, backward_numpy, extract_linops_as_csr,
+    (ForwardContext, BackwardContext, forward_numpy, backward_numpy, extract_linops_as_csr,)
 from cvxpylayers.solver_interfaces import solver_map
 
 try:
     import jax
-    import jax.experimental.sparse
+    from jax.experimental.sparse import BCSR
 except ImportError:
     raise ImportError("Unable to import jax. Please install from "
                       "https://github.com/google/jax")
@@ -21,19 +21,19 @@ import jax.numpy as jnp
 
 
 def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwargs):
-    P, c, A, data = extract_linops_as_csr(prob, solver, kwargs)
-    Pjax, cjax, Ajax = BCSR.from_scipy_sparse(P), BCSR.from_scipy_sparse(c), BCSR.from_scipy_sparse(A)
+    P, c, A, data = extract_linops_as_csr(problem, solver, kwargs)
+    Pjax, cjax, Ajax = BCSR.from_scipy_sparse(P.reduced_mat), BCSR.from_scipy_sparse(c), BCSR.from_scipy_sparse(A.reduced_mat)
     param_order = parameters
-    param_prog = data['param_prog']
+    param_prob = data['param_prob']
     param_id_to_orig_order = {
-            p_id: i for p_id, i in sorted([(p.id, i) for i, p in enumerate(param_order)])} # TODO: Fix ordering to use offsets from param_prog
+            p_id: i for p_id, i in sorted([(p.id, i) for i, p in enumerate(param_order)])} # TODO: Fix ordering to use offsets from param_prob
     Ctx = solver_map[solver]
     ctx = Ctx(
             P.problem_data_index,
             A.problem_data_index,
             data['dims'],
             data.get('lower_bound'), data.get('upper_bound'),
-            [slice(start := param_prog.var_id_to_col[v.id], start + v.size) for v in variables],
+            [slice(start := param_prob.var_id_to_col[v.id], start + v.size) for v in variables],
             kwargs)
 
     def GpuCvxpyLayerImpl(*params):
@@ -47,7 +47,7 @@ def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwa
             raise ValueError("Invalid shape")
         vec = jnp.hstack(
                 itertools.chain(
-                    params[i].reshape(-1, 'F') for _, i in param_id_to_orig_order.items(),
+                    (params[i].reshape(-1, 'F') for _, i in param_id_to_orig_order.items()),
                     (jnp.ones(1),))) # TODO(PTNobel): Add batching
         Pvec = Pjax @ vec
         cvec = cjax @ vec
@@ -55,7 +55,9 @@ def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwa
         data = ctx.jax_to_data(Pvec, cvec, Avec)
         solution = data.solve()
 
-        return *(jnp.array(arr).reshape(v.shape) for v, arr in zip(variables, ctx.solution_to_outputs(solution)))
+        return tuple(jnp.array(arr).reshape(v.shape) for v, arr in zip(variables, ctx.solution_to_outputs(solution)))
+
+    return GpuCvxpyLayerImpl
 
 
 def CvxpyLayer(problem, parameters, variables, gp=False, custom_method=None):
