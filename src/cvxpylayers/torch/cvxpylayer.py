@@ -1,5 +1,3 @@
-import diffcp
-import time
 import cvxpy as cp
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import \
     dims_to_solver_dict

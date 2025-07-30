@@ -1,7 +1,6 @@
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
-from cvxpylayers.torch import CvxpyLayer
 
 torch.set_default_dtype(torch.double)
 
