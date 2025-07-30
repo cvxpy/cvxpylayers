@@ -4,10 +4,9 @@ import diffcp
 import numpy as np
 import pytest
 import torch
+from src.cvxpylayers.torch import CvxpyLayer
+from src.cvxpylayers.utils import backward_numpy, forward_numpy
 from torch.autograd import grad
-
-from cvxpylayers.torch import CvxpyLayer
-from cvxpylayers.utils import backward_numpy, forward_numpy
 
 torch.set_default_dtype(torch.double)
 
