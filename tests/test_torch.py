@@ -1,7 +1,7 @@
+"""Unit tests for cvxpylayers.torch."""
 import cvxpy as cp
 import diffcp
 import numpy as np
-import numpy.random as npr
 import pytest
 import torch
 from torch.autograd import grad
@@ -12,9 +12,22 @@ from cvxpylayers.utils import backward_numpy, forward_numpy
 torch.set_default_dtype(torch.double)
 
 
-def set_seed(x):
-    npr.seed(x)
+def set_seed(x: int) -> np.random.Generator:
+    """Set the random seed for torch and return a numpy random generator.
+
+    Parameters
+    ----------
+    x : int
+        The seed value to use for random number generators.
+
+    Returns
+    -------
+    np.random.Generator
+        A numpy random number generator instance with the specified seed.
+
+    """
     torch.manual_seed(x)
+    return np.random.default_rng(x)
 
 
 def sigmoid(z):
@@ -44,17 +57,17 @@ def test_example():
 
 @pytest.mark.skip
 def test_simple_batch_socp():
-    set_seed(243)
+    _ = set_seed(243)
     n = 5
     m = 1
     batch_size = 4
 
-    P_sqrt = cp.Parameter((n, n), name='P_sqrt')
-    q = cp.Parameter((n, 1), name='q')
-    A = cp.Parameter((m, n), name='A')
-    b = cp.Parameter((m, 1), name='b')
+    P_sqrt = cp.Parameter((n, n), name="P_sqrt")
+    q = cp.Parameter((n, 1), name="q")
+    A = cp.Parameter((m, n), name="A")
+    b = cp.Parameter((m, 1), name="b")
 
-    x = cp.Variable((n, 1), name='x')
+    x = cp.Variable((n, 1), name="x")
 
     objective = 0.5 * cp.sum_squares(P_sqrt @ x) + q.T @ x
     constraints = [A@x == b, cp.norm(x) <= 1]
@@ -71,7 +84,7 @@ def test_simple_batch_socp():
 
 
 def test_least_squares():
-    set_seed(243)
+    _ = set_seed(243)
     m, n = 100, 20
 
     A = cp.Parameter((m, n))
@@ -101,7 +114,7 @@ def test_least_squares():
 
 
 def test_least_squares_custom_method():
-    set_seed(243)
+    _ = set_seed(243)
     m, n = 100, 20
 
     A = cp.Parameter((m, n))
@@ -131,13 +144,13 @@ def test_least_squares_custom_method():
 
 
 def test_logistic_regression():
-    set_seed(0)
+    rng = set_seed(0)
 
     N, n = 5, 2
 
-    X_np = npr.randn(N, n)
-    a_true = npr.randn(n, 1)
-    y_np = np.round(sigmoid(X_np.dot(a_true) + npr.randn(N, 1) * 0.5))
+    X_np = rng.standard_normal((N, n))
+    a_true = rng.standard_normal((n, 1))
+    y_np = np.round(sigmoid(X_np.dot(a_true) + rng.standard_normal((N, 1)) * 0.5))
 
     X_th = torch.from_numpy(X_np).requires_grad_()
     lam_th = torch.tensor([0.1]).requires_grad_()
@@ -150,7 +163,7 @@ def test_logistic_regression():
     log_likelihood = cp.sum(
         cp.multiply(y, X @ a) -
         cp.log_sum_exp(cp.hstack([np.zeros((N, 1)), X @ a]).T, axis=0,
-                       keepdims=True).T
+                       keepdims=True).T,
     )
     prob = cp.Problem(
         cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
@@ -162,14 +175,14 @@ def test_logistic_regression():
 
 @pytest.mark.skip
 def test_entropy_maximization():
-    set_seed(243)
+    rng = set_seed(243)
     n, m, p = 5, 3, 2
 
-    tmp = npr.randn(n)
-    A_np = npr.randn(m, n)
+    tmp = rng.standard_normal(n)
+    A_np = rng.standard_normal((m, n))
     b_np = A_np.dot(tmp)
-    F_np = npr.randn(p, n)
-    g_np = F_np.dot(tmp) + npr.randn(p)
+    F_np = rng.standard_normal((p, n))
+    g_np = F_np.dot(tmp) + rng.standard_normal(p)
 
     x = cp.Variable(n)
     A = cp.Parameter((m, n))
@@ -190,7 +203,7 @@ def test_entropy_maximization():
 
 
 def test_lml():
-    set_seed(243)
+    _ = set_seed(243)
     k = 2
     x = cp.Parameter(4)
     y = cp.Variable(4)
@@ -205,7 +218,7 @@ def test_lml():
 
 @pytest.mark.skip
 def test_sdp():
-    set_seed(243)
+    _ = set_seed(243)
 
     n = 3
     p = 3
@@ -247,9 +260,12 @@ def test_not_enough_parameters_at_call_time():
     lam2 = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
-    layer = CvxpyLayer(prob, [lam, lam2], [x])  # noqa: F841
-    with pytest.raises(ValueError, match='A tensor must be provided for each CVXPY parameter.*'):
-        lam_th = torch.ones(1)
+    layer = CvxpyLayer(prob, [lam, lam2], [x])
+    lam_th = torch.ones(1)
+    with pytest.raises(
+        ValueError,
+        match="A tensor must be provided for each CVXPY parameter.*",
+    ):
         layer(lam_th)
 
 
@@ -284,7 +300,7 @@ def test_unbounded():
 
 
 def test_incorrect_parameter_shape():
-    set_seed(243)
+    _ = set_seed(243)
     m, n = 100, 20
 
     A = cp.Parameter((m, n))
@@ -320,7 +336,7 @@ def test_incorrect_parameter_shape():
 
 
 def test_broadcasting():
-    set_seed(243)
+    _ = set_seed(243)
     m, n = 100, 20
 
     A = cp.Parameter((m, n))
@@ -351,13 +367,13 @@ def test_broadcasting():
 
 
 def test_shared_parameter():
-    set_seed(243)
+    rng = set_seed(243)
     m, n = 10, 5
 
     A = cp.Parameter((m, n))
     x = cp.Variable(n)
-    b1 = npr.randn(m)
-    b2 = npr.randn(m)
+    b1 = rng.standard_normal(m)
+    b2 = rng.standard_normal(m)
     prob1 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b1)))
     layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x])
     prob2 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b2)))
@@ -367,7 +383,7 @@ def test_shared_parameter():
     solver_args = {
         "eps": 1e-10,
         "acceleration_lookback": 0,
-        "max_iters": 10000
+        "max_iters": 10000,
     }
 
     def f(A_th):
@@ -379,7 +395,7 @@ def test_shared_parameter():
 
 
 def test_equality():
-    set_seed(243)
+    _ = set_seed(243)
     n = 10
     A = np.eye(n)
     x = cp.Variable(n)
@@ -393,7 +409,7 @@ def test_equality():
 
 
 def test_basic_gp():
-    set_seed(0)
+    _ = set_seed(0)
     x = cp.Variable(pos=True)
     y = cp.Variable(pos=True)
     z = cp.Variable(pos=True)
@@ -415,7 +431,7 @@ def test_basic_gp():
     x_th, y_th, z_th = layer(a_th, b_th, c_th)
 
     assert torch.allclose(torch.tensor(x.value), x_th, atol=1e-5)
-    assert torch.allclose(torch.tensor(y.value), y_th, atol=1e-5) 
+    assert torch.allclose(torch.tensor(y.value), y_th, atol=1e-5)
     assert torch.allclose(torch.tensor(z.value), z_th, atol=1e-5)
 
     def f(a, b, c):
