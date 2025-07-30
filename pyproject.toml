@@ -1,0 +1,9 @@
+[project]
+name = "cvxpylayers"
+version = "1.0.0-alpha"
+description = "Solve and differentiate Convex Optimization problems on the GPU"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cvxpy>=1.7.1",
+]
