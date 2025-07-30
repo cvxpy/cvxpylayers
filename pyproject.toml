@@ -57,7 +57,19 @@ Documentation = "https://github.com/cvxgrp/cvxpylayers"
 "Bug Tracker" = "https://github.com/cvxgrp/cvxpylayers/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "ty"]
+dev = [
+    "codespell==2.4.1",
+    "covdefaults==2.3.0",
+    "coverage[toml]==7.6.12",
+    "pre-commit==4.2.0",
+    "pre-commit-hooks==5.0.0",
+    "pylint==3.3.4",
+    "pytest==8.4.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.7",
+    "ty==0.0.1a16",
+    "yamllint==1.35.1",
+]
 torch = ["torch"]
 tensorflow = ["tensorflow"]
 jax = ["jax", "jaxlib"]
@@ -69,8 +81,65 @@ packages = ["src/cvxpylayers"]
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/examples", "/README.md", "/LICENSE", "/NOTICE"]
 
-[tool.pytest.ini_options]
-addopts = "-v"
-
 [dependency-groups]
-dev = ["pytest>=8.4.1", "ruff>=0.12.7", "ty>=0.0.1a16"]
+dev = ["pytest>=8.4.1", "ruff>=0.12.7", "ty>=0.0.1a16", "covdefaults"]
+
+
+[tool.coverage.run]
+plugins = ["covdefaults"]
+source = ["cvxpylayers"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 50
+omit = []
+
+[tool.ty.rules]
+possibly-unresolved-reference = "warn"
+
+[tool.pylint.MASTER]
+extension-pkg-whitelist = ["orjson"]
+ignore = ["tests"]
+
+[tool.pylint.BASIC]
+good-names = ["_", "ex", "fp", "i", "id", "j", "k", "on", "Run", "T"]
+
+[tool.pylint.DESIGN]
+max-attributes = 8
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = ["duplicate-code", "format", "unsubscriptable-object"]
+
+[tool.pylint.SIMILARITIES]
+ignore-imports = true
+
+[tool.pylint.FORMAT]
+max-line-length = 88
+
+[tool.pytest.ini_options]
+addopts = "--cov-report xml:coverage.xml --cov src.cvxpylayers --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
+pythonpath = ["src"]
+log_cli = true
+log_cli_level = "DEBUG"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+testpaths = "tests"
+markers = ["integration: marks as integration test"]
+
+[tool.ruff.lint]
+ignore = [
+    "ANN401", # Opinioated warning on disallowing dynamically typed expressions
+    "D203",   # incorrect-blank-line-before-class (incompatible with D211)
+    "D213",   # multi-line-summary-second-line (incompatible with D212)
+]
+select = ["ALL"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["cvxpylayers"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
