@@ -57,7 +57,7 @@ Documentation = "https://github.com/cvxgrp/cvxpylayers"
 "Bug Tracker" = "https://github.com/cvxgrp/cvxpylayers/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff"]
+dev = ["pytest", "pytest-cov", "ruff", "ty"]
 torch = ["torch"]
 tensorflow = ["tensorflow"]
 jax = ["jax", "jaxlib"]
@@ -73,4 +73,4 @@ include = ["/src", "/examples", "/README.md", "/LICENSE", "/NOTICE"]
 addopts = "-v"
 
 [dependency-groups]
-dev = ["pytest>=8.4.1", "ruff>=0.12.7"]
+dev = ["pytest>=8.4.1", "ruff>=0.12.7", "ty>=0.0.1a16"]
