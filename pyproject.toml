@@ -16,7 +16,7 @@ authors = [
     { name = "S. Diamond" },
     { name = "Z. Kolter" },
 ]
-maintainers = [{ name = "Stefan de Lange", email = "langestefan@msn.com" }]
+maintainers = [{ name = "Parth Nobel", email = "ptnobel@stanford.edu" }]
 requires-python = ">=3.10"
 dependencies = [
     "numpy >= 1.15",
