@@ -1,9 +1,13 @@
 import cvxpy as cp
-from cvxpy.reductions.solvers.conic_solvers.scs_conif import \
-    dims_to_solver_dict
 import numpy as np
-from cvxpylayers.utils import \
-    ForwardContext, BackwardContext, forward_numpy, backward_numpy
+from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
+
+from cvxpylayers.utils import (
+    BackwardContext,
+    ForwardContext,
+    backward_numpy,
+    forward_numpy,
+)
 
 try:
     import torch
@@ -170,8 +174,11 @@ def to_numpy(x):
 
 
 def to_torch(x, dtype, device):
-    # convert numpy array to torch tensor
-    return torch.from_numpy(x).type(dtype).to(device)
+    # convert numpy array or tensor to torch tensor
+    if isinstance(x, torch.Tensor):
+        return x.type(dtype).to(device)
+    else:
+        return torch.from_numpy(x).type(dtype).to(device)
 
 
 def _CvxpyLayerFn(

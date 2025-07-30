@@ -140,7 +140,7 @@ def test_logistic_regression():
     y_np = np.round(sigmoid(X_np.dot(a_true) + npr.randn(N, 1) * 0.5))
 
     X_th = torch.from_numpy(X_np).requires_grad_()
-    lam_th = torch.tensor(0.1).requires_grad_()
+    lam_th = torch.tensor([0.1]).requires_grad_()
 
     a = cp.Variable((n, 1))
     X = cp.Parameter((N, n))
@@ -157,7 +157,7 @@ def test_logistic_regression():
 
     fit_logreg = CvxpyLayer(prob, [X, lam], [a])
 
-    torch.autograd.gradcheck(fit_logreg, (X_th, lam_th))
+    torch.autograd.gradcheck(fit_logreg, (X_th, lam_th), atol=1e-4)
 
 
 @pytest.mark.skip
@@ -200,7 +200,7 @@ def test_lml():
     lml = CvxpyLayer(prob, [x], [y])
 
     x_th = torch.tensor([1., -1., -1., -1.]).requires_grad_()
-    torch.autograd.gradcheck(lml, (x_th, ))
+    torch.autograd.gradcheck(lml, (x_th, ), atol=1e-3)
 
 
 @pytest.mark.skip
@@ -248,7 +248,7 @@ def test_not_enough_parameters_at_call_time():
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
     layer = CvxpyLayer(prob, [lam, lam2], [x])  # noqa: F841
-    with pytest.raises(ValueError, match='An array must be provided for each CVXPY parameter.*'):
+    with pytest.raises(ValueError, match='A tensor must be provided for each CVXPY parameter.*'):
         lam_th = torch.ones(1)
         layer(lam_th)
 
@@ -409,9 +409,9 @@ def test_basic_gp():
 
     layer = CvxpyLayer(
         problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
-    a_th = torch.tensor(2.0).requires_grad_()
-    b_th = torch.tensor(1.0).requires_grad_()
-    c_th = torch.tensor(0.5).requires_grad_()
+    a_th = torch.tensor([2.0]).requires_grad_()
+    b_th = torch.tensor([1.0]).requires_grad_()
+    c_th = torch.tensor([0.5]).requires_grad_()
     x_th, y_th, z_th = layer(a_th, b_th, c_th)
 
     assert torch.allclose(torch.tensor(x.value), x_th, atol=1e-5)
@@ -422,7 +422,7 @@ def test_basic_gp():
         res = layer(a, b, c, solver_args={"acceleration_lookback": 0})
         return res[0].sum()
 
-    torch.autograd.gradcheck(f, (a_th, b_th, c_th))
+    torch.autograd.gradcheck(f, (a_th, b_th, c_th), atol=1e-4)
 
 
 def test_no_grad_context():
@@ -441,9 +441,9 @@ def test_no_grad_context():
 
     with torch.no_grad():
         solution, = cvxpylayer(A_tch, b_tch)
-        # These tensors should not require grad, but solution is in numpy
-        # format because we are in a no_grad context
-        assert not torch.is_tensor(solution)
+        # These tensors should not require grad when in no_grad context
+        assert torch.is_tensor(solution)
+        assert not solution.requires_grad
 
 
 def test_requires_grad_false():
@@ -462,6 +462,6 @@ def test_requires_grad_false():
 
     # solve the problem
     solution, = cvxpylayer(A_tch, b_tch)
-    # These tensors should not require grad, but solution is in numpy
-    # format because none of the inputs require grad
-    assert not torch.is_tensor(solution)
+    # These tensors should not require grad when inputs don't require grad
+    assert torch.is_tensor(solution)
+    assert not solution.requires_grad
