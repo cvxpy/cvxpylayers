@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cvxpylayers"
+version = "0.1.9"
+description = "Differentiable convex optimization layers"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "A. Agrawal" },
+    { name = "B. Amos" },
+    { name = "S. Barratt" },
+    { name = "S. Boyd" },
+    { name = "S. Diamond" },
+    { name = "Z. Kolter" },
+]
+maintainers = [{ name = "Stefan de Lange", email = "langestefan@msn.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy >= 1.15",
+    "scipy >= 1.1.0",
+    "diffcp >= 1.1.0",
+    "cvxpy >= 1.5.0",
+]
+keywords = [
+    "convex optimization",
+    "differentiable programming",
+    "deep learning",
+    "pytorch",
+    "tensorflow",
+    "jax",
+    "cvxpy",
+    "optimization layers",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/cvxgrp/cvxpylayers"
+Repository = "https://github.com/cvxgrp/cvxpylayers.git"
+Documentation = "https://github.com/cvxgrp/cvxpylayers"
+"Bug Tracker" = "https://github.com/cvxgrp/cvxpylayers/issues"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+torch = ["torch"]
+tensorflow = ["tensorflow"]
+jax = ["jax", "jaxlib"]
+all = ["torch", "tensorflow", "jax", "jaxlib"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cvxpylayers"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/examples", "/README.md", "/LICENSE", "/NOTICE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[dependency-groups]
+dev = ["pytest>=8.4.1"]
