@@ -22,13 +22,15 @@ import jax.numpy as jnp
 
 def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwargs):
     if len(problem.parameters()) != len(parameters):
-        raise ValueError
+        raise ValueError("Must specify all problem parameters")
+    if not (set(variables) <= set(problem.variables())):
+        raise ValueError("Variables must be associated with the problem")
     P, c, A, data = extract_linops_as_csr(problem, solver, kwargs)
     Pjax, cjax, Ajax = BCSR.from_scipy_sparse(P.reduced_mat), BCSR.from_scipy_sparse(c), BCSR.from_scipy_sparse(A.reduced_mat)
     param_order = parameters
     param_prob = data['param_prob']
     param_id_to_orig_order = {
-            p_id: i for p_id, i in sorted([(p.id, i) for i, p in enumerate(param_order)])} # TODO: Fix ordering to use offsets from param_prob
+            p_id: i for p_id, i in sorted([(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(param_order)])}
     Ctx = solver_map[solver]
     ctx = Ctx(
             P.problem_data_index,
@@ -38,7 +40,7 @@ def GpuCvxpyLayer(problem, parameters, variables, solver='MPAX', gp=False, **kwa
             [slice(start := param_prob.var_id_to_col[v.id], start + v.size) for v in variables],
             kwargs)
 
-    def GpuCvxpyLayerImpl(*params):
+    def GpuCvxpyLayerImpl(*params, solver_args=None):
         dtype, batch, batch_sizes, batch_size = batch_info(
             params, param_order)
         if len(params) != len(parameters):
