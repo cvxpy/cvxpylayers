@@ -1,0 +1,115 @@
+---
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: 🐶 Ruff Linter
+        language: system
+        types: [python]
+        entry: uv run ruff check --fix
+        require_serial: true
+        stages: [pre-commit, pre-push, manual]
+      - id: ruff-format
+        name: 🐶 Ruff Formatter
+        language: system
+        types: [python]
+        entry: uv run ruff format
+        require_serial: true
+        stages: [pre-commit, pre-push, manual]
+      - id: check-ast
+        name: 🐍 Check Python AST
+        language: system
+        types: [python]
+        entry: uv run check-ast
+      - id: check-case-conflict
+        name: 🔠 Check for case conflicts
+        language: system
+        entry: uv run check-case-conflict
+      - id: check-docstring-first
+        name: ℹ️  Check docstring is first
+        language: system
+        types: [python]
+        entry: uv run check-docstring-first
+      - id: check-executables-have-shebangs
+        name: 🧐 Check that executables have shebangs
+        language: system
+        types: [text, executable]
+        entry: uv run check-executables-have-shebangs
+        stages: [pre-commit, pre-push, manual]
+      - id: check-json
+        name: ｛ Check JSON files
+        language: system
+        types: [json]
+        entry: uv run check-json
+      - id: check-merge-conflict
+        name: 💥 Check for merge conflicts
+        language: system
+        types: [text]
+        entry: uv run check-merge-conflict
+      - id: check-symlinks
+        name: 🔗 Check for broken symlinks
+        language: system
+        types: [symlink]
+        entry: uv run check-symlinks
+      - id: check-toml
+        name: ✅ Check TOML files
+        language: system
+        types: [toml]
+        entry: uv run check-toml
+      - id: check-xml
+        name: ✅ Check XML files
+        entry: check-xml
+        language: system
+        types: [xml]
+      - id: check-yaml
+        name: ✅ Check YAML files
+        language: system
+        types: [yaml]
+        entry: uv run check-yaml
+      - id: codespell
+        name: ✅ Check code for common misspellings
+        language: system
+        types: [text]
+        exclude: ^uv\.lock$
+        entry: uv run codespell
+      - id: detect-private-key
+        name: 🕵️  Detect Private Keys
+        language: system
+        types: [text]
+        entry: uv run detect-private-key
+      - id: end-of-file-fixer
+        name: ⮐  Fix End of Files
+        language: system
+        types: [text]
+        entry: uv run end-of-file-fixer
+        stages: [pre-commit, pre-push, manual]
+      - id: ty
+        name: 🆎 Static type checking using ty
+        language: system
+        types: [python]
+        entry: uv run ty check
+        require_serial: true
+      - id: no-commit-to-branch
+        name: 🛑 Don't commit to main branchpre-commit migrate-config
+        language: system
+        entry: uv run no-commit-to-branch
+        pass_filenames: false
+        always_run: true
+        args:
+          - --branch=main
+      - id: pylint
+        name: 🌟 Starring code with pylint
+        language: system
+        types: [python]
+        entry: uv run pylint
+      - id: trailing-whitespace
+        name: ✄  Trim Trailing Whitespace
+        language: system
+        types: [text]
+        entry: uv run trailing-whitespace-fixer
+        stages: [pre-commit, pre-push, manual]
+      - id: yamllint
+        name: 🎗  Check YAML files with yamllint
+        language: system
+        types: [yaml]
+        entry: uv run yamllint
