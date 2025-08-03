@@ -3,7 +3,7 @@ name: Linting
 
 # yamllint disable-line rule:truthy
 on:
-  # push:
+  push:
   pull_request:
   workflow_dispatch:
 
