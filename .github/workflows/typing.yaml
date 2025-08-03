@@ -1,0 +1,29 @@
+---
+name: Typing
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DEFAULT_PYTHON: "3.12"
+
+jobs:
+  ty-check:
+    name: type checking with ty
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Setup uv and python
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          python-version: ${{ env.DEFAULT_PYTHON }}
+      - name: Install deps
+        run: |
+          uv sync
+      - name: Run type check
+        run: uv run ty check # invokes the Ty checker

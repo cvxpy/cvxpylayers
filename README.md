@@ -26,27 +26,41 @@ For more information, see the [documentation](https://www.cvxgrp.org/cvxpylayers
 
 ## Installation
 
-Use the package manager [pip](https://pip.pypa.io/en/stable/) to install
-cvxpylayers.
+cvxpylayers is available on [pypi](https://pypi.org/project/cvxpylayers/) and can be 
+installed with:
 
 ```bash
 pip install cvxpylayers
 ```
 
-Our package includes convex optimization layers for
-PyTorch, JAX, and TensorFlow 2.0;
-the layers are functionally equivalent. You will need to install
-[PyTorch](https://pytorch.org),
-[JAX](https://github.com/google/jax), or
-[TensorFlow](https://www.tensorflow.org)
-separately, which can be done by following the instructions on their websites.
-
 cvxpylayers has the following dependencies:
 * Python 3
 * [NumPy](https://pypi.org/project/numpy/)
 * [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.1.a4
-* [PyTorch](https://pytorch.org) >= 1.0, [JAX](https://github.com/google/jax) >= 0.2.12, or [TensorFlow](https://tensorflow.org) >= 2.0
+* [PyTorch](https://pytorch.org) >= 1.0, [JAX](https://github.com/google/jax) >= 0.2.12
 * [diffcp](https://github.com/cvxgrp/diffcp) >= 1.0.13
+
+To make use of differentiable convex optimization layers in PyTorch or JAX, you will 
+need to install the corresponding dependencies. You can do this manually
+for [PyTorch](https://pytorch.org) and [JAX](https://github.com/google/jax) or use
+the commands given below.
+
+
+### PyTorch
+
+Install manuall from [PyTorch](https://pytorch.org) or run:
+
+```bash
+pip install cvxpylayers[torch]  
+```
+
+### JAX
+
+Install manually from [JAX](https://github.com/google/jax) or run:
+
+```bash
+pip install cvxpylayers[jax] 
+```
 
 ## Usage
 

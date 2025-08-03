@@ -7,43 +7,53 @@ All configuration values have a default; values that are commented out
 serve to show the default.
 """
 
-import shutil
+import sys
 from pathlib import Path
 
 import alabaster
 
-from src import package
+# add the repository root to the Python path so we can import src.package
+docs_dir = Path(__file__).parent
+repo_root = docs_dir.parent.parent
+sys.path.insert(0, str(repo_root))
+
+from src import package  # noqa: E402
 
 
-# copy the examples directory to the docs/_examples directory
+# create symbolic links from examples to root examples directory
 def copy_examples() -> None:
-    """Copy example notebooks from top-level examples/ to docs/src/_examples/."""
+    """Create symbolic links from docs/src/examples/ to top-level examples/."""
     docs_dir = Path(__file__).parent  # docs/source/
     repo_root = docs_dir.parent.parent  # repo root
     source_examples_dir = repo_root / "examples"
-    dest_examples_dir = docs_dir / "_examples"
+    dest_examples_dir = docs_dir / "examples"
 
-    # stop moving if the destination directory already exists
-    if dest_examples_dir.exists():
-        return
-
-    # create the destination directory
-    dest_examples_dir.mkdir(exist_ok=True)
-
-    # copy all files from source examples to destination
+    # create symbolic links to files from source examples to destination
     if source_examples_dir.exists():
         for item in source_examples_dir.iterdir():
+            # Skip the ruff.toml file as it's not needed in docs
+            if item.name == "ruff.toml":
+                continue
+
+            dest_path = dest_examples_dir / item.name
+
+            # Skip if symbolic link already exists
+            if dest_path.exists():
+                continue
+
             if item.is_file():
-                shutil.copy2(item, dest_examples_dir)
+                # Create symbolic link to the file
+                dest_path.symlink_to(item)
             elif item.is_dir():
-                shutil.copytree(item, dest_examples_dir / item.name)
+                # Create symbolic link to the directory
+                dest_path.symlink_to(item)
     else:
         msg = f"Source examples directory {source_examples_dir} does not exist"
         raise FileNotFoundError(msg)
 
 
 def setup(app) -> None:  # noqa: ANN001, ARG001
-    """Sphinx setup hook to copy examples before building."""
+    """Sphinx setup hook to create symbolic links to examples before building."""
     copy_examples()
 
 

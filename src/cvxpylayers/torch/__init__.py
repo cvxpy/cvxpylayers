@@ -1,1 +1,1 @@
-from cvxpylayers.torch.cvxpylayer import CvxpyLayer  # noqa: F401
+"""PyTorch backend for CVXPy Layers."""

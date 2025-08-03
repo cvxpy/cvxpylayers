@@ -18,7 +18,12 @@ authors = [
 ]
 maintainers = [{ name = "P. Nobel", email = "ptnobel@stanford.edu" }]
 requires-python = ">=3.12"
-dependencies = ["cvxpy>=1.7.1"]
+dependencies = [
+    "cvxpy>=1.7.1",
+    "diffcp>=1.1.0",
+    "numpy >= 2.0.0",
+    "scipy >= 1.16.0",
+]
 keywords = ["convex optimization", "cvxpy", "mathematical programming"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -41,6 +46,9 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 "Bug Tracker" = "https://github.com/cvxpy/cvxpylayers/issues"
 
 [project.optional-dependencies]
+torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
+jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
+all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvxpylayers"]
@@ -128,7 +136,7 @@ fixture-parentheses = false
 mark-parentheses = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["repository"]
+known-first-party = ["cvxpylayers"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
