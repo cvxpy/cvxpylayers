@@ -1,0 +1,100 @@
+---
+- name: "breaking-change"
+  color: d93f0b
+  description: "A breaking change for existing users."
+- name: "bug"
+  color: fc2929
+  description: "Inconsistencies or issues which will cause a problem for users."
+- name: "bugfix"
+  color: ededed
+  description: "Fixing a bug."
+- name: "documentation"
+  color: 0052cc
+  description: "Solely about the documentation of the project."
+- name: "enhancement"
+  color: 1d76db
+  description: "Enhancement of the code, not introducing new features."
+- name: "refactor"
+  color: 1d76db
+  description: "Improvement of existing code, not introducing new features."
+- name: "performance"
+  color: 1d76db
+  description: "Improving performance, not introducing new features."
+- name: "new-feature"
+  color: 0e8a16
+  description: "New features or request."
+- name: "maintenance"
+  color: 2af79e
+  description: "Generic maintenance tasks."
+- name: "ci"
+  color: 1d76db
+  description: "Work that improves the continue integration."
+- name: "dependencies"
+  color: 1d76db
+  description: "Upgrade or downgrade of project dependencies."
+
+- name: "in-progress"
+  color: fbca04
+  description: "Issue is currently being resolved by a developer."
+- name: "stale"
+  color: fef2c0
+  description: "There has not been activity on this issue or PR for quite some time."
+- name: "no-stale"
+  color: fef2c0
+  description: "This issue or PR is exempted from the stable bot."
+- name: "wontfix"
+  color: ffffff
+  description: "This issue or PR will not be fixed."
+- name: "cleanup"
+  color: ef75d5
+  description: "Cleanup of code."
+- name: "sync"
+  color: 00a6ed
+  description: "Syncing with upstream github config repository."
+
+- name: "security"
+  color: ee0701
+  description: "Marks a security issue that needs to be resolved asap."
+- name: "incomplete"
+  color: fef2c0
+  description: "Marks a PR or issue that is missing information."
+- name: "invalid"
+  color: fef2c0
+  description: "Marks a PR or issue that is missing information."
+- name: "duplicate"
+  color: cfd3d7
+  description: "This issue or pull request already exists."
+
+- name: "beginner-friendly"
+  color: 0e8a16
+  description: "Good first issue for people wanting to contribute to the project."
+- name: "help-wanted"
+  color: 0e8a16
+  description: "We need some extra helping hands or expertise in order to resolve this."
+
+- name: "hacktoberfest"
+  description: "Issues/PRs are participating in the Hacktoberfest."
+  color: fbca04
+- name: "hacktoberfest-accepted"
+  description: "Issues/PRs are participating in the Hacktoberfest."
+  color: fbca04
+
+- name: "priority-critical"
+  color: ee0701
+  description: "This should be dealt with ASAP. Not fixing this issue would be a serious error."
+- name: "priority-high"
+  color: b60205
+  description: "After critical issues are fixed, these should be dealt with before any further issues."
+- name: "priority-medium"
+  color: 0e8a16
+  description: "This issue may be useful, and needs some attention."
+- name: "priority-low"
+  color: e4ea8a
+  description: "Nice addition, maybe... someday..."
+
+- name: "major"
+  color: b60205
+  description: "This PR causes a major version bump in the version number."
+- name: "minor"
+  color: 0e8a16
+  description: "This PR causes a minor version bump in the version number."

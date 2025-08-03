@@ -1,0 +1,58 @@
+name: deploy-docs
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  DEFAULT_PYTHON: "3.12"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup uv and python
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          python-version: ${{ env.DEFAULT_PYTHON }}
+      - name: Install pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+      - name: Install deps and build Sphinx docs
+        run: |
+          uv sync --group doc
+          uv run sphinx-build -W --keep-going -b html docs/src docs/_build/html
+      - name: Add .nojekyll file
+        run: touch docs/.nojekyll
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

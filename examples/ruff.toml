@@ -1,0 +1,6 @@
+# This extend our general Ruff rules specifically for tests
+extend = "../pyproject.toml"
+
+lint.extend-ignore = [
+    "T201", # examples are allowed to use print statements
+]
