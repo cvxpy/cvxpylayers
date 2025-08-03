@@ -31,24 +31,28 @@ def copy_examples() -> None:
     source_examples_dir = repo_root / "examples"
     dest_examples_dir = docs_dir / "examples"
 
+    # clean up any orphaned symlinks first
+    if dest_examples_dir.exists():
+        for existing_path in dest_examples_dir.iterdir():
+            if existing_path.is_symlink() and not existing_path.exists():
+                # this is a broken symlink, remove it
+                existing_path.unlink()
+
     # create symbolic links to files from source examples to destination
     if source_examples_dir.exists():
         for item in source_examples_dir.iterdir():
-            # Skip the ruff.toml file as it's not needed in docs
+            # skip the ruff.toml file as it's not needed in docs
             if item.name == "ruff.toml":
                 continue
 
             dest_path = dest_examples_dir / item.name
 
-            # Skip if symbolic link already exists
+            # skip if symbolic link already exists and is valid
             if dest_path.exists():
                 continue
 
-            if item.is_file():
-                # Create symbolic link to the file
-                dest_path.symlink_to(item)
-            elif item.is_dir():
-                # Create symbolic link to the directory
+            # create symbolic links
+            if item.is_file() or item.is_dir():
                 dest_path.symlink_to(item)
     else:
         msg = f"Source examples directory {source_examples_dir} does not exist"
