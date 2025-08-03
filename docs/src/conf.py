@@ -8,14 +8,19 @@ serve to show the default.
 """
 
 import sys
+import tomllib
 from pathlib import Path
 
-# add the repository root to the Python path so we can import src.package
+# add the repository root to the Python path so we can import the package
 docs_dir = Path(__file__).parent
 repo_root = docs_dir.parent.parent
 sys.path.insert(0, str(repo_root))
 
-from src import package  # noqa: E402
+# read version from pyproject.toml
+with (repo_root / "pyproject.toml").open("rb") as f:
+    pyproject_data = tomllib.load(f)
+
+__version__ = pyproject_data["project"]["version"]
 
 
 # create symbolic links from examples to root examples directory
@@ -55,8 +60,6 @@ def setup(app) -> None:  # noqa: ANN001, ARG001
     copy_examples()
 
 
-__version__ = package.__version__
-
 # --- general configuration ---
 extensions = [
     "sphinx.ext.autodoc",
@@ -77,8 +80,8 @@ extensions = [
 
 source_suffix = [".md"]
 master_doc = "index"
-project = "package"
-copyright = "The package authors"  # noqa: A001
+project = "cvxpylayers"
+copyright = "The cvxpylayers authors"  # noqa: A001
 version = ".".join(__version__.split(".")[:2])
 release = __version__
 
