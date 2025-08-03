@@ -10,8 +10,6 @@ serve to show the default.
 import sys
 from pathlib import Path
 
-import alabaster
-
 # add the repository root to the Python path so we can import src.package
 docs_dir = Path(__file__).parent
 repo_root = docs_dir.parent.parent
@@ -93,8 +91,6 @@ pygments_style = "sphinx"
 
 # --- options for HTML output ---
 table_styling_embed_css = False
-html_theme_path = [alabaster.get_path(), "../themes"]
-extensions += ["alabaster"]
 html_theme = "sphinx_immaterial"
 html_theme_options = {
     "palette": {"scheme": "default"},
