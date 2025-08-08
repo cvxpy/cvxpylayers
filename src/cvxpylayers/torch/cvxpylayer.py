@@ -3,9 +3,9 @@ import cvxpylayers.utils.parse_args as pa
 
 
 class GpuCvxpyLayer(torch.nn.Module):
-    def __init__(self, problem, parameters, variables):
+    def __init__(self, problem, parameters, variables, solver=None, kwargs={}):
         super().__init__()
-        self.ctx = pa.parse_args(problem, parameters, variables)
+        self.ctx = pa.parse_args(problem, variables, parameters, solver, kwargs)
         self.P = torch.nn.Buffer(scipy_csr_to_torch_csr(ctx.reduced_P))
         self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(ctx.q))
         self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(ctx.reduced_A))
@@ -34,7 +34,7 @@ class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
     def forward(P_eval, q_eval, A_eval, cl_ctx):
         data = cl_ctx.solver.torch_to_data(P_eval, q_eval, A_eval)
-        return *data.solve()
+        return data.solve()
         
 
     @staticmethod
@@ -45,7 +45,7 @@ class _CvxpyLayer(torch.autograd.Function):
         ctx.data = data
 
     @staticmethod
-    @torch.autograd.once_differentiable
+    @torch.autograd.function.once_differentiable
     def backward(ctx, primal, dual):
         return ctx.data.torch_derivative(primal, dual)
 
@@ -65,3 +65,5 @@ def scipy_csr_to_torch_csr(scipy_csr):
     )
 
     return torch_csr
+
+CvxpyLayer = GpuCvxpyLayer

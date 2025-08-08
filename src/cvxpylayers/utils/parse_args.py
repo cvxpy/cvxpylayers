@@ -1,4 +1,7 @@
 import cvxpy as cp
+from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
+import cvxpylayers.interfaces
+import scipy.sparse
 from dataclasses import dataclass
 
 @dataclass
@@ -60,10 +63,10 @@ def parse_args(problem, variables, parameters, solver, kwargs):
        
     data, _, _ = problem.get_problem_data(solver=solver, **kwargs)
     param_prob = data[cp.settings.PARAM_PROB]
-    param_ids = [p.id for p in param_order]
+    param_ids = [p.id for p in parameters]
     cone_dims = dims_to_solver_dict(data["dims"])
 
-    solver_ctx = cvxpylayer.interfaces.get_solver_ctx(
+    solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver, 
         param_prob,
         cone_dims,

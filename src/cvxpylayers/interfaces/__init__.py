@@ -8,7 +8,7 @@ def get_solver_ctx(
         kwargs
 ):
     ctx_cls = None
-    switch solver:
+    match solver:
         case 'MPAX':
             from cvxpylayers.solver_interfaces.mpax_if import MPAX_ctx
             ctx_cls = MPAX_ctx
@@ -26,5 +26,3 @@ def get_solver_ctx(
         data.get['upper_bound'],
         kwargs
     )
-
-}
