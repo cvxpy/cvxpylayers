@@ -5,10 +5,7 @@ import numpy as np
 import diffcp
 
 class DIFFCP_ctx:
-    Q_idxs: np.ndarray
     c_slice: slice
-    Q_structure: tuple[np.ndarray, np.ndarray]
-    Q_shape: tuple[int, int]
 
     A_idxs: np.ndarray
     b_slice: slice
@@ -30,10 +27,6 @@ class DIFFCP_ctx:
     def __init__(self, objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
-        obj_csr = sp.csc_array((np.arange(obj_indices.size), obj_indices, obj_ptr), shape=(n, n)).tocsr()
-        self.Q_idxs = obj_csr.data
-        self.Q_structure = obj_csr.indices, obj_csr.indptr
-        self.Q_shape = (n, n)
 
         con_indices, con_ptr, (m, np1) = constraint_structure
         assert np1 == n + 1
@@ -41,29 +34,17 @@ class DIFFCP_ctx:
         self.b_slice = slice(con_slice_start, con_slice_start + dims.zero)
         self.h_slice = slice(con_slice_start + dims.zero, con_ptr[-1])
 
-        con_csr = sp.csc_array((np.arange(con_indices.size), con_indices, con_ptr[:-1]), shape=(m, n)).tocsr()
-        split = con_csr.indptr[dims.zero]
+        con_csc = sp.csc_array((np.arange(con_indices.size), con_indices, con_ptr[:-1]), shape=(m, n))
 
-        self.A_idxs = con_csr.data[:split]
-        self.A_structure = con_csr.indices[:split], con_csr.indptr[:dims.zero+1]
-        self.A_shape = (dims.zero, n)
+        self.A_idxs = con_csc.data
+        self.A_structure = con_csc.indices, con_csr.indptr
+        self.A_shape = (m, n)
 
-        self.G_idxs = con_csr.data[split:]
-        self.G_structure = con_csr.indices[split:], con_csr.indptr[dims.zero:] - split
-        self.G_shape = (m - dims.zero, n)
-
-        self.l = lower_bounds if lower_bounds is not None else -np.inf * np.ones(n)
-        self.u = upper_bounds if upper_bounds is not None else np.inf * np.ones(n)
+        self.dims = dims
 
         self.warm_start = options.pop('warm_start', False)
         assert self.warm_start is False
-        algorithm = options.pop('algorithm', 'raPDHG')
-        if algorithm == 'raPDHG':
-            alg = mpax.raPDHG
-        elif algorithm == 'r2HPDHG':
-            alg = mpax.r2HPDHG
-        else:
-            raise ValueError('Invalid MPAX algorithm')
+
         solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
         self.output_slices = output_slices
@@ -79,7 +60,7 @@ class DIFFCP_ctx:
             self.l,
             self.u,
         )
-        return MPAX_data(
+        return DIFFCP_data(
             model,
             self.solver
         )
@@ -89,20 +70,21 @@ class DIFFCP_ctx:
 
 
 @dataclass
-class MPAX_data:
-    model: mpax.utils.QuadraticProgrammingProblem
-    solver: Callable
+class DIFFCP_data:
+    A: sp.csc_matrix
+    b: np.ndarray
+    c: np.ndarray
+    cone_dicts: dict[str, int | list[int]]
 
     def solve(self):
-        solution = self.solver(
-            self.model
-        )
-        return solution.x, solution.y
+        x, y, s, self.diff, self.adj = diffcp.solve_and_derivative(self.A, self.b, self.c, self.cone_dict)
+        return x, y
 
     def derivative(self, primal, dual):
-        return 
+        dA, db, dc = self.adj(primal, dual, np.zeros_like(self.b))
+        return dA, db, dc
 
     def torch_derivative(self, primal, dual):
         import torch
-        quad, lin, con = derivative(self, np.array(primal), np.array(dual))
-        return torch.tensor(quad), torch.tensor(lin), torch.tensor(con)
+        con_mat, con_vec, lin = derivative(self, np.array(primal), np.array(dual))
+        return None, torch.tensor(lin), torch.tensor(con_mat), torch.tensor(con_vec)

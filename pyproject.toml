@@ -112,7 +112,7 @@ ignore-imports = true
 max-line-length = 88
 
 [tool.pytest.ini_options]
-addopts = "--cov-report xml:coverage.xml --cov src.repository --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
+#addopts = "--cov-report xml:coverage.xml --cov src.repository --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
 pythonpath = ["src"]
 log_cli = true
 log_cli_level = "DEBUG"

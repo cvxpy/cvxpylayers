@@ -404,7 +404,11 @@ def test_equality():
 
     b_th = torch.randn(n).double().requires_grad_()
 
-    torch.autograd.gradcheck(layer, b_th)
+    try:
+        torch.autograd.gradcheck(layer, b_th)
+    except Exception as e:
+        breakpoint()
+        raise e
 
 
 def test_basic_gp():

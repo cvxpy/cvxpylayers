@@ -33,7 +33,7 @@ class MPAX_ctx:
 
     output_slices: list[slice]
 
-    def __init__(self, objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, output_slices, options):
+    def __init__(self, objective_structure, constraint_structure, dims, lower_bounds, upper_bounds, options):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
         obj_csr = sp.csc_array((np.arange(obj_indices.size), obj_indices, obj_ptr), shape=(n, n)).tocsr()
@@ -72,7 +72,7 @@ class MPAX_ctx:
             raise ValueError('Invalid MPAX algorithm')
         solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
-        self.output_slices = output_slices
+        #self.output_slices = output_slices
 
     def jax_to_data(self, quad_obj_values, lin_obj_values, con_values):   # TODO: Add broadcasting  (will need jnp.tile to tile structures)
         model = mpax.create_qp(
@@ -90,6 +90,13 @@ class MPAX_ctx:
             self.solver
         )
 
+    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values):   # TODO: Add broadcasting  (will need jnp.tile to tile structures)
+        return self.jax_to_data(
+            jnp.array(quad_obj_values),
+            jnp.array(lin_obj_values),
+            jnp.array(con_values),
+        )
+
     def solution_to_outputs(self, solution):
         return (solution.primal_solution[s] for s in self.output_slices)
 
@@ -99,16 +106,22 @@ class MPAX_data:
     model: mpax.utils.QuadraticProgrammingProblem
     solver: Callable
 
-    def solve(self):
-        solution = self.solver(
-            self.model
-        )
-        return solution.x, solution.y
-
-    def derivative(self, primal, dual):
-        return 
-
-    def torch_derivative(self, primal, dual):
+    def jax_solve(self):
+        solution, fun = jax.vjp(self.solver, self.model)
+        return solution.primal_solution, solution.dual_solution, fun
+    
+    def torch_solve(self):
         import torch
-        quad, lin, con = derivative(self, jnp.array(primal), jnp.array(dual))
+        primal, dual, fun = self.jax_solve()
+        return torch.utils.dlpack.from_dlpack(primal), \
+               torch.utils.dlpack.from_dlpack(dual), \
+               fun
+
+
+    def jax_derivative(self, primal, dual, fun):
+        return fun({'x': primal, 'y': dual})
+
+    def torch_derivative(self, primal, dual, fun):
+        import torch
+        quad, lin, con = self.derivative(jnp.array(primal), jnp.array(dual), fun)
         return torch.tensor(quad), torch.tensor(lin), torch.tensor(con)

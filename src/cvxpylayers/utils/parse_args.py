@@ -1,5 +1,4 @@
 import cvxpy as cp
-from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 import cvxpylayers.interfaces
 import scipy.sparse
 from dataclasses import dataclass
@@ -10,10 +9,10 @@ class VariableRecovery:
     dual: slice | None
 
     def recover(self, primal_sol, dual_sol):
-        if primal is not None:
-            return primal_sol[primal]
-        if dual is not None:
-            return dual_sol[dual]
+        if self.primal is not None:
+            return primal_sol[self.primal]
+        if self.dual is not None:
+            return dual_sol[self.dual]
         else:
             raise RuntimeError("")
 
@@ -25,6 +24,7 @@ class LayersContext:
     q: scipy.sparse.csr_array
     reduced_A: scipy.sparse.csr_array
     cone_dims: dict[str, int | list[int]]
+    solver_ctx: object
     var_recover: list[VariableRecovery]
     user_order_to_col_order: dict[int, int]
 
@@ -60,11 +60,12 @@ def parse_args(problem, variables, parameters, solver, kwargs):
         raise ValueError("The layer's variables must be provided as "
                          "a list or tuple")
 
-       
+    if solver is None:
+        solver = 'MPAX'
     data, _, _ = problem.get_problem_data(solver=solver, **kwargs)
     param_prob = data[cp.settings.PARAM_PROB]
     param_ids = [p.id for p in parameters]
-    cone_dims = dims_to_solver_dict(data["dims"])
+    cone_dims = data["dims"]
 
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver, 
@@ -75,17 +76,22 @@ def parse_args(problem, variables, parameters, solver, kwargs):
     )
     user_order_to_col = {
         i: col for col, i in sorted(
-            [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(param_order)]
+            [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)]
         )
     }
     user_order_to_col_order = {}
     for j, i in enumerate(user_order_to_col.keys()):
         user_order_to_col_order[i]= j
 
+    q = getattr(param_prob, 'q', getattr(param_prob, 'c', None))
+
     return LayersContext(
             parameters,
-            param_prob.reduced_P, param_prob.q, param_prob.reduced_A, cone_dims,
+            param_prob.reduced_P,
+            q,
+            param_prob.reduced_A,
+            cone_dims,
             solver_ctx,
-            var_recover = [VariableRecovery(slice(start := param_prob.var_id_to_col[v.id], start + v.size)) for v in variables],
+            var_recover = [VariableRecovery(slice(start := param_prob.var_id_to_col[v.id], start + v.size), None) for v in variables],
             user_order_to_col_order=user_order_to_col_order
     )
