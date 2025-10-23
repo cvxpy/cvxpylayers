@@ -31,6 +31,8 @@ class LayersContext:
     def validate_params(self, values):
         it = iter(zip(values, self.parameters, strict=True))
         value, param = next(it)
+        if len(value.shape) == 0:
+            batch = ()
         for i in range(len(value.shape)):
             if value.shape[i:] == param.shape:
                 batch = value.shape[:i]
@@ -61,7 +63,7 @@ def parse_args(problem, variables, parameters, solver, kwargs):
                          "a list or tuple")
 
     if solver is None:
-        solver = 'MPAX'
+        solver = 'DIFFCP'
     data, _, _ = problem.get_problem_data(solver=solver, **kwargs)
     param_prob = data[cp.settings.PARAM_PROB]
     param_ids = [p.id for p in parameters]

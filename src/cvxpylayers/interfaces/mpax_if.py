@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable
 import scipy.sparse as sp
 import numpy as np
+from collections import namedtuple
 try:
     import jax
     import jax.experimental.sparse
@@ -44,6 +45,8 @@ class MPAX_ctx:
         con_indices, con_ptr, (m, np1) = constraint_structure
         assert np1 == n + 1
         con_slice_start = con_ptr[-2]
+        #TODO: Fix slice construction; if there are explicit 0s they have been
+        # reduced out and we need to reconstruct them
         self.b_slice = slice(con_slice_start, con_slice_start + dims.zero)
         self.h_slice = slice(con_slice_start + dims.zero, con_ptr[-1])
 
@@ -81,7 +84,8 @@ class MPAX_ctx:
             A:=jax.experimental.sparse.BCSR((con_values[self.A_idxs], *self.A_structure), shape=self.A_shape),
             b:=con_values[self.b_slice],
             G:=jax.experimental.sparse.BCSR((con_values[self.G_idxs], *self.G_structure), shape=self.G_shape),
-            h:=con_values[self.h_slice],
+            #h:=con_values[self.h_slice],
+            h:=jnp.zeros(6),
             self.l,
             self.u,
         )
@@ -107,8 +111,11 @@ class MPAX_data:
     solver: Callable
 
     def jax_solve(self):
-        solution, fun = jax.vjp(self.solver, self.model)
-        return solution.primal_solution, solution.dual_solution, fun
+        def solver(model):
+            solution = self.solver(model)
+            return solution.primal_solution, solution.dual_solution
+        solution, fun = jax.vjp(solver, self.model)
+        return *solution, fun
     
     def torch_solve(self):
         import torch
@@ -119,9 +126,9 @@ class MPAX_data:
 
 
     def jax_derivative(self, primal, dual, fun):
-        return fun({'x': primal, 'y': dual})
+        return fun((primal, dual))
 
     def torch_derivative(self, primal, dual, fun):
         import torch
-        quad, lin, con = self.derivative(jnp.array(primal), jnp.array(dual), fun)
+        quad, lin, con = self.jax_derivative(jnp.array(primal), jnp.array(dual), fun)
         return torch.tensor(quad), torch.tensor(lin), torch.tensor(con)
