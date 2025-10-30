@@ -12,7 +12,8 @@ class GpuCvxpyLayer(torch.nn.Module):
         else:
             self.P = None
         self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.q))
-        self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat))
+        self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat[:, :-1]))
+        self.b = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat[:, -1]))
 
 
     def forward(self, *params):
@@ -25,13 +26,14 @@ class GpuCvxpyLayer(torch.nn.Module):
         P_eval = self.P @ p_stack if self.P is not None else None
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
-        primal, dual, _, _ = _CvxpyLayer.apply(P_eval, q_eval, A_eval, self.ctx)
+        b_eval = self.A @ p_stack
+        primal, dual, _, _ = _CvxpyLayer.apply(P_eval, q_eval, A_eval, b_eval, self.ctx)
         return tuple(var.recover(primal, dual) for var in self.ctx.var_recover)
 
 class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
-    def forward(P_eval, q_eval, A_eval, cl_ctx):
-        data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
+    def forward(P_eval, q_eval, A_eval, b_eval, cl_ctx):
+        data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval, b_eval)
         return *data.torch_solve(), data
 
     @staticmethod
@@ -45,7 +47,9 @@ class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
     @torch.autograd.function.once_differentiable
     def backward(ctx, primal, dual, backwards, data):
-        return ctx.data.torch_derivative(primal, dual, ctx.backwards)
+        dP, dq, dA, = ctx.data.torch_derivative(primal, dual, ctx.backwards)
+        breakpoint()
+        return dP, dq, dA, None
 
 
 def reshape_fortran(x, shape):

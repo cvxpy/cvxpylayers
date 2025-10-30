@@ -3,6 +3,7 @@ from typing import Callable
 import scipy.sparse as sp
 import numpy as np
 import diffcp
+from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict 
 
 class DIFFCP_ctx:
     c_slice: slice
@@ -33,13 +34,13 @@ class DIFFCP_ctx:
         self.dims = dims
 
 
-    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values):
+    def torch_to_data(self, quad_obj_values, lin_obj_values, mat_con_values, lin_con_values):
         A_aug = sp.csc_matrix((con_values.cpu().numpy(), *self.A_structure), shape=self.A_shape)
         return DIFFCP_data(
             A=A_aug[:, :-1],
             b=A_aug[:, -1].toarray().flatten(),
-            c=lin_obj_values[:-1],
-            cone_dict=self.dims,
+            c=lin_obj_values[:-1].cpu().numpy(),
+            cone_dict=dims_to_solver_dict(self.dims),
         )
 
     def solution_to_outputs(self, solution):
@@ -55,14 +56,15 @@ class DIFFCP_data:
 
     def torch_solve(self):
         import torch
-        x, y, s, self.diff, self.adj = diffcp.solve_and_derivative(self.A, self.b, self.c, self.cone_dict)
-        return torch.from_numpy(x), torch.from_numpy(y)
+        print(self.cone_dict)
+        x, y, s, _, adj = diffcp.solve_and_derivative(self.A, self.b, self.c, self.cone_dict)
+        return torch.from_numpy(x), torch.from_numpy(y), adj
 
-    def derivative(self, primal, dual):
-        dA, db, dc = self.adj(primal, dual, np.zeros_like(self.b))
-        return dA, db, dc
+    def derivative(self, primal, dual, adj):
+        dA, db, dc = adj(primal, dual, np.zeros_like(self.b))
+        return dA.data, db, dc
 
-    def torch_derivative(self, primal, dual):
+    def torch_derivative(self, primal, dual, adj):
         import torch
-        con_mat, con_vec, lin = derivative(self, np.array(primal), np.array(dual))
-        return None, torch.tensor(lin), torch.tensor(con_mat), torch.tensor(con_vec)
+        con_mat, con_vec, lin = self.derivative(np.array(primal), np.array(dual), adj)
+        return None, torch.hstack([torch.tensor(lin), torch.tensor(0.0)]), torch.hstack([torch.tensor(con_mat), torch.tensor(con_vec)])
