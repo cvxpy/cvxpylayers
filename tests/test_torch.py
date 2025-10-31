@@ -105,8 +105,8 @@ def test_least_squares():
             (A.t() @ b).unsqueeze(1))
     x_lstsq = lstsq(A_th, b_th)
 
-    grad_A_cvxpy, grad_b_cvxpy = grad(x.sum(), [A_th, b_th])
     grad_A_lstsq, grad_b_lstsq = grad(x_lstsq.sum(), [A_th, b_th])
+    grad_A_cvxpy, grad_b_cvxpy = grad(x.sum(), [A_th, b_th])
 
     assert torch.allclose(grad_A_cvxpy, grad_A_lstsq, atol=1e-6)
     assert torch.allclose(grad_b_cvxpy, grad_b_lstsq.squeeze(), atol=1e-6)
