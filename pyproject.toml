@@ -140,4 +140,4 @@ known-first-party = ["cvxpylayers"]
 max-complexity = 25
 
 [tool.uv.sources]
-cvxpy = { path = "../../Research/cvxpy" }
+cvxpy = { git = "https://github.com/cvxpy/cvxpy.git", branch = "master" }

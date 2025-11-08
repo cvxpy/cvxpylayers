@@ -42,15 +42,34 @@ class DIFFCP_ctx:
         self.dims = dims
 
     def torch_to_data(self, quad_obj_values, lin_obj_values, con_values):
-        A_aug = sp.csc_matrix(
-            (con_values.cpu().numpy(), *self.A_structure), shape=self.A_shape
-        )
+        # Detect batch size
+        if con_values.dim() == 1:
+            batch_size = 1
+            # Add batch dimension for uniform handling
+            con_values = con_values.unsqueeze(1)
+            lin_obj_values = lin_obj_values.unsqueeze(1)
+        else:
+            batch_size = con_values.shape[1]
+
+        # Build lists for all batch elements
+        As, bs, cs, b_idxs = [], [], [], []
+        for i in range(batch_size):
+            A_aug = sp.csc_matrix(
+                (con_values[:, i].cpu().numpy(), *self.A_structure),
+                shape=self.A_shape
+            )
+            As.append(-A_aug[:, :-1])  # Negate A to match DIFFCP convention
+            bs.append(A_aug[:, -1].toarray().flatten())
+            cs.append(lin_obj_values[:-1, i].cpu().numpy())
+            b_idxs.append(self.b_idx)
+
         return DIFFCP_data(
-            A=-A_aug[:, :-1],  # Negate A to match DIFFCP convention
-            b=A_aug[:, -1].toarray().flatten(),
-            c=lin_obj_values[:-1].cpu().numpy(),
-            b_idx=self.b_idx,
+            As=As,
+            bs=bs,
+            cs=cs,
+            b_idxs=b_idxs,
             cone_dict=dims_to_solver_dict(self.dims),
+            batch_size=batch_size,
         )
 
     def solution_to_outputs(self, solution):
@@ -59,33 +78,62 @@ class DIFFCP_ctx:
 
 @dataclass
 class DIFFCP_data:
-    A: sp.csc_matrix
-    b: np.ndarray
-    c: np.ndarray
-    b_idx: np.ndarray
+    As: list[sp.csc_matrix]
+    bs: list[np.ndarray]
+    cs: list[np.ndarray]
+    b_idxs: list[np.ndarray]
     cone_dict: dict[str, int | list[int]]
+    batch_size: int
 
-    def torch_solve(self):
+    def torch_solve(self, solver_args=None):
         import torch
+
+        if solver_args is None:
+            solver_args = {}
 
         print(self.cone_dict)
-        x, y, s, _, adj = diffcp.solve_and_derivative(
-            self.A, self.b, self.c, self.cone_dict
+        # Always use batch solve
+        xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
+            self.As, self.bs, self.cs, [self.cone_dict] * self.batch_size,
+            **solver_args
         )
-        return torch.from_numpy(x), torch.from_numpy(y), adj
+        # Stack results into batched tensors
+        primal = torch.stack([torch.from_numpy(x) for x in xs])
+        dual = torch.stack([torch.from_numpy(y) for y in ys])
+        return primal, dual, adj_batch
 
-    def derivative(self, primal, dual, adj):
-        dA, db, dc = adj(primal, dual, np.zeros_like(self.b))
-        return np.hstack([dA.data, db[self.b_idx]]), dc
-
-    def torch_derivative(self, primal, dual, adj):
+    def torch_derivative(self, primal, dual, adj_batch):
         import torch
 
-        dA, db, dc = adj(primal.numpy(), dual.numpy(), np.zeros_like(self.b))
-        # Negate dA because A was negated in forward pass, but not db (b was not negated)
-        con = np.hstack([-dA.data, db[self.b_idx]])
+        # Split batched tensors into lists
+        dxs = [primal[i].numpy() for i in range(self.batch_size)]
+        dys = [dual[i].numpy() for i in range(self.batch_size)]
+        dss = [np.zeros_like(self.bs[i]) for i in range(self.batch_size)]
+
+        # Call batch adjoint
+        dAs, dbs, dcs = adj_batch(dxs, dys, dss)
+
+        # Aggregate gradients from each batch element
+        dq_batch = []
+        dA_batch = []
+        for i in range(self.batch_size):
+            # Negate dA because A was negated in forward pass, but not db (b was not negated)
+            con_grad = np.hstack([-dAs[i].data, dbs[i][self.b_idxs[i]]])
+            lin_grad = np.hstack([dcs[i], np.array([0.0])])
+            dA_batch.append(con_grad)
+            dq_batch.append(lin_grad)
+
+        # Stack into shape (num_entries, batch_size)
+        dq_stacked = torch.stack([torch.from_numpy(g) for g in dq_batch]).T
+        dA_stacked = torch.stack([torch.from_numpy(g) for g in dA_batch]).T
+
+        # Squeeze batch dimension for unbatched case
+        if self.batch_size == 1:
+            dq_stacked = dq_stacked.squeeze(1)
+            dA_stacked = dA_stacked.squeeze(1)
+
         return (
             None,
-            torch.hstack([torch.from_numpy(dc), torch.tensor(0.0)]),
-            torch.from_numpy(con),
+            dq_stacked,
+            dA_stacked,
         )

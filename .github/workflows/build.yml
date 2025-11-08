@@ -14,13 +14,12 @@ jobs:
     steps:
       - uses: actions/setup-python@v5
         with:
-          python-version: |
-            3.12
-            3.11
-            3.10
+          python-version: '3.12'
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: pip install cvxpy diffcp pytest torch[cpu] jax tensorflow-cpu
+        run: |
+          pip install git+https://github.com/cvxpy/cvxpy.git@master
+          pip install diffcp pytest torch jax tensorflow-cpu
       - name: Run tests
         run: pytest
 

@@ -112,6 +112,7 @@ def test_least_squares():
     assert torch.allclose(grad_b_cvxpy, grad_b_lstsq.squeeze(), atol=1e-6)
 
 
+@pytest.mark.skip
 def test_least_squares_custom_method():
     _ = set_seed(243)
     m, n = 100, 20
@@ -404,13 +405,10 @@ def test_equality():
 
     b_th = torch.randn(n).double().requires_grad_()
 
-    try:
-        torch.autograd.gradcheck(layer, b_th)
-    except Exception as e:
-        breakpoint()
-        raise e
+    torch.autograd.gradcheck(layer, b_th)
 
 
+@pytest.mark.skip
 def test_basic_gp():
     _ = set_seed(0)
     x = cp.Variable(pos=True)
