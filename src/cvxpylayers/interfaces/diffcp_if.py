@@ -85,13 +85,17 @@ class DIFFCP_data:
     cone_dict: dict[str, int | list[int]]
     batch_size: int
 
-    def torch_solve(self):
+    def torch_solve(self, solver_args=None):
         import torch
+
+        if solver_args is None:
+            solver_args = {}
 
         print(self.cone_dict)
         # Always use batch solve
         xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
-            self.As, self.bs, self.cs, [self.cone_dict] * self.batch_size
+            self.As, self.bs, self.cs, [self.cone_dict] * self.batch_size,
+            **solver_args
         )
         # Stack results into batched tensors
         primal = torch.stack([torch.from_numpy(x) for x in xs])

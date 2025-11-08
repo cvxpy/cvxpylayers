@@ -45,7 +45,7 @@ class GpuCvxpyLayer(torch.nn.Module):
         P_eval = self.P @ p_stack if self.P is not None else None
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
-        primal, dual, _, _ = _CvxpyLayer.apply(P_eval, q_eval, A_eval, self.ctx)
+        primal, dual, _, _ = _CvxpyLayer.apply(P_eval, q_eval, A_eval, self.ctx, solver_args)
         results = tuple(var.recover(primal, dual) for var in self.ctx.var_recover)
 
         # Squeeze batch dimension for unbatched inputs (matching master's approach)
@@ -57,9 +57,9 @@ class GpuCvxpyLayer(torch.nn.Module):
 
 class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
-    def forward(P_eval, q_eval, A_eval, cl_ctx):
+    def forward(P_eval, q_eval, A_eval, cl_ctx, solver_args):
         data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
-        return *data.torch_solve(), data
+        return *data.torch_solve(solver_args), data
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
@@ -75,7 +75,7 @@ class _CvxpyLayer(torch.autograd.Function):
             dq,
             dA,
         ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
-        return dP, dq, dA, None
+        return dP, dq, dA, None, None
 
 
 def reshape_fortran(x, shape):

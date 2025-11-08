@@ -108,8 +108,8 @@ def test_least_squares():
     grad_A_lstsq, grad_b_lstsq = grad(x_lstsq.sum(), [A_th, b_th])
     grad_A_cvxpy, grad_b_cvxpy = grad(x.sum(), [A_th, b_th])
 
-    assert torch.allclose(grad_A_cvxpy, grad_A_lstsq, atol=1e-4)
-    assert torch.allclose(grad_b_cvxpy, grad_b_lstsq.squeeze(), atol=1e-5)
+    assert torch.allclose(grad_A_cvxpy, grad_A_lstsq, atol=1e-6)
+    assert torch.allclose(grad_b_cvxpy, grad_b_lstsq.squeeze(), atol=1e-6)
 
 
 @pytest.mark.skip
@@ -362,8 +362,8 @@ def test_broadcasting():
     grad_A_cvxpy, grad_b_cvxpy = grad(x.sum(), [A_th, b_th])
     grad_A_lstsq, grad_b_lstsq = grad(x_lstsq.sum(), [A_th, b_th_0])
 
-    assert torch.allclose(grad_A_cvxpy / 2., grad_A_lstsq, atol=1e-4)
-    assert torch.allclose(grad_b_cvxpy[0], grad_b_lstsq, atol=1e-5)
+    assert torch.allclose(grad_A_cvxpy / 2., grad_A_lstsq, atol=1e-6)
+    assert torch.allclose(grad_b_cvxpy[0], grad_b_lstsq, atol=1e-6)
 
 
 def test_shared_parameter():
