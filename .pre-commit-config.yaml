@@ -12,12 +12,12 @@ repos:
       # Run the formatter
       - id: ruff-format
 
-  # TODO: Add pyright after ruff is working well
-  # # Pyright - Static type checker
-  # - repo: https://github.com/RobertCraigie/pyright-python
-  #   rev: v1.1.390
-  #   hooks:
-  #     - id: pyright
+  # Pyright - Static type checker (only on specific files for now)
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.390
+    hooks:
+      - id: pyright
+        files: ^(src/cvxpylayers/utils/parse_args\.py|tests/test_parse_args\.py)$
 
   # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
