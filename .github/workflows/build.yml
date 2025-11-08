@@ -20,7 +20,9 @@ jobs:
             3.10
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: pip install cvxpy diffcp pytest torch[cpu] jax tensorflow-cpu
+        run: |
+          pip install git+https://github.com/cvxpy/cvxpy.git@master
+          pip install diffcp pytest torch jax tensorflow-cpu
       - name: Run tests
         run: pytest
 
