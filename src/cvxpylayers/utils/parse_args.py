@@ -1,21 +1,37 @@
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import cvxpy as cp
 import scipy.sparse
 
 import cvxpylayers.interfaces
 
+if TYPE_CHECKING:
+    import torch
+
 
 class SolverData(Protocol):
     """Protocol for data objects returned by solver context."""
 
-    def torch_solve(self, solver_args: dict[str, Any] | None = None) -> tuple[Any, Any, Any]:
-        """Solve the problem using torch backend."""
+    def torch_solve(
+        self, solver_args: dict[str, Any] | None = None
+    ) -> tuple["torch.Tensor", "torch.Tensor", Any]:
+        """Solve the problem using torch backend.
+
+        Returns:
+            tuple of (primal, dual, adj_batch) where primal and dual are torch tensors
+            and adj_batch is a solver-specific adjoint/backward object.
+        """
         ...
 
-    def torch_derivative(self, primal: Any, dual: Any, adj_batch: Any) -> tuple[Any, Any, Any]:
-        """Compute derivatives using torch backend."""
+    def torch_derivative(
+        self, primal: "torch.Tensor", dual: "torch.Tensor", adj_batch: Any
+    ) -> tuple["torch.Tensor | None", "torch.Tensor", "torch.Tensor"]:
+        """Compute derivatives using torch backend.
+
+        Returns:
+            tuple of (dP, dq, dA) gradients as torch tensors (dP can be None).
+        """
         ...
 
 
@@ -23,7 +39,10 @@ class SolverContext(Protocol):
     """Protocol for solver context objects."""
 
     def torch_to_data(
-        self, quad_obj_values: Any, lin_obj_values: Any, con_values: Any
+        self,
+        quad_obj_values: "torch.Tensor | None",
+        lin_obj_values: "torch.Tensor",
+        con_values: "torch.Tensor",
     ) -> SolverData:
         """Convert torch tensors to solver data format."""
         ...
@@ -40,7 +59,10 @@ class VariableRecovery:
             return primal_sol[..., self.primal]
         if self.dual is not None:
             return dual_sol[..., self.dual]
-        raise RuntimeError("")
+        raise RuntimeError(
+            "Invalid VariableRecovery: both primal and dual slices are None. "
+            "At least one must be set to recover variable values."
+        )
 
 
 @dataclass
