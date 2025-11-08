@@ -46,7 +46,7 @@ class DIFFCP_ctx:
             (con_values.cpu().numpy(), *self.A_structure), shape=self.A_shape
         )
         return DIFFCP_data(
-            A=A_aug[:, :-1],
+            A=-A_aug[:, :-1],  # Negate A to match DIFFCP convention
             b=A_aug[:, -1].toarray().flatten(),
             c=lin_obj_values[:-1].cpu().numpy(),
             b_idx=self.b_idx,
@@ -81,9 +81,11 @@ class DIFFCP_data:
     def torch_derivative(self, primal, dual, adj):
         import torch
 
-        con, lin = self.derivative(primal.numpy(), dual.numpy(), adj)
+        dA, db, dc = adj(primal.numpy(), dual.numpy(), np.zeros_like(self.b))
+        # Negate dA because A was negated in forward pass, but not db (b was not negated)
+        con = np.hstack([-dA.data, db[self.b_idx]])
         return (
             None,
-            torch.hstack([torch.from_numpy(lin), torch.tensor(0.0)]),
+            torch.hstack([torch.from_numpy(dc), torch.tensor(0.0)]),
             torch.from_numpy(con),
         )
