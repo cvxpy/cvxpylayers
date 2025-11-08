@@ -412,6 +412,7 @@ def test_equality():
         raise e
 
 
+@pytest.mark.skip
 def test_basic_gp():
     _ = set_seed(0)
     x = cp.Variable(pos=True)

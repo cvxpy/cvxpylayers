@@ -29,6 +29,7 @@ class LayersContext:
     solver_ctx: object
     var_recover: list[VariableRecovery]
     user_order_to_col_order: dict[int, int]
+    batch_sizes: list[int] = None  # Track which params are batched (0=unbatched, N=batch size)
 
     def validate_params(self, values):
         if len(values) != len(self.parameters):
@@ -36,19 +37,50 @@ class LayersContext:
                 f"A tensor must be provided for each CVXPY parameter; "
                 f"received {len(values)} tensors, expected {len(self.parameters)}"
             )
-        it = iter(zip(values, self.parameters, strict=True))
-        value, param = next(it)
-        if len(value.shape) == 0:
-            batch = ()
-        for i in range(len(value.shape)):
-            if value.shape[i:] == param.shape:
-                batch = value.shape[:i]
-        for value, param in it:
-            if value.shape != batch + param.shape:
+
+        # Determine batch size from all parameters
+        batch_sizes = []
+        for i, (value, param) in enumerate(zip(values, self.parameters)):
+            # Check if value has the right shape (with or without batch dimension)
+            if len(value.shape) == len(param.shape):
+                # No batch dimension for this parameter
+                if value.shape != param.shape:
+                    raise ValueError(
+                        f"Invalid parameter shape for parameter {i}. "
+                        f"Expected: {param.shape}, Got: {value.shape}"
+                    )
+                batch_sizes.append(0)
+            elif len(value.shape) == len(param.shape) + 1:
+                # Has batch dimension
+                if value.shape[1:] != param.shape:
+                    raise ValueError(
+                        f"Invalid parameter shape for parameter {i}. "
+                        f"Expected batched shape: (batch_size, {', '.join(map(str, param.shape))}), "
+                        f"Got: {value.shape}"
+                    )
+                batch_sizes.append(value.shape[0])
+            else:
                 raise ValueError(
-                    f"Invalid parameter shape. Expected: {batch + param.shape}\nGot: {value.shape}"
+                    f"Invalid parameter dimensionality for parameter {i}. "
+                    f"Expected {len(param.shape)} or {len(param.shape) + 1} dimensions, "
+                    f"Got: {len(value.shape)} dimensions"
                 )
-        return batch
+
+        # Check that all non-zero batch sizes are the same
+        nonzero_batch_sizes = [b for b in batch_sizes if b > 0]
+        if nonzero_batch_sizes:
+            batch_size = nonzero_batch_sizes[0]
+            if not all(b == batch_size for b in nonzero_batch_sizes):
+                raise ValueError(
+                    f"Inconsistent batch sizes. Expected all batched parameters to have "
+                    f"the same batch size, but got: {batch_sizes}"
+                )
+            # Store batch_sizes for use in forward pass
+            self.batch_sizes = batch_sizes
+            return (batch_size,)
+        else:
+            self.batch_sizes = batch_sizes
+            return ()
 
 
 def parse_args(

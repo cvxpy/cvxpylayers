@@ -22,13 +22,26 @@ class GpuCvxpyLayer(torch.nn.Module):
         batch = self.ctx.validate_params(params)
         flattened_params = (len(params) + 1) * [None]
         for i, param in enumerate(params):
-            flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
-                param, batch + (-1,)
-            )
+            # Check if this parameter is batched or needs broadcasting
+            if self.ctx.batch_sizes[i] == 0 and batch:
+                # Unbatched parameter - expand to match batch size
+                # Add batch dimension by repeating
+                param_expanded = param.unsqueeze(0).expand(batch + param.shape)
+                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
+                    param_expanded, batch + (-1,)
+                )
+            else:
+                # Already batched or no batch dimension needed
+                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
+                    param, batch + (-1,)
+                )
         flattened_params[-1] = torch.ones(
             batch + (1,), dtype=params[0].dtype, device=params[0].device
         )
         p_stack = torch.cat(flattened_params, -1)
+        # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
+        if batch:
+            p_stack = p_stack.T
         P_eval = self.P @ p_stack if self.P is not None else None
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
