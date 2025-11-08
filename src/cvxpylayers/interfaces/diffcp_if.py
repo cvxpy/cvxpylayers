@@ -81,9 +81,11 @@ class DIFFCP_data:
     def torch_derivative(self, primal, dual, adj):
         import torch
 
-        con, lin = self.derivative(primal.numpy(), dual.numpy(), adj)
+        dA, db, dc = adj(primal.numpy(), dual.numpy(), np.zeros_like(self.b))
+        # Negate dA because A was negated in forward pass, but not db (b was not negated)
+        con = np.hstack([-dA.data, db[self.b_idx]])
         return (
             None,
-            torch.hstack([torch.from_numpy(lin), torch.tensor(0.0)]),
+            torch.hstack([torch.from_numpy(dc), torch.tensor(0.0)]),
             torch.from_numpy(con),
         )
