@@ -270,7 +270,7 @@ def test_not_enough_parameters():
     lam2 = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must exactly match problem.parameters"):
         layer = CvxpyLayer(prob, [lam], [x])  # noqa: F841
 
 
@@ -281,11 +281,11 @@ def test_not_enough_parameters_at_call_time():
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
     layer = CvxpyLayer(prob, [lam, lam2], [x])
+    lam_jax = jnp.ones(1)
     with pytest.raises(
         ValueError,
         match="An array must be provided for each CVXPY parameter.*",
     ):
-        lam_jax = jnp.ones(1)
         layer(lam_jax)
 
 
@@ -295,7 +295,7 @@ def test_too_many_variables():
     lam = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be a subset of problem.variables"):
         layer = CvxpyLayer(prob, [lam], [x, y])  # noqa: F841
 
 
@@ -334,28 +334,28 @@ def test_incorrect_parameter_shape():
     A_th = random.normal(k1, shape=(32, m, n))
     b_th = random.normal(k2, shape=(20, m))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Inconsistent batch sizes"):
         prob_th(A_th, b_th)
 
     key, k1, k2 = random.split(key, num=3)
     A_th = random.normal(k1, shape=(32, m, n))
     b_th = random.normal(k2, shape=(32, 2 * m))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter shape"):
         prob_th(A_th, b_th)
 
     key, k1, k2 = random.split(key, num=3)
     A_th = random.normal(k1, shape=(m, n))
     b_th = random.normal(k2, shape=(2 * m,))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter shape"):
         prob_th(A_th, b_th)
 
     key, k1, k2 = random.split(key, num=3)
     A_th = random.normal(k1, shape=(32, m, n))
     b_th = random.normal(k2, shape=(32, 32, m))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter dimensionality"):
         prob_th(A_th, b_th)
 
 

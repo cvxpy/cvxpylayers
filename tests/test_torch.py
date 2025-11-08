@@ -259,7 +259,7 @@ def test_not_enough_parameters():
     lam2 = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must exactly match problem.parameters"):
         layer = CvxpyLayer(prob, [lam], [x])  # noqa: F841
 
 
@@ -284,7 +284,7 @@ def test_too_many_variables():
     lam = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be a subset of problem.variables"):
         layer = CvxpyLayer(prob, [lam], [x, y])  # noqa: F841
 
 
@@ -322,25 +322,25 @@ def test_incorrect_parameter_shape():
     A_th = torch.randn(32, m, n).double()
     b_th = torch.randn(20, m).double()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Inconsistent batch sizes"):
         prob_th(A_th, b_th)
 
     A_th = torch.randn(32, m, n).double()
     b_th = torch.randn(32, 2 * m).double()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter shape"):
         prob_th(A_th, b_th)
 
     A_th = torch.randn(m, n).double()
     b_th = torch.randn(2 * m).double()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter shape"):
         prob_th(A_th, b_th)
 
     A_th = torch.randn(32, m, n).double()
     b_th = torch.randn(32, 32, m).double()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid parameter dimensionality"):
         prob_th(A_th, b_th)
 
 

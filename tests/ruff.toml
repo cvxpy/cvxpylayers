@@ -1,10 +1,9 @@
 # This extend our general Ruff rules specifically for tests
 extend = "../pyproject.toml"
 
-# TODO: Re-enable PT (pytest-style) rules after fixing existing violations
-# lint.extend-select = [
-#     "PT", # Use @pytest.fixture without parentheses
-# ]
+lint.extend-select = [
+    "PT", # Use @pytest.fixture without parentheses
+]
 
 lint.extend-ignore = [
     "S101",    # Use of assert detected. As these are tests...
