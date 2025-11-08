@@ -31,6 +31,11 @@ class LayersContext:
     user_order_to_col_order: dict[int, int]
 
     def validate_params(self, values):
+        if len(values) != len(self.parameters):
+            raise ValueError(
+                f"A tensor must be provided for each CVXPY parameter; "
+                f"received {len(values)} tensors, expected {len(self.parameters)}"
+            )
         it = iter(zip(values, self.parameters, strict=True))
         value, param = next(it)
         if len(value.shape) == 0:
@@ -40,7 +45,7 @@ class LayersContext:
                 batch = value.shape[:i]
         for value, param in it:
             if value.shape != batch + param.shape:
-                raise RuntimeError(
+                raise ValueError(
                     f"Invalid parameter shape. Expected: {batch + param.shape}\nGot: {value.shape}"
                 )
         return batch
