@@ -46,7 +46,7 @@ class DIFFCP_ctx:
             (con_values.cpu().numpy(), *self.A_structure), shape=self.A_shape
         )
         return DIFFCP_data(
-            A=A_aug[:, :-1],
+            A=-A_aug[:, :-1],  # Negate A to match DIFFCP convention
             b=A_aug[:, -1].toarray().flatten(),
             c=lin_obj_values[:-1].cpu().numpy(),
             b_idx=self.b_idx,

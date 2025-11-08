@@ -15,7 +15,7 @@ class GpuCvxpyLayer(torch.nn.Module):
             )
         else:
             self.P = None
-        self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.q))
+        self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
         self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat))
 
     def forward(self, *params, solver_args={}):
@@ -51,7 +51,6 @@ class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
     @torch.autograd.function.once_differentiable
     def backward(ctx, primal, dual, backwards, data):
-        breakpoint()
         (
             dP,
             dq,
