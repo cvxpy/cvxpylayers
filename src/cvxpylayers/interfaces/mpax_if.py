@@ -43,7 +43,8 @@ class MPAX_ctx:
         dims,
         lower_bounds,
         upper_bounds,
-        options,
+        output_slices,
+        options=None,
     ):
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
@@ -80,6 +81,8 @@ class MPAX_ctx:
         self.l = lower_bounds if lower_bounds is not None else -jnp.inf * jnp.ones(n)
         self.u = upper_bounds if upper_bounds is not None else jnp.inf * jnp.ones(n)
 
+        if options is None:
+            options = {}
         self.warm_start = options.pop("warm_start", False)
         assert self.warm_start is False
         algorithm = options.pop("algorithm", "raPDHG")
@@ -91,7 +94,7 @@ class MPAX_ctx:
             raise ValueError("Invalid MPAX algorithm")
         solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
-        # self.output_slices = output_slices
+        self.output_slices = output_slices
 
     def jax_to_data(
         self,
@@ -109,13 +112,12 @@ class MPAX_ctx:
                 (con_values[self.A_idxs], *self.A_structure),
                 shape=self.A_shape,
             ),
-            b := con_values[self.b_slice],
+            b := -con_values[self.b_slice],  # Negate b
             G := jax.experimental.sparse.BCSR(
                 (con_values[self.G_idxs], *self.G_structure),
                 shape=self.G_shape,
             ),
-            # h:=con_values[self.h_slice],
-            h := jnp.zeros(6),
+            h := -con_values[self.h_slice],  # Negate h
             self.l,
             self.u,
         )
