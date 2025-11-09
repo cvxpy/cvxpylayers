@@ -8,8 +8,7 @@
     "**/.venv",
     "**/node_modules",
     "build",
-    "dist",
-    "src/cvxpylayers/interfaces/mpax_if.py"
+    "dist"
   ],
   "venvPath": ".",
   "venv": ".venv",

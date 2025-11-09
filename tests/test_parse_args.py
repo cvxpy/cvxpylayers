@@ -80,7 +80,7 @@ class TestLayersContextValidateParams:
         p = cp.Parameter(2)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
 
-        ctx = parse_args(problem, [x], [p], "DIFFCP", {})
+        ctx = parse_args(problem, [x], [p], "DIFFCP")
         return ctx
 
     def test_validate_params_count_mismatch(self, simple_context):
@@ -132,7 +132,7 @@ class TestLayersContextValidateParams:
         p2 = cp.Parameter(3)
         # Problem must use both parameters
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p1) + cp.sum(p2)), [x >= 0])
-        ctx = parse_args(problem, [x], [p1, p2], "DIFFCP", {})
+        ctx = parse_args(problem, [x], [p1, p2], "DIFFCP")
 
         # Try to validate with different batch sizes
         param1_batched = torch.tensor([[1.0, 2.0], [3.0, 4.0]])  # batch size 2
@@ -151,7 +151,7 @@ class TestLayersContextValidateParams:
         p2 = cp.Parameter(3)
         # Problem must use both parameters
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p1) + cp.sum(p2)), [x >= 0])
-        ctx = parse_args(problem, [x], [p1, p2], "DIFFCP", {})
+        ctx = parse_args(problem, [x], [p1, p2], "DIFFCP")
 
         # Mix batched and unbatched
         param1_batched = torch.tensor([[1.0, 2.0], [3.0, 4.0]])  # batch size 2
@@ -171,7 +171,7 @@ class TestParseArgs:
         p = cp.Parameter(2)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
 
-        ctx = parse_args(problem, [x], [p], "DIFFCP", {})
+        ctx = parse_args(problem, [x], [p], "DIFFCP")
 
         assert isinstance(ctx, LayersContext)
         assert len(ctx.parameters) == 1
@@ -187,7 +187,7 @@ class TestParseArgs:
         problem = cp.Problem(cp.Minimize(cp.sum(x / p)), [x >= 0])
 
         with pytest.raises(ValueError, match="Problem must be DPP"):
-            parse_args(problem, [x], [p], "DIFFCP", {})
+            parse_args(problem, [x], [p], "DIFFCP")
 
     def test_parse_args_parameter_mismatch(self):
         """Test that parameter mismatch raises ValueError."""
@@ -198,7 +198,7 @@ class TestParseArgs:
 
         # Try to use p2 which is not in the problem
         with pytest.raises(ValueError, match="must exactly match problem.parameters"):
-            parse_args(problem, [x], [p2], "DIFFCP", {})
+            parse_args(problem, [x], [p2], "DIFFCP")
 
     def test_parse_args_variable_not_in_problem(self):
         """Test that variables not in problem raise ValueError."""
@@ -209,7 +209,7 @@ class TestParseArgs:
 
         # y is not in the problem
         with pytest.raises(ValueError, match="must be a subset of problem.variables"):
-            parse_args(problem, [y], [p], "DIFFCP", {})
+            parse_args(problem, [y], [p], "DIFFCP")
 
     def test_parse_args_parameters_not_list(self):
         """Test that parameters must be list or tuple."""
@@ -219,7 +219,7 @@ class TestParseArgs:
 
         # Pass parameters as a set instead of list/tuple
         with pytest.raises(ValueError, match="must be provided as a list or tuple"):
-            parse_args(problem, [x], {p}, "DIFFCP", {})  # type: ignore[arg-type]
+            parse_args(problem, [x], {p}, "DIFFCP")  # type: ignore[arg-type]
 
     def test_parse_args_variables_not_list(self):
         """Test that variables must be list or tuple."""
@@ -229,7 +229,7 @@ class TestParseArgs:
 
         # Pass variables as a set instead of list/tuple
         with pytest.raises(ValueError, match="must be provided as a list or tuple"):
-            parse_args(problem, {x}, [p], "DIFFCP", {})  # type: ignore[arg-type]
+            parse_args(problem, {x}, [p], "DIFFCP")  # type: ignore[arg-type]
 
     def test_parse_args_default_solver(self):
         """Test that solver defaults to DIFFCP when None."""
@@ -237,7 +237,7 @@ class TestParseArgs:
         p = cp.Parameter(2)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
 
-        ctx = parse_args(problem, [x], [p], None, {})
+        ctx = parse_args(problem, [x], [p], None)
         # Should not raise an error and should work with DIFFCP
         assert isinstance(ctx, LayersContext)
 
@@ -252,7 +252,7 @@ class TestParseArgs:
             [x >= 0, y >= 0],
         )
 
-        ctx = parse_args(problem, [x, y], [p, q], "DIFFCP", {})
+        ctx = parse_args(problem, [x, y], [p, q], "DIFFCP")
 
         assert len(ctx.var_recover) == 2
         # Check that slices are correct
@@ -268,7 +268,7 @@ class TestParseArgs:
         p = cp.Parameter(5)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
 
-        ctx = parse_args(problem, [x], [p], "DIFFCP", {})
+        ctx = parse_args(problem, [x], [p], "DIFFCP")
 
         # Should have one VariableRecovery
         assert len(ctx.var_recover) == 1
