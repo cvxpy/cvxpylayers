@@ -86,7 +86,6 @@ class DIFFCP_data:
         if solver_args is None:
             solver_args = {}
 
-        print(self.cone_dict)
         # Always use batch solve
         xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
             self.As,
