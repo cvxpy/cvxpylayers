@@ -205,7 +205,10 @@ class MPAX_data:
         )
 
     def jax_derivative(self, primal, dual, fun):
-        return fun((primal, dual))
+        raise NotImplementedError(
+            "Backward pass is not implemented for MPAX solver. "
+            "Use solver='DIFFCP' for differentiable optimization layers."
+        )
 
     def torch_derivative(self, primal, dual, adj_batch):
         import torch
