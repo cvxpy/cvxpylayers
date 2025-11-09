@@ -40,13 +40,15 @@ class DIFFCP_ctx:
         self.dims = dims
 
     def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
-        # Detect batch size
+        # Detect batch size and whether input was originally unbatched
         if con_values.dim() == 1:
+            originally_unbatched = True
             batch_size = 1
             # Add batch dimension for uniform handling
             con_values = con_values.unsqueeze(1)
             lin_obj_values = lin_obj_values.unsqueeze(1)
         else:
+            originally_unbatched = False
             batch_size = con_values.shape[1]
 
         # Build lists for all batch elements
@@ -68,6 +70,7 @@ class DIFFCP_ctx:
             b_idxs=b_idxs,
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
+            originally_unbatched=originally_unbatched,
         )
 
 
@@ -79,6 +82,7 @@ class DIFFCP_data:
     b_idxs: list[np.ndarray]
     cone_dict: dict[str, int | list[int]]
     batch_size: int
+    originally_unbatched: bool
 
     def torch_solve(self, solver_args=None):
         import torch
@@ -124,8 +128,8 @@ class DIFFCP_data:
         dq_stacked = torch.stack([torch.from_numpy(g) for g in dq_batch]).T
         dA_stacked = torch.stack([torch.from_numpy(g) for g in dA_batch]).T
 
-        # Squeeze batch dimension for unbatched case
-        if self.batch_size == 1:
+        # Squeeze batch dimension only if input was originally unbatched
+        if self.originally_unbatched:
             dq_stacked = dq_stacked.squeeze(1)
             dA_stacked = dA_stacked.squeeze(1)
 

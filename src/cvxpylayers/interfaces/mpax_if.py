@@ -166,6 +166,10 @@ class MPAX_ctx:
         lin_obj_values,
         con_values,
     ) -> "MPAX_data":  # TODO: Add broadcasting  (will need jnp.tile to tile structures)
+        # MPAX doesn't support batching yet - verify input is unbatched
+        if con_values.dim() == 2:
+            raise NotImplementedError("MPAX does not support batched inputs yet")
+
         return self.jax_to_data(
             jnp.array(quad_obj_values),
             jnp.array(lin_obj_values),
@@ -193,7 +197,7 @@ class MPAX_data:
         # Convert JAX arrays to PyTorch tensors and add batch dimension
         # (matching DIFFCP's behavior which stacks results)
         primal_torch = torch.utils.dlpack.from_dlpack(primal).unsqueeze(0)  # Shape: (1, n)
-        dual_torch = torch.utils.dlpack.from_dlpack(dual).unsqueeze(0)      # Shape: (1, m)
+        dual_torch = torch.utils.dlpack.from_dlpack(dual).unsqueeze(0)  # Shape: (1, m)
         return (
             primal_torch,
             dual_torch,
@@ -206,5 +210,11 @@ class MPAX_data:
     def torch_derivative(self, primal, dual, adj_batch):
         import torch
 
-        quad, lin, con = self.jax_derivative(jnp.array(primal), jnp.array(dual), adj_batch)
+        # Squeeze batch dimension (MPAX doesn't support batching, always has batch_size=1)
+        primal_unbatched = primal.squeeze(0) if primal.dim() > 1 else primal
+        dual_unbatched = dual.squeeze(0) if dual.dim() > 1 else dual
+
+        quad, lin, con = self.jax_derivative(
+            jnp.array(primal_unbatched), jnp.array(dual_unbatched), adj_batch
+        )
         return torch.tensor(quad), torch.tensor(lin), torch.tensor(con)

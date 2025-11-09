@@ -491,3 +491,40 @@ def test_requires_grad_false():
     # These tensors should not require grad when inputs don't require grad
     assert torch.is_tensor(solution)
     assert not solution.requires_grad
+
+
+def test_batch_size_one_preserves_batch_dimension():
+    """Test that batch_size=1 is different from unbatched.
+
+    When the input is explicitly batched with batch_size=1 (shape (1, n)),
+    the gradients should also be batched with shape (1, n), not unbatched (n,).
+    """
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    # Simple quadratic problem: minimize ||x - b||^2
+    objective = cp.Minimize(cp.sum_squares(x - b))
+    problem = cp.Problem(objective)
+
+    cvxpylayer = CvxpyLayer(problem, parameters=[b], variables=[x])
+
+    # Create explicitly batched input with batch_size=1
+    b_batched = torch.randn(1, n, requires_grad=True)  # Shape: (1, n)
+
+    # Solve
+    (x_batched,) = cvxpylayer(b_batched)
+
+    # Solution should be batched
+    assert x_batched.shape == (1, n), f"Expected shape (1, {n}), got {x_batched.shape}"
+
+    # Compute gradient
+    loss = x_batched.sum()
+    loss.backward()
+
+    # Gradient should preserve batch dimension
+    assert b_batched.grad is not None
+    assert b_batched.grad.shape == (1, n), (
+        f"Expected gradient shape (1, {n}), got {b_batched.grad.shape}. "
+        "Batch dimension should be preserved for batch_size=1."
+    )

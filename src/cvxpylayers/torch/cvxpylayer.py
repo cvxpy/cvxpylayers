@@ -77,7 +77,7 @@ class GpuCvxpyLayer(torch.nn.Module):
         )
         results = tuple(var.recover(primal, dual) for var in self.ctx.var_recover)
 
-        # Squeeze batch dimension for unbatched inputs (matching master's approach)
+        # Squeeze batch dimension for unbatched inputs
         if not batch:
             results = tuple(r.squeeze(0) for r in results)
 
