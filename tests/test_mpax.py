@@ -356,6 +356,48 @@ def test_mixed_batched_unbatched():
         assert primal_diff < 1e-3, f"Batch {batch_idx}: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
 
 
+def test_batch_size_one_preserves_batch_dimension():
+    """Test that batch_size=1 is different from unbatched.
+
+    When the input is explicitly batched with batch_size=1 (shape (1, n)),
+    the output should also be batched with shape (1, n), not unbatched (n,).
+    """
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    # Simple quadratic problem: minimize ||x - b||^2
+    objective = cp.Minimize(cp.sum_squares(x - b))
+    problem = cp.Problem(objective)
+
+    layer_mpax = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MPAX")
+
+    # Create parameter value
+    b_value = torch.randn(n)
+
+    # Test with unbatched input
+    b_unbatched = b_value.clone().requires_grad_(True)  # Shape: (n,)
+    (x_unbatched,) = layer_mpax(b_unbatched)
+
+    # Solution should be unbatched
+    assert x_unbatched.shape == (n,), f"Expected unbatched shape ({n},), got {x_unbatched.shape}"
+
+    # Test with explicitly batched input with batch_size=1 (same values)
+    b_batched = b_value.unsqueeze(0).clone().requires_grad_(True)  # Shape: (1, n)
+    (x_batched,) = layer_mpax(b_batched)
+
+    # Solution should be batched
+    assert x_batched.shape == (1, n), (
+        f"Expected batched shape (1, {n}), got {x_batched.shape}. "
+        "Batch dimension should be preserved for batch_size=1."
+    )
+
+    # Verify the actual solutions are numerically identical (just differ in shape)
+    assert torch.allclose(x_unbatched, x_batched.squeeze(0), atol=1e-6), (
+        "Solutions for unbatched and batch_size=1 should be numerically identical"
+    )
+
+
 def test_soc_problem_rejected():
     """Test that MPAX rejects second-order cone problems."""
     # Problem with norm (SOC constraint)
