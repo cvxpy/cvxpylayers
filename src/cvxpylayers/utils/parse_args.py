@@ -156,17 +156,11 @@ def parse_args(
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
 
-    # Compute output_slices for variable recovery
-    output_slices = [
-        slice(start := param_prob.var_id_to_col[v.id], start + v.size) for v in variables
-    ]
-
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver,
         param_prob,
         cone_dims,
         data,
-        output_slices,
         kwargs,
     )
     user_order_to_col = {

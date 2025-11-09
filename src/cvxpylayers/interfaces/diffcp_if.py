@@ -22,8 +22,6 @@ class DIFFCP_ctx:
 
     solver: Callable
 
-    output_slices: list[slice]
-
     def __init__(
         self,
         objective_structure,
@@ -31,7 +29,6 @@ class DIFFCP_ctx:
         dims,
         lower_bounds,
         upper_bounds,
-        output_slices,
         options=None,
     ):
         con_indices, con_ptr, (m, np1) = constraint_structure
@@ -42,7 +39,7 @@ class DIFFCP_ctx:
 
         self.dims = dims
 
-    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values):
+    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
         # Detect batch size
         if con_values.dim() == 1:
             batch_size = 1
@@ -72,9 +69,6 @@ class DIFFCP_ctx:
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
         )
-
-    def solution_to_outputs(self, solution):
-        return (solution.primal_solution[s] for s in self.output_slices)
 
 
 @dataclass

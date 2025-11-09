@@ -3,7 +3,6 @@ def get_solver_ctx(
     param_prob,
     cone_dims,
     data,
-    output_slices,
     kwargs,
 ):
     ctx_cls = None
@@ -52,6 +51,5 @@ def get_solver_ctx(
         cone_dims,
         data.get("lower_bound"),
         data.get("upper_bound"),
-        output_slices,
         kwargs,
     )

@@ -34,8 +34,6 @@ class MPAX_ctx:
 
     solver: Callable
 
-    output_slices: list[slice]
-
     def __init__(
         self,
         objective_structure,
@@ -43,7 +41,6 @@ class MPAX_ctx:
         dims,
         lower_bounds,
         upper_bounds,
-        output_slices,
         options=None,
     ):
         obj_indices, obj_ptr, (n, _) = objective_structure
@@ -97,7 +94,6 @@ class MPAX_ctx:
             raise ValueError("Invalid MPAX algorithm")
         solver = alg(warm_start=self.warm_start, **options)
         self.solver = jax.jit(solver.optimize)
-        self.output_slices = output_slices
 
     def jax_to_data(
         self,
@@ -110,25 +106,35 @@ class MPAX_ctx:
         # CVXPY's solver interface (data[s.A], data[s.B], etc.)
         # The correct convention is: negate b and h, but NOT A or G
 
-        # Extract values from the last column and reconstruct dense b and h vectors.
-        # The last column of the constraint matrix contains the RHS values,
-        # but sparse matrices may have reduced out explicit zeros, so we need to
-        # build dense arrays with zeros for missing rows.
-        last_col_values = con_values[self.last_col_start:self.last_col_end]
+        # CVXPY stores constraint data in reduced_A with structure:
+        #   [A | b]  <- equality constraints (dims.zero rows)
+        #   [G | h]  <- inequality constraints (m - dims.zero rows)
+        # The last column contains RHS values [b; h] stored sparsely (explicit zeros removed).
+        # We need to reconstruct dense b and h vectors.
 
-        # Split indices based on whether rows are equalities (< dims.zero) or inequalities
-        split_point = jnp.searchsorted(self.last_col_indices, self.A_shape[0])
+        rhs_sparse_values = con_values[self.last_col_start : self.last_col_end]
+        rhs_row_indices = self.last_col_indices  # Which rows have nonzero RHS values
 
-        # Build dense b and h vectors with zeros for missing rows
-        b_vals = jnp.zeros(self.A_shape[0])  # Shape: (dims.zero,)
-        h_vals = jnp.zeros(self.G_shape[0])  # Shape: (m - dims.zero,)
+        num_eq_constraints = self.A_shape[0]  # dims.zero
+        num_ineq_constraints = self.G_shape[0]  # m - dims.zero
 
-        # Fill in the values we have
-        b_row_indices = self.last_col_indices[:split_point]
-        h_row_indices = self.last_col_indices[split_point:] - self.A_shape[0]  # Offset to start from 0
+        # Split RHS values by constraint type:
+        # - Row indices < num_eq_constraints belong to b (equalities)
+        # - Row indices >= num_eq_constraints belong to h (inequalities)
+        split_at = jnp.searchsorted(rhs_row_indices, num_eq_constraints)
 
-        b_vals = b_vals.at[b_row_indices].set(-last_col_values[:split_point])  # Negate b
-        h_vals = h_vals.at[h_row_indices].set(-last_col_values[split_point:])  # Negate h
+        b_row_indices = rhs_row_indices[:split_at]
+        b_sparse_values = rhs_sparse_values[:split_at]
+
+        h_row_indices = rhs_row_indices[split_at:] - num_eq_constraints  # Re-index from 0
+        h_sparse_values = rhs_sparse_values[split_at:]
+
+        # Reconstruct dense vectors (filling missing rows with zeros)
+        b_vals = jnp.zeros(num_eq_constraints)
+        h_vals = jnp.zeros(num_ineq_constraints)
+
+        b_vals = b_vals.at[b_row_indices].set(-b_sparse_values)  # Negate b
+        h_vals = h_vals.at[h_row_indices].set(-h_sparse_values)  # Negate h
 
         model = mpax.create_qp(
             P := jax.experimental.sparse.BCSR(
@@ -159,15 +165,12 @@ class MPAX_ctx:
         quad_obj_values,
         lin_obj_values,
         con_values,
-    ):  # TODO: Add broadcasting  (will need jnp.tile to tile structures)
+    ) -> "MPAX_data":  # TODO: Add broadcasting  (will need jnp.tile to tile structures)
         return self.jax_to_data(
             jnp.array(quad_obj_values),
             jnp.array(lin_obj_values),
             jnp.array(con_values),
         )
-
-    def solution_to_outputs(self, solution):
-        return (solution.primal_solution[s] for s in self.output_slices)
 
 
 @dataclass
