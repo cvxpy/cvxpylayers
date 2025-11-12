@@ -130,7 +130,6 @@ extend-exclude = [
     "build",
     "dist",
     "*.egg-info",
-    "src/cvxpylayers/interfaces/mpax_if.py",  # TODO: Fix mpax_if errors later
 ]
 
 [tool.ruff.lint]
