@@ -148,7 +148,7 @@ class MPAX_data:
     batch_size: int
     originally_unbatched: bool
 
-    def jax_solve(self):
+    def jax_solve(self, solver_args=None):
         def solve_single_batch(quad_obj_vals_i, lin_obj_vals_i, con_vals_i):
             """Build model and solve for a single batch element."""
             # Extract RHS values and reconstruct b and h vectors
