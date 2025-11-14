@@ -55,15 +55,17 @@ class GpuCvxpyLayer:
                 # Add batch dimension by repeating
                 param_expanded = jnp.expand_dims(param, 0)
                 param_expanded = jnp.broadcast_to(param_expanded, batch + param.shape)
-                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
+                flattened_params[self.ctx.user_order_to_col_order[i]] = jnp.reshape(
                     param_expanded,
                     batch + (-1,),
+                    order="F",
                 )
             else:
                 # Already batched or no batch dimension needed
-                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
+                flattened_params[self.ctx.user_order_to_col_order[i]] = jnp.reshape(
                     param,
                     batch + (-1,),
+                    order="F",
                 )
         flattened_params[-1] = jnp.ones(batch + (1,), dtype=params[0].dtype)
         # Assert all parameters have been assigned (no Nones remain)
@@ -97,7 +99,7 @@ class GpuCvxpyLayer:
             return (primal, dual), ()
 
         def solve_problem_bwd(res, g):
-            # Backward pass: use DIFFCP's adjoint method
+            # Backward pass using adjoint method
             dprimal, ddual = g
             data = data_container["data"]
             adj_batch = data_container["adj_batch"]
@@ -113,13 +115,6 @@ class GpuCvxpyLayer:
             results = tuple(jnp.squeeze(r, 0) for r in results)
 
         return results
-
-
-def reshape_fortran(x: jnp.ndarray, shape: tuple) -> jnp.ndarray:
-    if len(x.shape) > 0:
-        x = jnp.transpose(x, list(reversed(range(len(x.shape)))))
-    reshaped = jnp.reshape(x, tuple(reversed(shape)))
-    return jnp.transpose(reshaped, list(reversed(range(len(shape)))))
 
 
 def scipy_csr_to_jax_bcsr(
