@@ -10,7 +10,14 @@ try:
     import jax.numpy as jnp
     import mpax
 except ImportError:
-    pass
+    jax = None  # type: ignore[assignment]
+    jnp = None  # type: ignore[assignment]
+    mpax = None  # type: ignore[assignment]
+
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 
 class MPAX_ctx:
@@ -43,6 +50,11 @@ class MPAX_ctx:
         upper_bounds,
         options=None,
     ):
+        if mpax is None or jax is None:
+            raise ImportError(
+                "MPAX solver requires 'mpax' and 'jax' packages to be installed. "
+                "Install with: pip install mpax jax"
+            )
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
         obj_csr = sp.csc_array(
@@ -227,7 +239,10 @@ class MPAX_data:
         return primal, dual, vjp_fun
 
     def torch_solve(self, solver_args=None):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
         primal, dual, vjp_fun = self.jax_solve(solver_args)
         # Convert JAX arrays to PyTorch tensors
@@ -247,7 +262,10 @@ class MPAX_data:
         )
 
     def torch_derivative(self, primal, dual, adj_batch):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
         # Squeeze batch dimension (MPAX doesn't support batching, always has batch_size=1)
         primal_unbatched = primal.squeeze(0) if primal.dim() > 1 else primal

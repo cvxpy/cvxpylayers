@@ -9,7 +9,12 @@ from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 try:
     import jax.numpy as jnp
 except ImportError:
-    pass
+    jnp = None  # type: ignore[assignment]
+
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 
 class DIFFCP_ctx:
@@ -79,6 +84,11 @@ class DIFFCP_ctx:
         )
 
     def jax_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
+        if jnp is None:
+            raise ImportError(
+                "JAX interface requires 'jax' package to be installed. "
+                "Install with: pip install jax"
+            )
         # Detect batch size and whether input was originally unbatched
         if con_values.ndim == 1:
             originally_unbatched = True
@@ -124,7 +134,10 @@ class DIFFCP_data:
     originally_unbatched: bool
 
     def torch_solve(self, solver_args=None):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
         if solver_args is None:
             solver_args = {}
@@ -143,7 +156,10 @@ class DIFFCP_data:
         return primal, dual, adj_batch
 
     def torch_derivative(self, primal, dual, adj_batch):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
         # Split batched tensors into lists
         dxs = [primal[i].numpy() for i in range(self.batch_size)]
