@@ -1,8 +1,9 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
-import scipy.sparse as sp
-import numpy as np
+
 import diffcp
+import numpy as np
+import scipy.sparse as sp
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
 
@@ -21,8 +22,6 @@ class DIFFCP_ctx:
 
     solver: Callable
 
-    output_slices: list[slice]
-
     def __init__(
         self,
         objective_structure,
@@ -30,7 +29,6 @@ class DIFFCP_ctx:
         dims,
         lower_bounds,
         upper_bounds,
-        output_slices,
         options=None,
     ):
         con_indices, con_ptr, (m, np1) = constraint_structure
@@ -41,14 +39,16 @@ class DIFFCP_ctx:
 
         self.dims = dims
 
-    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values):
-        # Detect batch size
+    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
+        # Detect batch size and whether input was originally unbatched
         if con_values.dim() == 1:
+            originally_unbatched = True
             batch_size = 1
             # Add batch dimension for uniform handling
             con_values = con_values.unsqueeze(1)
             lin_obj_values = lin_obj_values.unsqueeze(1)
         else:
+            originally_unbatched = False
             batch_size = con_values.shape[1]
 
         # Build lists for all batch elements
@@ -56,7 +56,7 @@ class DIFFCP_ctx:
         for i in range(batch_size):
             A_aug = sp.csc_matrix(
                 (con_values[:, i].cpu().numpy(), *self.A_structure),
-                shape=self.A_shape
+                shape=self.A_shape,
             )
             As.append(-A_aug[:, :-1])  # Negate A to match DIFFCP convention
             bs.append(A_aug[:, -1].toarray().flatten())
@@ -70,10 +70,8 @@ class DIFFCP_ctx:
             b_idxs=b_idxs,
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
+            originally_unbatched=originally_unbatched,
         )
-
-    def solution_to_outputs(self, solution):
-        return (solution.primal_solution[s] for s in self.output_slices)
 
 
 @dataclass
@@ -84,6 +82,7 @@ class DIFFCP_data:
     b_idxs: list[np.ndarray]
     cone_dict: dict[str, int | list[int]]
     batch_size: int
+    originally_unbatched: bool
 
     def torch_solve(self, solver_args=None):
         import torch
@@ -91,11 +90,13 @@ class DIFFCP_data:
         if solver_args is None:
             solver_args = {}
 
-        print(self.cone_dict)
         # Always use batch solve
         xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
-            self.As, self.bs, self.cs, [self.cone_dict] * self.batch_size,
-            **solver_args
+            self.As,
+            self.bs,
+            self.cs,
+            [self.cone_dict] * self.batch_size,
+            **solver_args,
         )
         # Stack results into batched tensors
         primal = torch.stack([torch.from_numpy(x) for x in xs])
@@ -127,8 +128,8 @@ class DIFFCP_data:
         dq_stacked = torch.stack([torch.from_numpy(g) for g in dq_batch]).T
         dA_stacked = torch.stack([torch.from_numpy(g) for g in dA_batch]).T
 
-        # Squeeze batch dimension for unbatched case
-        if self.batch_size == 1:
+        # Squeeze batch dimension only if input was originally unbatched
+        if self.originally_unbatched:
             dq_stacked = dq_stacked.squeeze(1)
             dA_stacked = dA_stacked.squeeze(1)
 

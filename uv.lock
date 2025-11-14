@@ -364,7 +364,8 @@ wheels = [
 
 [[package]]
 name = "cvxpy"
-source = { directory = "../../Research/cvxpy" }
+version = "1.8.0"
+source = { git = "https://github.com/cvxpy/cvxpy.git?branch=master#ab16d41145efd9edb1016ddc7f1d61a9162bf0f8" }
 dependencies = [
     { name = "clarabel" },
     { name = "numpy" },
@@ -372,44 +373,6 @@ dependencies = [
     { name = "scipy" },
     { name = "scs" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "clarabel", specifier = ">=0.5.0" },
-    { name = "cvxopt", marker = "extra == 'cvxopt'" },
-    { name = "cvxopt", marker = "extra == 'glpk'" },
-    { name = "cvxopt", marker = "extra == 'glpk-mi'" },
-    { name = "cylp", marker = "extra == 'cbc'", specifier = ">=0.91.5" },
-    { name = "daqp", marker = "extra == 'daqp'" },
-    { name = "diffcp", marker = "extra == 'diffcp'" },
-    { name = "ecos", marker = "extra == 'ecos'" },
-    { name = "ecos", marker = "extra == 'ecos-bb'" },
-    { name = "gurobipy", marker = "extra == 'gurobi'" },
-    { name = "highspy", marker = "extra == 'highs'" },
-    { name = "hypothesis", marker = "extra == 'testing'" },
-    { name = "knitro", marker = "extra == 'knitro'" },
-    { name = "mosek", marker = "extra == 'mosek'" },
-    { name = "numpy", specifier = ">=2.0.0" },
-    { name = "ortools", marker = "extra == 'glop'", specifier = ">=9.7,<9.15" },
-    { name = "ortools", marker = "extra == 'pdlp'", specifier = ">=9.7,<9.15" },
-    { name = "osqp", specifier = ">=1.0.0" },
-    { name = "piqp", marker = "extra == 'piqp'" },
-    { name = "proxsuite", marker = "extra == 'proxqp'" },
-    { name = "pyscipopt", marker = "extra == 'scip'" },
-    { name = "pytest", marker = "extra == 'testing'" },
-    { name = "qoco", marker = "extra == 'qoco'" },
-    { name = "qpalm", marker = "extra == 'qpalm'", specifier = "~=1.2.5" },
-    { name = "scipy", specifier = ">=1.13.0" },
-    { name = "scipy", marker = "extra == 'scipy'" },
-    { name = "scs", specifier = ">=3.2.4.post1" },
-    { name = "sphinx", marker = "extra == 'doc'" },
-    { name = "sphinx-design", marker = "extra == 'doc'" },
-    { name = "sphinx-immaterial", marker = "extra == 'doc'", specifier = ">=0.11.7" },
-    { name = "sphinx-inline-tabs", marker = "extra == 'doc'" },
-    { name = "sphinxcontrib-jquery", marker = "extra == 'doc'" },
-    { name = "xpress", marker = "extra == 'xpress'", specifier = ">=9.5" },
-]
-provides-extras = ["cbc", "clarabel", "cvxopt", "diffcp", "ecos", "ecos-bb", "glop", "glpk", "glpk-mi", "gurobi", "highs", "mosek", "osqp", "pdlp", "piqp", "proxqp", "qoco", "qpalm", "scip", "scipy", "scs", "xpress", "daqp", "knitro", "testing", "doc"]
 
 [[package]]
 name = "cvxpylayers"
@@ -465,7 +428,7 @@ doc = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvxpy", directory = "../../Research/cvxpy" },
+    { name = "cvxpy", git = "https://github.com/cvxpy/cvxpy.git?branch=master" },
     { name = "diffcp", specifier = ">=1.1.0" },
     { name = "diffcp", marker = "extra == 'torch'", specifier = ">=1.1.0" },
     { name = "jax", marker = "extra == 'all'", specifier = ">=0.4.0" },

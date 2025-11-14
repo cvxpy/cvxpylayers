@@ -1,8 +1,53 @@
-from typing import Any
-import cvxpy as cp
-import cvxpylayers.interfaces
-import scipy.sparse
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+
+import cvxpy as cp
+import scipy.sparse
+
+import cvxpylayers.interfaces
+
+if TYPE_CHECKING:
+    import torch
+
+T = TypeVar("T")
+
+
+class SolverData(Protocol):
+    """Protocol for data objects returned by solver context."""
+
+    def torch_solve(
+        self, solver_args: dict[str, Any] | None = None
+    ) -> tuple["torch.Tensor", "torch.Tensor", Any]:
+        """Solve the problem using torch backend.
+
+        Returns:
+            tuple of (primal, dual, adj_batch) where primal and dual are torch tensors
+            and adj_batch is a solver-specific adjoint/backward object.
+        """
+        ...
+
+    def torch_derivative(
+        self, primal: "torch.Tensor", dual: "torch.Tensor", adj_batch: Any
+    ) -> tuple["torch.Tensor | None", "torch.Tensor", "torch.Tensor"]:
+        """Compute derivatives using torch backend.
+
+        Returns:
+            tuple of (dP, dq, dA) gradients as torch tensors (dP can be None).
+        """
+        ...
+
+
+class SolverContext(Protocol):
+    """Protocol for solver context objects."""
+
+    def torch_to_data(
+        self,
+        quad_obj_values: "torch.Tensor | None",
+        lin_obj_values: "torch.Tensor",
+        con_values: "torch.Tensor",
+    ) -> SolverData:
+        """Convert torch tensors to solver data format."""
+        ...
 
 
 @dataclass
@@ -10,61 +55,66 @@ class VariableRecovery:
     primal: slice | None
     dual: slice | None
 
-    def recover(self, primal_sol, dual_sol):
+    def recover(self, primal_sol: T, dual_sol: T) -> T:
         if self.primal is not None:
-            # Use ellipsis slicing to handle both batched (batch_size, num_vars) and unbatched (num_vars,)
-            return primal_sol[..., self.primal]
+            # Use ellipsis slicing to handle both batched and unbatched
+            return primal_sol[..., self.primal]  # type: ignore[index]
         if self.dual is not None:
-            return dual_sol[..., self.dual]
-        else:
-            raise RuntimeError("")
+            return dual_sol[..., self.dual]  # type: ignore[index]
+        raise RuntimeError(
+            "Invalid VariableRecovery: both primal and dual slices are None. "
+            "At least one must be set to recover variable values."
+        )
 
 
 @dataclass
 class LayersContext:
     parameters: list[cp.Parameter]
     reduced_P: scipy.sparse.csr_array
-    q: scipy.sparse.csr_array
+    q: scipy.sparse.csr_array | None
     reduced_A: scipy.sparse.csr_array
     cone_dims: dict[str, int | list[int]]
-    solver_ctx: object
+    solver_ctx: SolverContext
     var_recover: list[VariableRecovery]
     user_order_to_col_order: dict[int, int]
-    batch_sizes: list[int] = None  # Track which params are batched (0=unbatched, N=batch size)
+    batch_sizes: list[int] | None = (
+        None  # Track which params are batched (0=unbatched, N=batch size)
+    )
 
-    def validate_params(self, values):
+    def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
             raise ValueError(
                 f"A tensor must be provided for each CVXPY parameter; "
-                f"received {len(values)} tensors, expected {len(self.parameters)}"
+                f"received {len(values)} tensors, expected {len(self.parameters)}",
             )
 
         # Determine batch size from all parameters
         batch_sizes = []
-        for i, (value, param) in enumerate(zip(values, self.parameters)):
+        for i, (value, param) in enumerate(zip(values, self.parameters, strict=False)):
             # Check if value has the right shape (with or without batch dimension)
             if len(value.shape) == len(param.shape):
                 # No batch dimension for this parameter
                 if value.shape != param.shape:
                     raise ValueError(
                         f"Invalid parameter shape for parameter {i}. "
-                        f"Expected: {param.shape}, Got: {value.shape}"
+                        f"Expected: {param.shape}, Got: {value.shape}",
                     )
                 batch_sizes.append(0)
             elif len(value.shape) == len(param.shape) + 1:
                 # Has batch dimension
                 if value.shape[1:] != param.shape:
+                    shape_str = ", ".join(map(str, param.shape))
                     raise ValueError(
                         f"Invalid parameter shape for parameter {i}. "
-                        f"Expected batched shape: (batch_size, {', '.join(map(str, param.shape))}), "
-                        f"Got: {value.shape}"
+                        f"Expected batched shape: (batch_size, {shape_str}), "
+                        f"Got: {value.shape}",
                     )
                 batch_sizes.append(value.shape[0])
             else:
                 raise ValueError(
                     f"Invalid parameter dimensionality for parameter {i}. "
                     f"Expected {len(param.shape)} or {len(param.shape) + 1} dimensions, "
-                    f"Got: {len(value.shape)} dimensions"
+                    f"Got: {len(value.shape)} dimensions",
                 )
 
         # Check that all non-zero batch sizes are the same
@@ -74,24 +124,26 @@ class LayersContext:
             if not all(b == batch_size for b in nonzero_batch_sizes):
                 raise ValueError(
                     f"Inconsistent batch sizes. Expected all batched parameters to have "
-                    f"the same batch size, but got: {batch_sizes}"
+                    f"the same batch size, but got: {batch_sizes}",
                 )
             # Store batch_sizes for use in forward pass
             self.batch_sizes = batch_sizes
             return (batch_size,)
-        else:
-            self.batch_sizes = batch_sizes
-            return ()
+        self.batch_sizes = batch_sizes
+        return ()
 
 
 def parse_args(
     problem: cp.Problem,
     variables: list[cp.Variable],
     parameters: list[cp.Parameter],
-    solver: str,
-    kwargs: dict[str, Any],
-):
-    if not problem.is_dcp(dpp=True):
+    solver: str | None,
+    gp: bool = False,
+    verbose: bool = False,
+    canon_backend: str | None = None,
+    solver_args: dict[str, Any] | None = None,
+) -> LayersContext:
+    if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
         raise ValueError("Problem must be DPP.")
 
     if not set(problem.parameters()) == set(parameters):
@@ -105,9 +157,10 @@ def parse_args(
 
     if solver is None:
         solver = "DIFFCP"
-    data, _, _ = problem.get_problem_data(solver=solver, **kwargs)
-    param_prob = data[cp.settings.PARAM_PROB]
-    param_ids = [p.id for p in parameters]
+    data, _, _ = problem.get_problem_data(
+        solver=solver, gp=gp, verbose=verbose, canon_backend=canon_backend, solver_opts=solver_args
+    )
+    param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
 
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
@@ -115,12 +168,12 @@ def parse_args(
         param_prob,
         cone_dims,
         data,
-        kwargs,
+        solver_args,
     )
     user_order_to_col = {
         i: col
         for col, i in sorted(
-            [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)]
+            [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)],
         )
     }
     user_order_to_col_order = {}
@@ -138,7 +191,8 @@ def parse_args(
         solver_ctx,
         var_recover=[
             VariableRecovery(
-                slice(start := param_prob.var_id_to_col[v.id], start + v.size), None
+                slice(start := param_prob.var_id_to_col[v.id], start + v.size),
+                None,
             )
             for v in variables
         ],

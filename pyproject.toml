@@ -121,17 +121,30 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 testpaths = "tests"
 markers = ["integration: marks as integration test"]
 
-[tool.ruff.lint]
-ignore = [
-    "ANN401", # Opinioated warning on disallowing dynamically typed expressions
-    "D203",   # incorrect-blank-line-before-class (incompatible with D211)
-    "D213",   # multi-line-summary-second-line (incompatible with D212)
-]
-select = ["ALL"]
+[tool.ruff]
+# Follow cvxpy's ruff configuration for consistency
+target-version = "py312"
+line-length = 100
 
-[tool.ruff.lint.flake8-pytest-style]
-fixture-parentheses = false
-mark-parentheses = false
+extend-exclude = [
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# Similar to cvxpy, only enable specific rule categories
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "W605",   # invalid escape sequences in docstrings
+    "PT",     # pytest-style (flake8-pytest-style)
+]
+
+ignore = [
+    "E721",   # Do not compare types, use isinstance() (same as cvxpy)
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["cvxpylayers"]
