@@ -31,18 +31,43 @@ def test_diffcp_torch_without_jax():
         b = cp.Parameter(1)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
 
-        _A_val = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
-        _b_val = torch.tensor([2.0], dtype=torch.float32)
+        import numpy as np
+
+        A_val = torch.tensor([[1.0, 1.0]], dtype=torch.float64, requires_grad=True)
+        b_val = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
 
         try:
             # Create layer with DIFFCP solver
-            _layer = CvxpyLayer(problem, [A, b], [x], solver="DIFFCP")
+            layer = CvxpyLayer(problem, [A, b], [x], solver="DIFFCP")
             print("✓ Layer created successfully (JAX not required)")
 
-            # The key test: layer creation worked without JAX!
-            # Forward pass might have dtype issues but that's unrelated to JAX
-            print("✓ Test PASSED: DIFFCP works with PyTorch without JAX\n")
-            return True
+            # Forward pass
+            (x_sol,) = layer(A_val, b_val)
+            print(f"✓ Forward pass works: x = {x_sol.detach().numpy()}")
+
+            # Verify solution is correct (should be [1.0, 1.0])
+            expected = np.array([1.0, 1.0])
+            actual = x_sol.detach().numpy()
+            error = np.linalg.norm(actual - expected)
+
+            if error > 1e-3:
+                print(f"✗ Solution incorrect (error = {error:.6e})")
+                return False
+            print(f"✓ Solution correct (error = {error:.6e})")
+
+            # Backward pass
+            loss = x_sol.sum()
+            loss.backward()
+            print("✓ Backward pass works")
+
+            # Check gradients exist
+            if A_val.grad is not None and b_val.grad is not None:
+                print(f"✓ Gradients computed: dL/dA norm = {A_val.grad.norm():.6e}")
+                print("✓ Test PASSED\n")
+                return True
+            else:
+                print("✗ Gradients not computed")
+                return False
 
         except ImportError as e:
             if "jax" in str(e).lower():
@@ -52,10 +77,11 @@ def test_diffcp_torch_without_jax():
                 # Some other import error
                 raise
         except Exception as e:
-            # Other errors (like dtype) are not related to JAX dependency
-            print(f"  Note: Got non-JAX error (expected): {type(e).__name__}")
-            print("✓ Test PASSED: DIFFCP works with PyTorch without JAX\n")
-            return True
+            print(f"✗ FAILED: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
 
 
 def test_diffcp_jax_without_torch():
@@ -73,6 +99,7 @@ def test_diffcp_jax_without_torch():
         importlib.reload(diffcp_if)
 
         # Now try to use JAX layer
+        import jax
         import jax.numpy as jnp
 
         from cvxpylayers.jax import CvxpyLayer
@@ -89,7 +116,7 @@ def test_diffcp_jax_without_torch():
         try:
             # Create layer with DIFFCP solver
             layer = CvxpyLayer(problem, [A, b], [x], solver="DIFFCP")
-            print("✓ Layer created successfully")
+            print("✓ Layer created successfully (PyTorch not required)")
 
             # Forward pass
             (x_sol,) = layer(A_val, b_val)
@@ -99,15 +126,31 @@ def test_diffcp_jax_without_torch():
             expected = jnp.array([1.0, 1.0])
             error = jnp.linalg.norm(x_sol - expected)
 
-            if error < 1e-3:
-                print(f"✓ Solution correct (error = {error:.6e})")
-                print("✓ Test PASSED\n")
-                return True
-            else:
+            if error > 1e-3:
                 print(f"✗ Solution incorrect (error = {error:.6e})")
-                print("✗ Test FAILED\n")
                 return False
+            print(f"✓ Solution correct (error = {error:.6e})")
 
+            # Backward pass - define a loss function and compute gradients
+            def loss_fn(A, b):
+                (x_sol,) = layer(A, b)
+                return jnp.sum(x_sol)
+
+            # Compute gradients
+            grads = jax.grad(loss_fn, argnums=(0, 1))(A_val, b_val)
+            dA, db = grads
+            print("✓ Backward pass works")
+            print(f"✓ Gradients computed: dL/dA norm = {jnp.linalg.norm(dA):.6e}")
+            print("✓ Test PASSED\n")
+            return True
+
+        except ImportError as e:
+            if "torch" in str(e).lower():
+                print(f"✗ FAILED: Incorrectly requires PyTorch: {e}")
+                return False
+            else:
+                # Some other import error
+                raise
         except Exception as e:
             print(f"✗ FAILED: {e}")
             import traceback
@@ -140,8 +183,8 @@ if __name__ == "__main__":
     if all(results):
         print("✓ All tests PASSED!")
         print("\nConclusion: DIFFCP works with:")
-        print("  • PyTorch-only (no JAX required)")
-        print("  • JAX-only (no PyTorch required)")
+        print("  • PyTorch-only (no JAX required) - forward + backward")
+        print("  • JAX-only (no PyTorch required) - forward + backward")
     else:
         print("✗ Some tests FAILED")
         exit(1)
