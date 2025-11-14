@@ -38,10 +38,8 @@ class GpuCvxpyLayer:
             self.P = scipy_csr_to_jax_bcsr(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
         else:
             self.P = None
-        self.q = scipy_csr_to_jax_bcsr(self.ctx.q.tocsr())
-        self.A = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined]
-        assert self.q is not None
-        assert self.A is not None
+        self.q: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.q.tocsr())  # type: ignore[assignment]
+        self.A: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined,assignment]
 
     def __call__(
         self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
@@ -74,8 +72,6 @@ class GpuCvxpyLayer:
         # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
         if batch:
             p_stack = p_stack.T
-        assert self.q is not None
-        assert self.A is not None
         P_eval = self.P @ p_stack if self.P is not None else None
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
