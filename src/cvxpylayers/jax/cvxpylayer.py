@@ -21,7 +21,6 @@ class GpuCvxpyLayer:
         canon_backend: str | None = None,
         solver_args: dict[str, Any] | None = None,
     ) -> None:
-        assert gp is False
         if solver_args is None:
             solver_args = {}
         self.ctx = pa.parse_args(
@@ -47,6 +46,19 @@ class GpuCvxpyLayer:
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
+
+        # Apply log transformation to GP parameters
+        if self.ctx.gp and self.ctx.gp_param_to_log_param:
+            params_transformed = []
+            for i, param in enumerate(params):
+                cvxpy_param = self.ctx.parameters[i]
+                if cvxpy_param in self.ctx.gp_param_to_log_param:
+                    # This parameter needs log transformation for GP
+                    params_transformed.append(jnp.log(param))
+                else:
+                    params_transformed.append(param)
+            params = tuple(params_transformed)
+
         flattened_params: list[jnp.ndarray | None] = [None] * (len(params) + 1)
         for i, param in enumerate(params):
             # Check if this parameter is batched or needs broadcasting
@@ -109,6 +121,10 @@ class GpuCvxpyLayer:
         solve_problem.defvjp(solve_problem_fwd, solve_problem_bwd)
         primal, dual = solve_problem(P_eval, q_eval, A_eval)
         results = tuple(var.recover(primal, dual) for var in self.ctx.var_recover)
+
+        # Apply exp transformation to recover from log-space for GP
+        if self.ctx.gp:
+            results = tuple(jnp.exp(r) for r in results)
 
         # Squeeze batch dimension for unbatched inputs
         if not batch:

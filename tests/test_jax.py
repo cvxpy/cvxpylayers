@@ -399,7 +399,6 @@ def test_equality():
     check_grads(layer, [b_jax], order=1, modes=["rev"])
 
 
-@pytest.mark.skip(reason="gp=True (geometric programming) not supported in JAX")
 def test_basic_gp():
     x = cp.Variable(pos=True)
     y = cp.Variable(pos=True)

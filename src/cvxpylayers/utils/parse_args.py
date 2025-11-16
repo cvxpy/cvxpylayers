@@ -80,6 +80,11 @@ class LayersContext:
     batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
+    # GP (Geometric Programming) support
+    gp: bool = False
+    # Maps original GP parameters to their log-space DCP parameters
+    # Used to determine which parameters need log transformation in forward pass
+    gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -143,8 +148,17 @@ def parse_args(
     canon_backend: str | None = None,
     solver_args: dict[str, Any] | None = None,
 ) -> LayersContext:
-    if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
-        raise ValueError("Problem must be DPP.")
+    # Validate problem is DPP (disciplined parametrized programming)
+    if gp:
+        if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
+            raise ValueError("Problem must be DPP for geometric programming.")
+        # GP requires initial values for all parameters
+        for param in parameters:
+            if param.value is None:
+                raise ValueError("An initial value for each parameter is required when gp=True.")
+    else:
+        if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
+            raise ValueError("Problem must be DPP.")
 
     if not set(problem.parameters()) == set(parameters):
         raise ValueError("The layer's parameters must exactly match problem.parameters")
@@ -157,11 +171,19 @@ def parse_args(
 
     if solver is None:
         solver = "DIFFCP"
-    data, _, _ = problem.get_problem_data(
+    data, solving_chain, _ = problem.get_problem_data(
         solver=solver, gp=gp, verbose=verbose, canon_backend=canon_backend, solver_opts=solver_args
     )
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
+
+    # Extract GP information if this is a geometric program
+    gp_param_to_log_param = None
+    if gp:
+        dgp2dcp = solving_chain.get(cp.reductions.Dgp2Dcp)  # type: ignore[reportAttributeAccessIssue]
+        if dgp2dcp is not None:
+            # dgp2dcp.canon_methods._parameters maps original GP params to log-space DCP params
+            gp_param_to_log_param = dgp2dcp.canon_methods._parameters
 
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver,
@@ -170,12 +192,25 @@ def parse_args(
         data,
         solver_args,
     )
-    user_order_to_col = {
-        i: col
-        for col, i in sorted(
-            [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)],
-        )
-    }
+
+    # Build parameter ordering mapping
+    # For GP problems, we need to use the log-space DCP parameter IDs
+    if gp and gp_param_to_log_param:
+        # Map user order index to column using log-space DCP parameters
+        user_order_to_col = {
+            i: param_prob.param_id_to_col[
+                gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id
+            ]
+            for i, p in enumerate(parameters)
+        }
+    else:
+        # Standard DCP problem - use original parameters
+        user_order_to_col = {
+            i: col
+            for col, i in sorted(
+                [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)],
+            )
+        }
     user_order_to_col_order = {}
     for j, i in enumerate(user_order_to_col.keys()):
         user_order_to_col_order[i] = j
@@ -197,4 +232,6 @@ def parse_args(
             for v in variables
         ],
         user_order_to_col_order=user_order_to_col_order,
+        gp=gp,
+        gp_param_to_log_param=gp_param_to_log_param,
     )

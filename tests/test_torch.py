@@ -418,7 +418,6 @@ def test_equality():
     torch.autograd.gradcheck(layer, b_th)
 
 
-@pytest.mark.skip
 def test_basic_gp():
     _ = set_seed(0)
     x = cp.Variable(pos=True)
