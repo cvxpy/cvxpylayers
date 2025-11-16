@@ -411,7 +411,7 @@ def test_basic_gp():
     objective_fn = 1 / (x * y * z)
     constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
-    problem.solve(cp.SCS, gp=True)
+    problem.solve(cp.CLARABEL, gp=True)
 
     layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
     a_jax = jnp.array(2.0)
@@ -433,6 +433,68 @@ def test_basic_gp():
             )[0],
         ),
         [a_jax, b_jax, c_jax],
+        order=1,
+        modes=["rev"],
+    )
+
+
+def test_batched_gp():
+    """Test GP with batched parameters."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    # Batched parameters (need initial values for GP)
+    a = cp.Parameter(pos=True, value=2.0)
+    b = cp.Parameter(pos=True, value=1.0)
+    c = cp.Parameter(value=0.5)
+
+    # Objective and constraints
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layer
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+
+    # Batched parameters - test with batch size 4
+    # For scalar parameters, batching means 1D arrays
+    batch_size = 4
+    a_batch = jnp.array([2.0, 1.5, 2.5, 1.8])
+    b_batch = jnp.array([1.0, 1.2, 0.8, 1.5])
+    c_batch = jnp.array([0.5, 0.6, 0.4, 0.5])
+
+    # Forward pass
+    x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
+
+    # Check shapes - batched results are (batch_size, 1) for scalar variables
+    assert x_batch.shape == (batch_size, 1)
+    assert y_batch.shape == (batch_size, 1)
+    assert z_batch.shape == (batch_size, 1)
+
+    # Verify each batch element by solving individually
+    for i in range(batch_size):
+        a.value = float(a_batch[i])
+        b.value = float(b_batch[i])
+        c.value = float(c_batch[i])
+        problem.solve(cp.CLARABEL, gp=True)
+
+        assert np.allclose(x.value, x_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for x"
+        )
+        assert np.allclose(y.value, y_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for y"
+        )
+        assert np.allclose(z.value, z_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for z"
+        )
+
+    # Test gradients on batched problem
+    check_grads(
+        lambda a, b, c: jnp.sum(
+            layer(a, b, c, solver_args={"acceleration_lookback": 0})[0],
+        ),
+        [a_batch, b_batch, c_batch],
         order=1,
         modes=["rev"],
     )

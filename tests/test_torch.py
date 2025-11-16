@@ -431,7 +431,7 @@ def test_basic_gp():
     objective_fn = 1 / (x * y * z)
     constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
-    problem.solve(cp.SCS, gp=True)
+    problem.solve(cp.CLARABEL, gp=True)
 
     layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
     a_th = torch.tensor([2.0]).requires_grad_()
@@ -448,6 +448,66 @@ def test_basic_gp():
         return res[0].sum()
 
     torch.autograd.gradcheck(f, (a_th, b_th, c_th), atol=1e-4)
+
+
+def test_batched_gp():
+    """Test GP with batched parameters."""
+    _ = set_seed(0)
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    # Batched parameters (need initial values for GP)
+    a = cp.Parameter(pos=True, value=2.0)
+    b = cp.Parameter(pos=True, value=1.0)
+    c = cp.Parameter(value=0.5)
+
+    # Objective and constraints
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layer
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+
+    # Batched parameters - test with batch size 4 (double precision)
+    # For scalar parameters, batching means 1D tensors
+    batch_size = 4
+    a_batch = torch.tensor([2.0, 1.5, 2.5, 1.8], dtype=torch.float64, requires_grad=True)
+    b_batch = torch.tensor([1.0, 1.2, 0.8, 1.5], dtype=torch.float64, requires_grad=True)
+    c_batch = torch.tensor([0.5, 0.6, 0.4, 0.5], dtype=torch.float64, requires_grad=True)
+
+    # Forward pass
+    x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
+
+    # Check shapes - batched results are (batch_size, 1) for scalar variables
+    assert x_batch.shape == (batch_size, 1)
+    assert y_batch.shape == (batch_size, 1)
+    assert z_batch.shape == (batch_size, 1)
+
+    # Verify each batch element by solving individually
+    for i in range(batch_size):
+        a.value = a_batch[i].item()
+        b.value = b_batch[i].item()
+        c.value = c_batch[i].item()
+        problem.solve(cp.CLARABEL, gp=True)
+
+        assert torch.allclose(torch.tensor(x.value), x_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for x"
+        )
+        assert torch.allclose(torch.tensor(y.value), y_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for y"
+        )
+        assert torch.allclose(torch.tensor(z.value), z_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for z"
+        )
+
+    # Test gradients on batched problem
+    def f_batch(a, b, c):
+        res = layer(a, b, c, solver_args={"acceleration_lookback": 0})
+        return res[0].sum()
+
+    torch.autograd.gradcheck(f_batch, (a_batch, b_batch, c_batch), atol=1e-3, rtol=1e-3)
 
 
 def test_no_grad_context():
