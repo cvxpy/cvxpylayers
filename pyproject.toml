@@ -68,6 +68,7 @@ dev = [
     "ty==0.0.1a16",
     "yamllint==1.35.1",
     "ipykernel==6.30.0",
+    "jaxtyping>=0.3.3",
 ]
 doc = [
     "sphinx >= 8.0.0",

@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse as sp
@@ -12,6 +13,8 @@ try:
 except ImportError:
     pass
 
+if TYPE_CHECKING:
+    from jaxtyping import Float
 
 class MPAX_ctx:
     Q_idxs: jnp.ndarray
@@ -49,8 +52,8 @@ class MPAX_ctx:
             (np.arange(obj_indices.size), obj_indices, obj_ptr),
             shape=(n, n),
         ).tocsr()
-        self.Q_idxs = obj_csr.data
-        self.Q_structure = obj_csr.indices, obj_csr.indptr
+        self.Q_idxs = jnp.array(obj_csr.data)
+        self.Q_structure = jnp.array(obj_csr.indices), jnp.array(obj_csr.indptr)
         self.Q_shape = (n, n)
 
         con_indices, con_ptr, (m, np1) = constraint_structure
@@ -142,9 +145,9 @@ class MPAX_ctx:
 @dataclass
 class MPAX_data:
     ctx: "MPAX_ctx"  # Reference to context with structure info
-    quad_obj_values: jnp.ndarray  # Shape: (n_Q,) or (n_Q, batch_size)
-    lin_obj_values: jnp.ndarray  # Shape: (n,) or (n, batch_size)
-    con_values: jnp.ndarray  # Shape: (n_con,) or (n_con, batch_size)
+    quad_obj_values: Float[jax.Array, "n_Q *batch_size"]
+    lin_obj_values: Float[jax.Array, "n *batch_size"]
+    con_values: Float[jax.Array, "n_con *batch_size"]
     batch_size: int
     originally_unbatched: bool
 

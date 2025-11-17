@@ -21,6 +21,15 @@ def get_solver_ctx(
             from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
 
             ctx_cls = DIFFCP_ctx
+        case "DIFFQCP":
+            from cvxpylayers.interfaces.diffqcp_if import DIFFQCP_CTX
+
+            return DIFFQCP_CTX(
+                objective_structure=param_prob.reduced_P.problem_data_index,
+                constraint_structure=param_prob.reduced_A.problem_data_index,
+                data=data,
+                options=kwargs
+            )
         case _:
             raise RuntimeError(
                 "Unknown solver. Check if your solver is supported by CVXPYlayers",
