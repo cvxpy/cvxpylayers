@@ -50,6 +50,8 @@ cvxpylayers has the following dependencies:
 * [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.1.a4
 * [PyTorch](https://pytorch.org) >= 1.0, [JAX](https://github.com/google/jax) >= 0.2.12, or [TensorFlow](https://tensorflow.org) >= 2.0
 * [diffcp](https://github.com/cvxgrp/diffcp) >= 1.0.13
+* [mlx](https://pypi.org/project/mlx)==0.27.1
+* [mlx-metal](https://pypi.org/project/mlx-metal/)==0.27.1
 
 ## Usage
 Below are usage examples of our PyTorch, JAX, and TensorFlow layers.
@@ -145,6 +147,30 @@ gradA, gradb = tape.gradient(summed_solution, [A_tf, b_tf])
 
 Note: `CvxpyLayer` cannot be traced with `tf.function`.
 
+### Apple MLX (mlx 0.27.1 and mlx-metal 0.27.1)
+
+
+```python
+    import cvxpy as cp
+    import mlx.core as mx
+    import mlx
+    from cvxpylayers.mlx import CvxpyLayer, to_numpy
+
+    
+    x_param = cp.Parameter(n)
+    y_var = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(cp.sum_squares(
+    y_var - x_param)), [y_var >= 0])
+    mlx_layer = CvxpyLayer(prob, parameters=[x_param], variables=[y_var])
+
+    # Input
+    x_np = np.linspace(-5, 5, n).astype(np.float32)
+    x_mx = mx.array(x_np)
+    # Forward comparison
+    y_mx = mlx_layer(x_mx)
+    grad_loss = mx.grad(lambda x: mx.sum(mlx_layer(x)))
+    grad_mx = grad_loss(x_mx)
+```
 
 ### Log-log convex programs
 Starting with version 0.1.3, cvxpylayers can also differentiate through log-log convex programs (LLCPs), which generalize geometric programs. Use the keyword argument `gp=True` when constructing a `CvxpyLayer` for an LLCP. Below is a simple usage example
@@ -238,7 +264,7 @@ pip install pytest
 
 Execute the tests from the main directory of this repository with:
 ```bash
-pytest cvxpylayers/{torch,jax,tensorflow}
+pytest cvxpylayers/{torch,jax,tensorflow,mlx}
 ```
 
 ## Projects using cvxpylayers
