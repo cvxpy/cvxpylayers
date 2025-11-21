@@ -9,7 +9,7 @@ import scipy.sparse
 import cvxpylayers.utils.parse_args as pa
 
 
-class GpuCvxpyLayer:
+class CvxpyLayer:
     def __init__(
         self,
         problem: cp.Problem,
@@ -138,5 +138,3 @@ def scipy_csr_to_jax_bcsr(
 
     return jax_bcsr
 
-
-CvxpyLayer = GpuCvxpyLayer

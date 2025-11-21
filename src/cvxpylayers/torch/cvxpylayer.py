@@ -7,7 +7,7 @@ import torch
 import cvxpylayers.utils.parse_args as pa
 
 
-class GpuCvxpyLayer(torch.nn.Module):
+class CvxpyLayer(torch.nn.Module):
     def __init__(
         self,
         problem: cp.Problem,
@@ -155,5 +155,3 @@ def scipy_csr_to_torch_csr(
 
     return torch_csr
 
-
-CvxpyLayer = GpuCvxpyLayer

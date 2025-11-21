@@ -211,8 +211,7 @@ class DIFFCP_data:
         primal = jnp.stack([jnp.array(x) for x in xs])
         dual = jnp.stack([jnp.array(y) for y in ys])
 
-        # Return primal, dual, and adjoint function (stored in self for backward pass)
-        # We can't return a function directly because JAX can't handle it as a residual
+        # Return primal, dual, and adjoint function for backward pass
         return primal, dual, adj_batch
 
     def jax_derivative(self, dprimal, ddual, adj_batch):
