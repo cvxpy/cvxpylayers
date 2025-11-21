@@ -10,7 +10,14 @@ try:
     import jax.numpy as jnp
     import mpax
 except ImportError:
-    pass
+    jax = None  # type: ignore[assignment]
+    jnp = None  # type: ignore[assignment]
+    mpax = None  # type: ignore[assignment]
+
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 
 class MPAX_ctx:
@@ -43,6 +50,11 @@ class MPAX_ctx:
         upper_bounds,
         options=None,
     ):
+        if mpax is None or jax is None:
+            raise ImportError(
+                "MPAX solver requires 'mpax' and 'jax' packages to be installed. "
+                "Install with: pip install mpax jax"
+            )
         obj_indices, obj_ptr, (n, _) = objective_structure
         self.c_slice = slice(0, n)
         obj_csr = sp.csc_array(
@@ -148,7 +160,14 @@ class MPAX_data:
     batch_size: int
     originally_unbatched: bool
 
-    def jax_solve(self):
+    def jax_solve(self, solver_args=None):
+        if solver_args is None:
+            solver_args = {}
+
+        # Extract warm start options if provided
+        initial_primal = solver_args.get("initial_primal_solution", None)
+        initial_dual = solver_args.get("initial_dual_solution", None)
+
         def solve_single_batch(quad_obj_vals_i, lin_obj_vals_i, con_vals_i):
             """Build model and solve for a single batch element."""
             # Extract RHS values and reconstruct b and h vectors
@@ -195,8 +214,12 @@ class MPAX_data:
                 self.ctx.upper,
             )
 
-            # Solve
-            solution = self.ctx.solver(model)
+            # Solve with optional warm start
+            solution = self.ctx.solver(
+                model,
+                initial_primal_solution=initial_primal,
+                initial_dual_solution=initial_dual,
+            )
             return solution.primal_solution, solution.dual_solution
 
         # Vectorize over batch dimension (axis 1 of parameter arrays)
@@ -216,9 +239,12 @@ class MPAX_data:
         return primal, dual, vjp_fun
 
     def torch_solve(self, solver_args=None):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
-        primal, dual, vjp_fun = self.jax_solve()
+        primal, dual, vjp_fun = self.jax_solve(solver_args)
         # Convert JAX arrays to PyTorch tensors
         # jax_solve returns shapes: (batch_size, n) and (batch_size, m)
         primal_torch = torch.utils.dlpack.from_dlpack(primal)
@@ -236,7 +262,10 @@ class MPAX_data:
         )
 
     def torch_derivative(self, primal, dual, adj_batch):
-        import torch
+        if torch is None:
+            raise ImportError(
+                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+            )
 
         # Squeeze batch dimension (MPAX doesn't support batching, always has batch_size=1)
         primal_unbatched = primal.squeeze(0) if primal.dim() > 1 else primal

@@ -10,7 +10,8 @@ from cvxpylayers.torch import CvxpyLayer
 
 # Skip all tests in this module if mpax is not installed
 pytest.importorskip("mpax")
-pytest.importorskip("jax")
+jax = pytest.importorskip("jax")
+jnp = pytest.importorskip("jax.numpy")
 
 torch.set_default_dtype(torch.double)
 
@@ -426,3 +427,90 @@ def test_sdp_rejected():
 
     with pytest.raises(SolverError, match="could not be reduced to a QP"):
         CvxpyLayer(problem, [], [X], solver="MPAX")
+
+
+def test_jax_interface_forward_pass():
+    """Test JAX interface with MPAX solver (forward pass only)."""
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    # minimize ||x||^2 subject to Ax = b, Gx >= h
+    n = 3
+    x = cp.Variable(n)
+    A = cp.Parameter((1, n))
+    b = cp.Parameter(1)
+    G = cp.Parameter((2, n))
+    h = cp.Parameter(2)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b, G @ x >= h])
+
+    A_val = np.array([[1.0, 1.0, 1.0]])  # sum(x) = 3
+    b_val = np.array([3.0])
+    G_val = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])  # x[0] >= 0, x[1] >= 0
+    h_val = np.array([0.0, 0.0])
+
+    # Get ground truth from CVXPY
+    A.value = A_val
+    b.value = b_val
+    G.value = G_val
+    h.value = h_val
+    problem.solve()
+    true_sol = x.value
+    true_obj = problem.value
+
+    # Test JAX interface with MPAX
+    layer = JaxCvxpyLayer(problem, [A, b, G, h], [x], solver="MPAX")
+
+    A_jax = jnp.array(A_val)
+    b_jax = jnp.array(b_val)
+    G_jax = jnp.array(G_val)
+    h_jax = jnp.array(h_val)
+
+    (x_sol,) = layer(A_jax, b_jax, G_jax, h_jax)
+
+    # Compare solutions
+    x_np = np.array(x_sol)
+    error = np.linalg.norm(x_np - true_sol)
+    obj_value = np.sum(x_np**2)
+    obj_error = abs(obj_value - true_obj)
+
+    assert error < 1e-3, f"Solution error: ||JAX-MPAX - CVXPY|| = {error:.6e}"
+    assert obj_error < 1e-3, f"Objective error: |JAX-MPAX - CVXPY| = {obj_error:.6e}"
+
+
+def test_jax_interface_batched():
+    """Test JAX interface with MPAX solver for batched inputs."""
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    # minimize ||x||^2 subject to Ax = b
+    n, m = 4, 2
+    x = cp.Variable(n)
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
+
+    np.random.seed(400)
+    A_val = np.random.randn(m, n)
+    b_val_batch = np.random.randn(3, m)  # batch size = 3
+
+    # Test JAX interface with MPAX
+    layer = JaxCvxpyLayer(problem, [A, b], [x], solver="MPAX")
+
+    A_jax = jnp.array(A_val)
+    b_jax = jnp.array(b_val_batch)
+
+    (x_sol,) = layer(A_jax, b_jax)
+
+    # Verify batch dimension is correct
+    assert x_sol.shape == (3, n), f"Expected shape (3, {n}), got {x_sol.shape}"
+
+    # Check each batch element against CVXPY ground truth
+    for i in range(b_val_batch.shape[0]):
+        A.value = A_val
+        b.value = b_val_batch[i]
+        problem.solve()
+        true_sol = x.value
+
+        x_sol_i = np.array(x_sol[i])
+        error = np.linalg.norm(x_sol_i - true_sol)
+        assert error < 1e-3, f"Batch {i} error: {error:.6e}"

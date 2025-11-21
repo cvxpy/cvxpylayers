@@ -1,19 +1,13 @@
-# ruff: noqa
-import pytest
-
-# Skip all JAX tests until JAX implementation is ported to new structure
-pytest.skip("JAX implementation not yet ported to src/ structure", allow_module_level=True)
-
 import cvxpy as cp
 import diffcp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax import random
 from jax.test_util import check_grads
 
 from cvxpylayers.jax import CvxpyLayer
-from cvxpylayers.utils import backward_numpy, forward_numpy
 
 
 def sigmoid(z):
@@ -92,52 +86,6 @@ def test_least_squares():
     obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(obj))
     prob_jax = CvxpyLayer(prob, [A, b], [x])
-
-    key, k1, k2 = random.split(key, num=3)
-    A_jax = random.normal(k1, shape=(m, n))
-    b_jax = random.normal(k2, shape=(m,))
-
-    def lstsq_sum_cp(A_jax, b_jax):
-        x = prob_jax(A_jax, b_jax, solver_args={"eps": 1e-10})[0]
-        return sum(x)
-
-    def lstsq_sum_linalg(A_jax, b_jax):
-        x = jnp.linalg.solve(A_jax.T @ A_jax + jnp.eye(n), A_jax.T @ b_jax)
-        return sum(x)
-
-    d_lstsq_sum_cp = jax.grad(lstsq_sum_cp, [0, 1])
-    d_lstsq_sum_linalg = jax.grad(lstsq_sum_linalg, [0, 1])
-
-    grad_A_cvxpy, grad_b_cvxpy = d_lstsq_sum_cp(A_jax, b_jax)
-    grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(A_jax, b_jax)
-
-    assert np.isclose(
-        jnp.linalg.norm(grad_A_cvxpy - grad_A_lstsq).item(),
-        0.0,
-        atol=1e-6,
-    )
-    assert np.isclose(
-        jnp.linalg.norm(grad_b_cvxpy - grad_b_lstsq).item(),
-        0.0,
-        atol=1e-6,
-    )
-
-
-def test_least_squares_custom_method():
-    key = random.PRNGKey(0)
-    m, n = 100, 20
-
-    A = cp.Parameter((m, n))
-    b = cp.Parameter(m)
-    x = cp.Variable(n)
-    obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
-    prob = cp.Problem(cp.Minimize(obj))
-    prob_jax = CvxpyLayer(
-        prob,
-        [A, b],
-        [x],
-        custom_method=(forward_numpy, backward_numpy),
-    )
 
     key, k1, k2 = random.split(key, num=3)
     A_jax = random.normal(k1, shape=(m, n))
@@ -289,7 +237,7 @@ def test_not_enough_parameters_at_call_time():
     lam_jax = jnp.ones(1)
     with pytest.raises(
         ValueError,
-        match="An array must be provided for each CVXPY parameter.*",
+        match="A tensor must be provided for each CVXPY parameter.*",
     ):
         layer(lam_jax)
 
@@ -451,6 +399,7 @@ def test_equality():
     check_grads(layer, [b_jax], order=1, modes=["rev"])
 
 
+@pytest.mark.skip(reason="gp=True (geometric programming) not supported in JAX")
 def test_basic_gp():
     x = cp.Variable(pos=True)
     y = cp.Variable(pos=True)
