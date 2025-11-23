@@ -7,7 +7,124 @@ import torch
 import cvxpylayers.utils.parse_args as pa
 
 
-class GpuCvxpyLayer(torch.nn.Module):
+def _apply_gp_log_transform(
+    params: tuple[torch.Tensor, ...],
+    ctx: pa.LayersContext,
+) -> tuple[torch.Tensor, ...]:
+    """Apply log transformation to geometric program (GP) parameters.
+
+    Geometric programs are solved in log-space after conversion to DCP.
+    This function applies log transformation to the appropriate parameters.
+
+    Args:
+        params: Tuple of parameter tensors in original GP space
+        ctx: Layer context containing GP parameter mapping info
+
+    Returns:
+        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
+    """
+    if not ctx.gp or not ctx.gp_param_to_log_param:
+        return params
+
+    params_transformed = []
+    for i, param in enumerate(params):
+        cvxpy_param = ctx.parameters[i]
+        if cvxpy_param in ctx.gp_param_to_log_param:
+            # This parameter needs log transformation for GP
+            params_transformed.append(torch.log(param))
+        else:
+            params_transformed.append(param)
+    return tuple(params_transformed)
+
+
+def _flatten_and_batch_params(
+    params: tuple[torch.Tensor, ...],
+    ctx: pa.LayersContext,
+    batch: tuple,
+) -> torch.Tensor:
+    """Flatten and batch parameters into a single stacked tensor.
+
+    Converts a tuple of parameter tensors (potentially with mixed batched/unbatched)
+    into a single concatenated tensor suitable for matrix multiplication with the
+    parametrized problem matrices.
+
+    Args:
+        params: Tuple of parameter tensors
+        ctx: Layer context with batch info and ordering
+        batch: Batch dimensions tuple (empty if unbatched)
+
+    Returns:
+        Concatenated parameter tensor with shape (num_params, batch_size) or (num_params,)
+    """
+    flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
+
+    for i, param in enumerate(params):
+        # Check if this parameter is batched or needs broadcasting
+        if ctx.batch_sizes[i] == 0 and batch:
+            # Unbatched parameter - expand to match batch size
+            param_expanded = param.unsqueeze(0).expand(batch + param.shape)
+            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
+                param_expanded,
+                batch + (-1,),
+            )
+        else:
+            # Already batched or no batch dimension needed
+            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
+                param,
+                batch + (-1,),
+            )
+
+    # Add constant 1.0 column for offset terms in canonical form
+    flattened_params[-1] = torch.ones(
+        batch + (1,),
+        dtype=params[0].dtype,
+        device=params[0].device,
+    )
+    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
+
+    p_stack = torch.cat(cast(list[torch.Tensor], flattened_params), -1)
+    # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
+    if batch:
+        p_stack = p_stack.T
+    return p_stack
+
+
+def _recover_results(
+    primal: torch.Tensor,
+    dual: torch.Tensor,
+    ctx: pa.LayersContext,
+    batch: tuple,
+) -> tuple[torch.Tensor, ...]:
+    """Recover variable values from primal/dual solutions.
+
+    Extracts the requested variables from the solver's primal and dual
+    solutions, applies inverse GP transformation if needed, and removes
+    batch dimension for unbatched inputs.
+
+    Args:
+        primal: Primal solution from solver
+        dual: Dual solution from solver
+        ctx: Layer context with variable recovery info
+        batch: Batch dimensions tuple (empty if unbatched)
+
+    Returns:
+        Tuple of recovered variable values
+    """
+    # Extract each variable using its slice from the solution vectors
+    results = tuple(var.recover(primal, dual) for var in ctx.var_recover)
+
+    # Apply exp transformation to recover from log-space for GP
+    if ctx.gp:
+        results = tuple(torch.exp(r) for r in results)
+
+    # Squeeze batch dimension for unbatched inputs
+    if not batch:
+        results = tuple(r.squeeze(0) for r in results)
+
+    return results
+
+
+class CvxpyLayer(torch.nn.Module):
     def __init__(
         self,
         problem: cp.Problem,
@@ -20,7 +137,6 @@ class GpuCvxpyLayer(torch.nn.Module):
         solver_args: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        assert gp is False
         if solver_args is None:
             solver_args = {}
         self.ctx = pa.parse_args(
@@ -48,37 +164,19 @@ class GpuCvxpyLayer(torch.nn.Module):
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
-        flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
-        for i, param in enumerate(params):
-            # Check if this parameter is batched or needs broadcasting
-            if self.ctx.batch_sizes[i] == 0 and batch:
-                # Unbatched parameter - expand to match batch size
-                # Add batch dimension by repeating
-                param_expanded = param.unsqueeze(0).expand(batch + param.shape)
-                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
-                    param_expanded,
-                    batch + (-1,),
-                )
-            else:
-                # Already batched or no batch dimension needed
-                flattened_params[self.ctx.user_order_to_col_order[i]] = reshape_fortran(
-                    param,
-                    batch + (-1,),
-                )
-        flattened_params[-1] = torch.ones(
-            batch + (1,),
-            dtype=params[0].dtype,
-            device=params[0].device,
-        )
-        # Assert all parameters have been assigned (no Nones remain)
-        assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-        p_stack = torch.cat(cast(list[torch.Tensor], flattened_params), -1)
-        # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
-        if batch:
-            p_stack = p_stack.T
+
+        # Apply log transformation to GP parameters
+        params = _apply_gp_log_transform(params, self.ctx)
+
+        # Flatten and batch parameters
+        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
+
+        # Evaluate parametrized matrices
         P_eval = self.P @ p_stack if self.P is not None else None
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
+
+        # Solve optimization problem
         primal, dual, _, _ = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
             q_eval,
@@ -86,13 +184,9 @@ class GpuCvxpyLayer(torch.nn.Module):
             self.ctx,
             solver_args,
         )
-        results = tuple(var.recover(primal, dual) for var in self.ctx.var_recover)
 
-        # Squeeze batch dimension for unbatched inputs
-        if not batch:
-            results = tuple(r.squeeze(0) for r in results)
-
-        return results
+        # Recover results and apply GP inverse transform if needed
+        return _recover_results(primal, dual, self.ctx, batch)
 
 
 class _CvxpyLayer(torch.autograd.Function):
@@ -155,5 +249,3 @@ def scipy_csr_to_torch_csr(
 
     return torch_csr
 
-
-CvxpyLayer = GpuCvxpyLayer

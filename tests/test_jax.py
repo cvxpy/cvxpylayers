@@ -1,19 +1,13 @@
-# ruff: noqa
-import pytest
-
-# Skip all JAX tests until JAX implementation is ported to new structure
-pytest.skip("JAX implementation not yet ported to src/ structure", allow_module_level=True)
-
 import cvxpy as cp
 import diffcp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax import random
 from jax.test_util import check_grads
 
 from cvxpylayers.jax import CvxpyLayer
-from cvxpylayers.utils import backward_numpy, forward_numpy
 
 
 def sigmoid(z):
@@ -92,52 +86,6 @@ def test_least_squares():
     obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(obj))
     prob_jax = CvxpyLayer(prob, [A, b], [x])
-
-    key, k1, k2 = random.split(key, num=3)
-    A_jax = random.normal(k1, shape=(m, n))
-    b_jax = random.normal(k2, shape=(m,))
-
-    def lstsq_sum_cp(A_jax, b_jax):
-        x = prob_jax(A_jax, b_jax, solver_args={"eps": 1e-10})[0]
-        return sum(x)
-
-    def lstsq_sum_linalg(A_jax, b_jax):
-        x = jnp.linalg.solve(A_jax.T @ A_jax + jnp.eye(n), A_jax.T @ b_jax)
-        return sum(x)
-
-    d_lstsq_sum_cp = jax.grad(lstsq_sum_cp, [0, 1])
-    d_lstsq_sum_linalg = jax.grad(lstsq_sum_linalg, [0, 1])
-
-    grad_A_cvxpy, grad_b_cvxpy = d_lstsq_sum_cp(A_jax, b_jax)
-    grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(A_jax, b_jax)
-
-    assert np.isclose(
-        jnp.linalg.norm(grad_A_cvxpy - grad_A_lstsq).item(),
-        0.0,
-        atol=1e-6,
-    )
-    assert np.isclose(
-        jnp.linalg.norm(grad_b_cvxpy - grad_b_lstsq).item(),
-        0.0,
-        atol=1e-6,
-    )
-
-
-def test_least_squares_custom_method():
-    key = random.PRNGKey(0)
-    m, n = 100, 20
-
-    A = cp.Parameter((m, n))
-    b = cp.Parameter(m)
-    x = cp.Variable(n)
-    obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
-    prob = cp.Problem(cp.Minimize(obj))
-    prob_jax = CvxpyLayer(
-        prob,
-        [A, b],
-        [x],
-        custom_method=(forward_numpy, backward_numpy),
-    )
 
     key, k1, k2 = random.split(key, num=3)
     A_jax = random.normal(k1, shape=(m, n))
@@ -289,7 +237,7 @@ def test_not_enough_parameters_at_call_time():
     lam_jax = jnp.ones(1)
     with pytest.raises(
         ValueError,
-        match="An array must be provided for each CVXPY parameter.*",
+        match="A tensor must be provided for each CVXPY parameter.*",
     ):
         layer(lam_jax)
 
@@ -463,7 +411,7 @@ def test_basic_gp():
     objective_fn = 1 / (x * y * z)
     constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
-    problem.solve(cp.SCS, gp=True)
+    problem.solve(cp.CLARABEL, gp=True)
 
     layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
     a_jax = jnp.array(2.0)
@@ -475,6 +423,121 @@ def test_basic_gp():
     assert np.isclose(y.value, y_jax, atol=1e-5)
     assert np.isclose(z.value, z_jax, atol=1e-5)
 
+    check_grads(
+        lambda a, b, c: jnp.sum(
+            layer(
+                a,
+                b,
+                c,
+                solver_args={"acceleration_lookback": 0},
+            )[0],
+        ),
+        [a_jax, b_jax, c_jax],
+        order=1,
+        modes=["rev"],
+    )
+
+
+def test_batched_gp():
+    """Test GP with batched parameters."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    # Batched parameters (need initial values for GP)
+    a = cp.Parameter(pos=True, value=2.0)
+    b = cp.Parameter(pos=True, value=1.0)
+    c = cp.Parameter(value=0.5)
+
+    # Objective and constraints
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layer
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+
+    # Batched parameters - test with batch size 4
+    # For scalar parameters, batching means 1D arrays
+    batch_size = 4
+    a_batch = jnp.array([2.0, 1.5, 2.5, 1.8])
+    b_batch = jnp.array([1.0, 1.2, 0.8, 1.5])
+    c_batch = jnp.array([0.5, 0.6, 0.4, 0.5])
+
+    # Forward pass
+    x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
+
+    # Check shapes - batched results are (batch_size, 1) for scalar variables
+    assert x_batch.shape == (batch_size, 1)
+    assert y_batch.shape == (batch_size, 1)
+    assert z_batch.shape == (batch_size, 1)
+
+    # Verify each batch element by solving individually
+    for i in range(batch_size):
+        a.value = float(a_batch[i])
+        b.value = float(b_batch[i])
+        c.value = float(c_batch[i])
+        problem.solve(cp.CLARABEL, gp=True)
+
+        assert np.allclose(x.value, x_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for x"
+        )
+        assert np.allclose(y.value, y_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for y"
+        )
+        assert np.allclose(z.value, z_batch[i, 0], atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for z"
+        )
+
+    # Test gradients on batched problem
+    check_grads(
+        lambda a, b, c: jnp.sum(
+            layer(a, b, c, solver_args={"acceleration_lookback": 0})[0],
+        ),
+        [a_batch, b_batch, c_batch],
+        order=1,
+        modes=["rev"],
+    )
+
+
+def test_gp_without_param_values():
+    """Test that GP layers can be created without setting parameter values."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    # Create parameters WITHOUT setting values (this is the key test!)
+    a = cp.Parameter(pos=True, name="a")
+    b = cp.Parameter(pos=True, name="b")
+    c = cp.Parameter(name="c")
+
+    # Build GP problem
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # This should work WITHOUT needing to set a.value, b.value, c.value
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+
+    # Now use the layer with actual parameter values
+    a_jax = jnp.array(2.0)
+    b_jax = jnp.array(1.0)
+    c_jax = jnp.array(0.5)
+
+    # Forward pass
+    x_jax, y_jax, z_jax = layer(a_jax, b_jax, c_jax)
+
+    # Verify solution against CVXPY direct solve
+    a.value = 2.0
+    b.value = 1.0
+    c.value = 0.5
+    problem.solve(cp.CLARABEL, gp=True)
+
+    assert np.isclose(x.value, x_jax, atol=1e-5)
+    assert np.isclose(y.value, y_jax, atol=1e-5)
+    assert np.isclose(z.value, z_jax, atol=1e-5)
+
+    # Test gradients
     check_grads(
         lambda a, b, c: jnp.sum(
             layer(

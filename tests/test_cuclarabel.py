@@ -1,4 +1,4 @@
-"""Comprehensive test suite for MPAX solver."""
+"""test suite for CuClarabel solver."""
 
 import cvxpy as cp
 import numpy as np
@@ -8,8 +8,8 @@ from cvxpy.error import SolverError
 
 from cvxpylayers.torch import CvxpyLayer
 
-# Skip all tests in this module if mpax is not installed
-pytest.importorskip("mpax")
+# Skip all tests in this module if juliacall is not installed
+pytest.importorskip("juliacall")
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
@@ -17,7 +17,7 @@ torch.set_default_dtype(torch.double)
 
 
 def compare_solvers(problem, params, param_vals, variables):
-    """Compare MPAX vs DIFFCP and CVXPY direct solve."""
+    """Compare CuClarabel vs DIFFCP and CVXPY direct solve."""
     # Set parameter values for direct solve
     for param, val in zip(params, param_vals, strict=True):
         param.value = val
@@ -40,48 +40,50 @@ def compare_solvers(problem, params, param_vals, variables):
     for param, val in zip(params, param_vals, strict=True):
         param.value = val
     for var, sol in zip(variables, sols_diffcp, strict=True):
-        var.value = sol.detach().numpy()
+        var.value = sol.detach().cpu().numpy()
     diffcp_obj = problem.objective.value
 
-    # Test MPAX
-    layer_mpax = CvxpyLayer(problem, params, variables, solver="MPAX")
-    sols_mpax = layer_mpax(*[torch.tensor(v, requires_grad=True) for v in param_vals])
+    # Test CuClarabel
+    layer_cuclarabel = CvxpyLayer(problem, params, variables, solver="CUCLARABEL")
+    sols_cuclarabel = layer_cuclarabel(*[torch.tensor(v, requires_grad=True) for v in param_vals])
 
     # Recompute objective
     for param, val in zip(params, param_vals, strict=True):
         param.value = val
-    for var, sol in zip(variables, sols_mpax, strict=True):
-        var.value = sol.detach().numpy()
-    mpax_obj = problem.objective.value
+    for var, sol in zip(variables, sols_cuclarabel, strict=True):
+        var.value = sol.detach().cpu().numpy()
+    cuclarabel_obj = problem.objective.value
 
     # Compare objectives
-    obj_err = abs(mpax_obj - true_obj)
-    diffcp_vs_mpax = abs(mpax_obj - diffcp_obj)
+    obj_err = abs(cuclarabel_obj - true_obj)
+    diffcp_vs_cuclarabel = abs(cuclarabel_obj - diffcp_obj)
 
-    assert obj_err < 1e-3, f"MPAX error={obj_err:.6f}"
-    assert diffcp_vs_mpax < 1e-3, f"diff from DIFFCP={diffcp_vs_mpax:.6f}"
+    assert obj_err < 1e-3, f"CuClarabel error={obj_err:.6f}"
+    assert diffcp_vs_cuclarabel < 1e-3, f"diff from DIFFCP={diffcp_vs_cuclarabel:.6f}"
 
     # Compare primal solutions
-    for i, (sol_mpax, sol_diffcp, sol_true) in enumerate(
-        zip(sols_mpax, sols_diffcp, true_sol, strict=True)
+    for i, (sol_cuclarabel, sol_diffcp, sol_true) in enumerate(
+        zip(sols_cuclarabel, sols_diffcp, true_sol, strict=True)
     ):
         # Compare DIFFCP vs ground truth
-        diffcp_err = np.linalg.norm(sol_diffcp.detach().numpy() - sol_true)
+        diffcp_err = np.linalg.norm(sol_diffcp.detach().cpu().numpy() - sol_true)
         assert diffcp_err < 1e-3, f"DIFFCP var {i} error: ||DIFFCP - true|| = {diffcp_err:.6e}"
 
-        # Compare MPAX vs ground truth
-        mpax_err = np.linalg.norm(sol_mpax.detach().numpy() - sol_true)
-        assert mpax_err < 1e-3, f"MPAX var {i} error: ||MPAX - true|| = {mpax_err:.6e}"
+        # Compare CuClarabel vs ground truth
+        cuclarabel_err = np.linalg.norm(sol_cuclarabel.detach().cpu().numpy() - sol_true)
+        assert cuclarabel_err < 1e-3, (
+            f"CuClarabel var {i} error: ||CuClarabel - true|| = {cuclarabel_err:.6e}"
+        )
 
-        # Compare MPAX vs DIFFCP
-        primal_diff = torch.norm(sol_mpax - sol_diffcp).item()
+        # Compare CuClarabel vs DIFFCP
+        primal_diff = torch.norm(sol_cuclarabel.cpu() - sol_diffcp).item()
         assert primal_diff < 1e-3, (
-            f"Primal variable {i} differs: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
+            f"Primal variable {i} differs: ||CuClarabel - DIFFCP|| = {primal_diff:.6e}"
         )
 
 
 def compare_solvers_batched(problem, params, param_vals_batch, variables):
-    """Compare MPAX vs DIFFCP for batched inputs."""
+    """Compare CuClarabel vs DIFFCP for batched inputs."""
     batch_size = param_vals_batch[0].shape[0]
 
     # Convert to torch tensors (with batch dimension)
@@ -91,9 +93,11 @@ def compare_solvers_batched(problem, params, param_vals_batch, variables):
     layer_diffcp = CvxpyLayer(problem, params, variables, solver="DIFFCP")
     sols_diffcp = layer_diffcp(*param_tensors)
 
-    # Test MPAX with batched inputs
-    layer_mpax = CvxpyLayer(problem, params, variables, solver="MPAX")
-    sols_mpax = layer_mpax(*[torch.tensor(v, requires_grad=True) for v in param_vals_batch])
+    # Test CuClarabel with batched inputs
+    layer_cuclarabel = CvxpyLayer(problem, params, variables, solver="CUCLARABEL")
+    sols_cuclarabel = layer_cuclarabel(
+        *[torch.tensor(v, requires_grad=True) for v in param_vals_batch]
+    )
 
     # Compare solutions for each batch element
     for batch_idx in range(batch_size):
@@ -111,33 +115,37 @@ def compare_solvers_batched(problem, params, param_vals_batch, variables):
 
         # Compare DIFFCP for this batch element
         for var, sol in zip(variables, sols_diffcp, strict=True):
-            var.value = sol[batch_idx].detach().numpy()
+            var.value = sol[batch_idx].detach().cpu().numpy()
         diffcp_obj = problem.objective.value
 
-        # Compare MPAX for this batch element
+        # Compare CuClarabel for this batch element
         for param, val in zip(params, param_vals_single, strict=True):
             param.value = val.numpy() if hasattr(val, "numpy") else val
-        for var, sol in zip(variables, sols_mpax, strict=True):
-            var.value = sol[batch_idx].detach().numpy()
-        mpax_obj = problem.objective.value
+        for var, sol in zip(variables, sols_cuclarabel, strict=True):
+            var.value = sol[batch_idx].detach().cpu().numpy()
+        cuclarabel_obj = problem.objective.value
 
         # Compare objectives
-        obj_err = abs(mpax_obj - true_obj)
-        diffcp_vs_mpax = abs(mpax_obj - diffcp_obj)
+        obj_err = abs(cuclarabel_obj - true_obj)
+        diffcp_vs_cuclarabel = abs(cuclarabel_obj - diffcp_obj)
 
-        assert obj_err < 1e-3, f"Batch {batch_idx}: MPAX error={obj_err:.6f}"
-        assert diffcp_vs_mpax < 1e-3, f"Batch {batch_idx}: diff={diffcp_vs_mpax:.6f}"
+        assert obj_err < 1e-3, f"Batch {batch_idx}: CuClarabel error={obj_err:.6f}"
+        assert diffcp_vs_cuclarabel < 1e-3, f"Batch {batch_idx}: diff={diffcp_vs_cuclarabel:.6f}"
 
         # Compare primal solutions
-        for i, (sol_mpax, sol_diffcp, sol_true) in enumerate(
-            zip(sols_mpax, sols_diffcp, true_sol, strict=True)
+        for i, (sol_cuclarabel, sol_diffcp, sol_true) in enumerate(
+            zip(sols_cuclarabel, sols_diffcp, true_sol, strict=True)
         ):
-            mpax_err = np.linalg.norm(sol_mpax[batch_idx].detach().numpy() - sol_true)
-            assert mpax_err < 1e-3, f"Batch {batch_idx}, var {i}: ||MPAX - true|| = {mpax_err:.6e}"
+            cuclarabel_err = np.linalg.norm(
+                sol_cuclarabel[batch_idx].detach().cpu().numpy() - sol_true
+            )
+            assert cuclarabel_err < 1e-3, (
+                f"Batch {batch_idx}, var {i}: ||CuClarabel - true|| = {cuclarabel_err:.6e}"
+            )
 
-            primal_diff = torch.norm(sol_mpax[batch_idx] - sol_diffcp[batch_idx]).item()
+            primal_diff = torch.norm(sol_cuclarabel[batch_idx].cpu() - sol_diffcp[batch_idx]).item()
             assert primal_diff < 1e-3, (
-                f"Batch {batch_idx}, var {i}: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
+                f"Batch {batch_idx}, var {i}: ||CuClarabel - DIFFCP|| = {primal_diff:.6e}"
             )
 
 
@@ -337,9 +345,9 @@ def test_mixed_batched_unbatched():
     A_tensor = torch.tensor(A_val, requires_grad=True)  # Unbatched
     b_tensor = torch.tensor(b_val_batch, requires_grad=True)  # Batched
 
-    # Test MPAX
-    layer_mpax = CvxpyLayer(problem, [A, b], [x], solver="MPAX")
-    sols_mpax = layer_mpax(A_tensor, b_tensor)
+    # Test CuClarabel
+    layer_cuclarabel = CvxpyLayer(problem, [A, b], [x], solver="CUCLARABEL")
+    sols_cuclarabel = layer_cuclarabel(A_tensor, b_tensor)
 
     # Test DIFFCP for comparison
     layer_diffcp = CvxpyLayer(problem, [A, b], [x], solver="DIFFCP")
@@ -348,13 +356,17 @@ def test_mixed_batched_unbatched():
     )
 
     # Verify batch size is correct
-    assert sols_mpax[0].shape[0] == batch_size, "MPAX output should have batch dimension"
+    assert sols_cuclarabel[0].shape[0] == batch_size, (
+        "CuClarabel output should have batch dimension"
+    )
     assert sols_diffcp[0].shape[0] == batch_size, "DIFFCP output should have batch dimension"
 
-    # Compare MPAX vs DIFFCP for each batch element
+    # Compare CuClarabel vs DIFFCP for each batch element
     for batch_idx in range(batch_size):
-        primal_diff = torch.norm(sols_mpax[0][batch_idx] - sols_diffcp[0][batch_idx]).item()
-        assert primal_diff < 1e-3, f"Batch {batch_idx}: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
+        primal_diff = torch.norm(
+            sols_cuclarabel[0][batch_idx].cpu() - sols_diffcp[0][batch_idx]
+        ).item()
+        assert primal_diff < 1e-3, f"Batch {batch_idx}: ||CuClarabel - DIFFCP|| = {primal_diff:.6e}"
 
 
 def test_batch_size_one_preserves_batch_dimension():
@@ -371,21 +383,21 @@ def test_batch_size_one_preserves_batch_dimension():
     objective = cp.Minimize(cp.sum_squares(x - b))
     problem = cp.Problem(objective)
 
-    layer_mpax = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MPAX")
+    layer_cuclarabel = CvxpyLayer(problem, parameters=[b], variables=[x], solver="CUCLARABEL")
 
     # Create parameter value
     b_value = torch.randn(n)
 
     # Test with unbatched input
     b_unbatched = b_value.clone().requires_grad_(True)  # Shape: (n,)
-    (x_unbatched,) = layer_mpax(b_unbatched)
+    (x_unbatched,) = layer_cuclarabel(b_unbatched)
 
     # Solution should be unbatched
     assert x_unbatched.shape == (n,), f"Expected unbatched shape ({n},), got {x_unbatched.shape}"
 
     # Test with explicitly batched input with batch_size=1 (same values)
     b_batched = b_value.unsqueeze(0).clone().requires_grad_(True)  # Shape: (1, n)
-    (x_batched,) = layer_mpax(b_batched)
+    (x_batched,) = layer_cuclarabel(b_batched)
 
     # Solution should be batched
     assert x_batched.shape == (1, n), (
@@ -399,38 +411,41 @@ def test_batch_size_one_preserves_batch_dimension():
     )
 
 
-def test_soc_problem_rejected():
-    """Test that MPAX rejects second-order cone problems."""
+def test_soc_problem():
+    """Test that CuClarabel rejects second-order cone problems."""
     # Problem with norm (SOC constraint)
-    x = cp.Variable(3)
-    problem = cp.Problem(cp.Minimize(cp.norm(x, 2)), [x >= 0])
+    n = 3
+    x = cp.Variable(n)
+    bound = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.norm(x, 2)), [x >= bound])
+    bound_val = np.array([1.0, 2.0, 3.0])
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
-        CvxpyLayer(problem, [], [x], solver="MPAX")
+    compare_solvers(problem, [bound], [bound_val], [x])
 
 
-def test_exponential_cone_rejected():
-    """Test that MPAX rejects exponential cone problems."""
+def test_exponential_cone_problem():
+    """Test that CuClarabel rejects exponential cone problems."""
     # Problem with logarithm (exponential cone)
     x = cp.Variable()
-    problem = cp.Problem(cp.Minimize(-cp.log(x)), [x >= 0.1])
+    bound = cp.Parameter()
+    problem = cp.Problem(cp.Minimize(-cp.log(x)), [x >= bound])
+    bound_val = np.array(0.1)
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
-        CvxpyLayer(problem, [], [x], solver="MPAX")
+    compare_solvers(problem, [bound], [bound_val], [x])
 
 
 def test_sdp_rejected():
-    """Test that MPAX rejects semidefinite programming problems."""
+    """Test that CuClarabel rejects semidefinite programming problems."""
     # Problem with PSD constraint
     X = cp.Variable((3, 3), PSD=True)
     problem = cp.Problem(cp.Minimize(cp.trace(X)))
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
-        CvxpyLayer(problem, [], [X], solver="MPAX")
+    with pytest.raises(SolverError, match="do not support.*PSD"):
+        CvxpyLayer(problem, [], [X], solver="CUCLARABEL")
 
 
 def test_jax_interface_forward_pass():
-    """Test JAX interface with MPAX solver (forward pass only)."""
+    """Test JAX interface with CuClarabel solver (forward pass only)."""
     from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
 
     # minimize ||x||^2 subject to Ax = b, Gx >= h
@@ -457,8 +472,8 @@ def test_jax_interface_forward_pass():
     true_sol = x.value
     true_obj = problem.value
 
-    # Test JAX interface with MPAX
-    layer = JaxCvxpyLayer(problem, [A, b, G, h], [x], solver="MPAX")
+    # Test JAX interface with CuClarabel
+    layer = JaxCvxpyLayer(problem, [A, b, G, h], [x], solver="CUCLARABEL")
 
     A_jax = jnp.array(A_val)
     b_jax = jnp.array(b_val)
@@ -473,12 +488,12 @@ def test_jax_interface_forward_pass():
     obj_value = np.sum(x_np**2)
     obj_error = abs(obj_value - true_obj)
 
-    assert error < 1e-3, f"Solution error: ||JAX-MPAX - CVXPY|| = {error:.6e}"
-    assert obj_error < 1e-3, f"Objective error: |JAX-MPAX - CVXPY| = {obj_error:.6e}"
+    assert error < 1e-3, f"Solution error: ||JAX-CuClarabel - CVXPY|| = {error:.6e}"
+    assert obj_error < 1e-3, f"Objective error: |JAX-CuClarabel - CVXPY| = {obj_error:.6e}"
 
 
 def test_jax_interface_batched():
-    """Test JAX interface with MPAX solver for batched inputs."""
+    """Test JAX interface with CuClarabel solver for batched inputs."""
     from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
 
     # minimize ||x||^2 subject to Ax = b
@@ -493,8 +508,8 @@ def test_jax_interface_batched():
     A_val = np.random.randn(m, n)
     b_val_batch = np.random.randn(3, m)  # batch size = 3
 
-    # Test JAX interface with MPAX
-    layer = JaxCvxpyLayer(problem, [A, b], [x], solver="MPAX")
+    # Test JAX interface with CuClarabel
+    layer = JaxCvxpyLayer(problem, [A, b], [x], solver="CUCLARABEL")
 
     A_jax = jnp.array(A_val)
     b_jax = jnp.array(b_val_batch)

@@ -22,7 +22,85 @@ except ImportError:
 if TYPE_CHECKING:
     import torch
     import cupy as cp
+    from cupy.sparse import csr_matrix
     from jaxtyping import Float
+
+
+def _build_gpu_cqp_matrices(
+    con_values: Float[jax.Array, "m n batch"],
+    quad_obj_values: Float[jax.Array, " n batch"],
+    lin_obj_values: Float[jax.Array, "n batch"],
+    obj_csc_to_csr_permutation: jnp.ndarray,
+    obj_structure: tuple[jnp.ndarray, jnp.ndarray],
+    obj_shape: tuple[int, int],
+    con_csc_to_csr_subset_and_permutation: jnp.ndarray,
+    con_structure: tuple[jnp.ndarray, jnp.ndarray],
+    con_shape: tuple[int, int],
+    b_idxs: jnp.ndarray,
+    batch_size: int
+):
+    """Build conic quadratic program matrices from constraint and objective values.
+
+    Converts parameter values into the conic form required by CUCLARABEL and (gpu) diffqcp.
+        minimize 1/2 x^T P x + q^T x subject to Ax + s = b, s in K
+    where K is a product of cones.
+
+    TODO(quill): in future you can probably just store jax values as single
+    BCSR array.
+    """
+    import cupy as cp
+    from cupy.sparse import csr_matrix
+
+    Pjxs, qjxs, Ajxs, bjxs = [], [], [], []
+    Pcps, qcps, Acps, bcps = [], [], [], []
+
+    quad_obj_values = quad_obj_values[obj_csc_to_csr_permutation, :]
+    con_values = con_values[con_csc_to_csr_subset_and_permutation, :]
+
+    for i in range(batch_size):
+        quad_vals_i = (quad_obj_values[:, i]
+                       if quad_obj_values is not None else None)
+        con_vals_i = con_values[:, i]
+        lin_vals_i = lin_obj_values[:-1, i]
+
+        if quad_vals_i is None:
+            Pjx = jsparse.empty(shape=obj_shape, sparse_format="bcsr")
+            Pcp = csr_matrix(obj_shape)
+        else:
+            Pjx = jsparse.BCSR((
+                quad_vals_i,
+                *obj_structure
+            ), shape=obj_shape)
+            Pcp_data = cp.from_dlpack(quad_vals_i)
+            Pcp = csr_matrix((
+                Pcp_data,
+                cp.from_dlpack(obj_structure[0]),
+                cp.from_dlpack(obj_structure[1]),
+            ), shape=obj_shape)
+        
+        Ajx = jsparse.BCSR((
+            con_vals_i[con_csc_to_csr_subset_and_permutation],
+            *con_structure
+        ), shape=con_shape)
+        Acp_data = cp.from_dlpack(Ajx.data)
+        Acp = csr_matrix((
+            Acp_data,
+            cp.from_dlpack(con_structure[0]),
+            cp.from_dlpack(con_structure[1])
+        ), shape=con_shape)
+
+        bjx = jnp.zeros(con_shape[0])
+        bjx = bjx.at[b_idxs].set(con_vals_i[-jnp.size(b_idxs):])
+        bcp = cp.from_dlpack(bjx)
+
+        Pjxs.append(Pjx)
+        Pcps.append(Pcp)
+        qjxs.append(lin_vals_i)
+        qcps.append(cp.from_dlpack(lin_vals_i))
+        Ajxs.append(Ajx)
+        Acps.append(Acp)
+        bjxs.append(bjx)
+        bcps.append(bcp)
 
 
 class DIFFQCP_CTX:
@@ -130,7 +208,72 @@ class DIFFQCP_CTX:
             lin_obj_values=jax.dlpack.from_dlpack(lin_obj_values),
             con_values=jax.dlpack.from_dlpack(con_values)
         )
+
+
+def _compute_gradients(
+    self,
+    primal: Float[jax.Array, "batch n"],
+    dual: Float[jax.Array, "batch m"],
+    qcp_problem_structure,
+    b_idxs,
+    vjp: Callable,
+):
     
+    dP_batch = []
+    dq_batch = []
+    dA_batch = []
+
+    ds = jnp.zeros_like(dual[0]) # No gradient w.r.t. slack
+
+    for i in range(self.batch_size):
+        dP, dA, dq, db = vjp(primal[i], dual[i], ds, qcp_problem_structure)
+        
+        con_grad = jnp.hstack([-dA.data, db[b_idxs[i]]])
+        lin_grad = jnp.hstack([dq, jnp.array([0.0])])
+        dA_batch.append(con_grad)
+        dq_batch.append(lin_grad)
+        dP_batch.append(dP.data)
+
+    return dP_batch, dq_batch, dA_batch
+
+
+def _solve_gpu(
+    Pjxs: list[Float[jsparse.BCSR, "n n"]],
+    Pcps: list[Float[csr_matrix, "n n"]],
+    qjxs: list[Float[jax.Array, " n"]],
+    qcps: list[Float[cp.ndarray, " n"]],
+    Ajxs: list[Float[jsparse.BCSR, "m n"]],
+    Acps: list[Float[csr_matrix, "m n"]],
+    bjxs: list[Float[jax.Array, " n"]],
+    bcps: list[Float[cp.ndarray, " m"]],
+    qcp_struc,
+    julia_ctx: Julia_CTX
+):
+
+    xs, ys, vjps = [], [], []
+    
+    for i in range(len(Pjxs)):
+        # NOTE(quill): in this case I totally could do in place
+        #   updates after the firt Julia solve.
+        #   Unless we want to use CUDA streams
+        xcp, ycp, scp = julia_ctx.solve(
+            P=Pcps[i], A=Acps[i], q=qcps[i], b=bcps[i]
+        )
+        xjx = jax.dlpack.from_dlpack(xcp)
+        yjx = jax.dlpack.from_dlpack(ycp)
+        sjx = jax.dlpack.from_dlpack(scp)
+        qcp = DeviceQCP(
+            Pjxs[i], Ajxs[i], qjxs[i], bjxs[i],
+            xjx, yjx, sjx, qcp_struc
+        )
+        xs.append(xjx)
+        ys.append(yjx)
+        vjps.append(qcp.vjp)
+
+    primal = jnp.stack(xs)
+    dual = jnp.stack(ys)
+    return primal, dual, vjps
+
 
 @dataclass
 class DIFFQCP_cpu_data:
@@ -143,7 +286,7 @@ class DIFFQCP_cpu_data:
 
 
 @dataclass
-class DIFFQCP_gpu_data:
+class DIFFQCP_gpu_data_old:
     
     ctx: DIFFQCP_CTX # Reference to context with structure info
     quad_obj_values: Float[jax.Array, "_ batch"] | None
@@ -152,7 +295,10 @@ class DIFFQCP_gpu_data:
     batch_size: int
     originally_unbatched: bool
 
-    def _solve(self, solver_args=None):
+    def _solve(
+        self,
+        solver_args=None
+    ) -> tuple[Float[jax.Array, "batch n"], Float[jax.Array, "batch m"], Callable]:
         # NOTE(quill) skip batching for now; try with CUDA streams when adding batch support
         import cupy as cp
         from cupy.sparse import csr_matrix
@@ -210,17 +356,8 @@ class DIFFQCP_gpu_data:
         #   (remember you cannot JIT whole `vjp` if using nvmath for solve)
         return x, y, qcp.vjp
     
-    def _derivative(
-        self,
-        primal: Float[jax.Array, "n batch"],
-        dual: Float[jax.Array, "m batch"],
-        adj_batch: Callable
-    ):
-        dx = primal[0]
-        dy = dual[0]
-        ds = jnp.zeros(self.ctx.m)
+    
 
-        dP, dA, dq, db = adj_batch(dx, dy, ds)
 
 
 type DIFFQCP_data = DIFFQCP_cpu_data | DIFFQCP_gpu_data
