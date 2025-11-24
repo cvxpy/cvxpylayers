@@ -21,7 +21,7 @@ except ImportError:
 if TYPE_CHECKING:
     import torch
     import cupy as cp
-    from cupy.sparse import csr_matrix
+    from cupyx.scipy.sparse import csr_matrix
     from jaxtyping import Float, Integer
     TensorLike = jax.Array | cp.ndarray | csr_matrix
 
@@ -80,7 +80,7 @@ def _build_gpu_cqp_matrices(
         corresponding lists of CuPy reference objects. (i.e., zero-copied data.)
     """
     import cupy as cp
-    from cupy.sparse import csr_matrix
+    from cupyx.scipy.sparse import csr_matrix
 
     Pjxs, qjxs, Ajxs, bjxs = [], [], [], []
     Pcps, qcps, Acps, bcps = [], [], [], []
@@ -166,21 +166,26 @@ class DIFFQCP_CTX:
         options: dict | None = None
     ):
         obj_indices, obj_ptr, (n, _) = objective_structure
+        self.P_shape = (n, n)
         
         obj_csr = sp.csc_array(
             (np.arange(obj_indices.size), obj_indices, obj_ptr),
             shape=(n,n),
         ).tocsr()
         self.P_structure = jnp.array(obj_csr.indices), jnp.array(obj_csr.indptr)
-        self.P_csr_idxs = jnp.array(obj_csr.data)
-        self.P_csr_to_csc_permutation = jnp.empty_like(self.P_csr_idxs)
-        self.P_csr_to_csc_permutation[self.P_csr_idxs] = jnp.arange(jnp.size(self.P_csr_idxs))
+        # keep the following in NumPy since will be faster + allows for in place updates
+        P_csr_idxs = obj_csr.data.astype(np.intp)
+        P_csr_to_csc_permutation = np.zeros_like(P_csr_idxs)
+        P_csr_to_csc_permutation[P_csr_idxs] = np.arange(np.size(P_csr_idxs))
+        # Now move to JAX
+        self.P_csr_idxs = jnp.array(P_csr_idxs)
+        self.P_csr_to_csc_permutation = jnp.array(P_csr_to_csc_permutation)
 
         con_indices, con_ptr, (m, np1) = constraint_structure
         assert np1 == n + 1
         self.A_shape = (m, n)
 
-        self.b_idxs = jnp.ndarray(con_indices[con_ptr[-2] : con_ptr[-1]])
+        self.b_idxs = jnp.array(con_indices[con_ptr[-2] : con_ptr[-1]])
 
         # Now construct the structure for just the A matrix as expected by `diffqcp`
         con_csr = sp.csc_array(
@@ -188,9 +193,14 @@ class DIFFQCP_CTX:
             shape=(m, n),
         ).tocsr()
         self.A_structure = jnp.array(con_csr.indices), jnp.array(con_csr.indptr)
-        self.A_csr_idxs = jnp.array(con_csr.data)
-        self.A_csr_to_csc_permutation = jnp.empty_like(self.A_csr_idxs)
-        self.A_csr_to_csc_permutation[self.A_csr_idxs] = jnp.arange(jnp.size(self.A_csr_idxs))
+        # keep the following in NumPy since will be faster + allows for in place updates
+        A_csr_idxs = con_csr.data.astype(np.intp)
+        A_csr_to_csc_permutation = np.zeros_like(A_csr_idxs)
+        A_csr_to_csc_permutation[A_csr_idxs] = np.arange(np.size(A_csr_idxs))
+        # now move to JAX
+        self.A_csr_idxs = jnp.array(A_csr_idxs)
+        self.A_csr_to_csc_permutation = jnp.array(A_csr_to_csc_permutation)
+
 
         self.dims = data["dims"]
         # TODO(quill): for future
@@ -265,11 +275,16 @@ class DIFFQCP_CTX:
         con_values: Float[torch.Tensor, "_ *batch"]
     ) -> DIFFQCP_data:
 
+        # return self.jax_to_data(
+        #     quad_obj_values=(jax.dlpack.from_dlpack(quad_obj_values) if quad_obj_values is not None
+        #                      else None),
+        #     lin_obj_values=jax.dlpack.from_dlpack(lin_obj_values),
+        #     con_values=jax.dlpack.from_dlpack(con_values)
+        # )
         return self.jax_to_data(
-            quad_obj_values=(jax.dlpack.from_dlpack(quad_obj_values) if quad_obj_values is not None
-                             else None),
-            lin_obj_values=jax.dlpack.from_dlpack(lin_obj_values),
-            con_values=jax.dlpack.from_dlpack(con_values)
+            quad_obj_values=jnp.array(quad_obj_values) if quad_obj_values is not None else None,
+            lin_obj_values=jnp.array(lin_obj_values),
+            con_values=jnp.array(con_values)
         )
 
 
@@ -454,8 +469,10 @@ class DIFFQCP_gpu_data:
         vjps: list[Callable]
     ):
         dP_batch, dq_batch, dA_batch = _compute_gradients(
-            dprimal=jax.dlpack.from_dlpack(dprimal),
-            ddual=jax.dlpack.from_dlpack(ddual),
+            # dprimal=jax.dlpack.from_dlpack(dprimal),
+            dprimal=jnp.array(dprimal),
+            # ddual=jax.dlpack.from_dlpack(ddual),
+            ddual=jnp.array(ddual),
             P_csr_to_csc_perm=self.P_csr_to_csc_perm,
             A_csr_to_csc_perm=self.A_csr_to_csc_perm,
             b_idxs=self.b_idxs,
@@ -494,6 +511,8 @@ class Julia_CTX:
     ):
         from juliacall import Main as jl
         self.jl = jl
+        # self.jl.seval('import Pkg; Pkg.develop(url="https://github.com/oxfordcontrol/Clarabel.jl.git")')
+        # self.jl.seval('Pkg.add("CUDA")')
         self.jl.seval("using Clarabel, LinearAlgebra, SparseArrays")
         self.jl.seval("using CUDA, CUDA.CUSPARSE")
         
@@ -501,7 +520,7 @@ class Julia_CTX:
 
         self.jl.seval("""
         settings = Clarabel.Settings(direct_solve_method = :cudss)
-        settings.verbose = False
+        settings.verbose = false
         solver   = Clarabel.Solver(settings)
         """)
 
