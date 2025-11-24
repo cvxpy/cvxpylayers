@@ -14,7 +14,8 @@ try:
     import jax.numpy as jnp
     from jaxlib._jax import Device
     import jax.experimental.sparse as jsparse
-    from diffqcp import QCPStructureLayers, DeviceQCP, HostQCP
+    # from diffqcp import QCPStructureLayers, DeviceQCP, HostQCP
+    from diffqcp import DeviceQCP, QCPStructureGPU
 except ImportError:
     pass
 
@@ -23,12 +24,25 @@ if TYPE_CHECKING:
     import torch
     import cupy as cp
     from cupy.sparse import csr_matrix
-    from jaxtyping import Float
+    from jaxtyping import Float, Integer
+    TensorLike = jax.Array | cp.ndarray | csr_matrix
+
+
+@dataclass
+class GpuDataMatrices:
+    Pjxs: list[jsparse.BCSR]
+    Pcps: list[csr_matrix]
+    Ajxs: list[jsparse.BCSR]
+    Acps: list[csr_matrix]
+    qjxs: list[jax.Array]
+    qcps: list[cp.ndarray]
+    bjxs: list[jax.Array]
+    bcps: list[cp.ndarray]
 
 
 def _build_gpu_cqp_matrices(
     con_values: Float[jax.Array, "m n batch"],
-    quad_obj_values: Float[jax.Array, " n batch"],
+    quad_obj_values: Float[jax.Array, " n batch"] | None,
     lin_obj_values: Float[jax.Array, "n batch"],
     obj_csc_to_csr_permutation: jnp.ndarray,
     obj_structure: tuple[jnp.ndarray, jnp.ndarray],
@@ -38,7 +52,7 @@ def _build_gpu_cqp_matrices(
     con_shape: tuple[int, int],
     b_idxs: jnp.ndarray,
     batch_size: int
-):
+) -> GpuDataMatrices:
     """Build conic quadratic program matrices from constraint and objective values.
 
     Converts parameter values into the conic form required by CUCLARABEL and (gpu) diffqcp.
@@ -102,25 +116,30 @@ def _build_gpu_cqp_matrices(
         bjxs.append(bjx)
         bcps.append(bcp)
 
+    return GpuDataMatrices(
+        Pjxs=Pjxs, Pcps=Pcps, Ajxs=Ajxs, Acps=Acps,
+        qjxs=qjxs, qcps=qcps, bjxs=bjxs, bcps=bcps
+    )
+
 
 class DIFFQCP_CTX:
 
-    n: int
-    csc_objective_structure: tuple[jnp.ndarray, jnp.ndarray]
     csr_objective_structure: tuple[jnp.ndarray, jnp.ndarray]
     coo_objective_structure: tuple[jnp.ndarray, jnp.ndarray]
     obj_csc_to_csr_permutation: jnp.ndarray
+    obj_csr_to_csc_permutation: jnp.ndarray
+    P_shape: tuple[int, int]
 
-    m: int
     last_col_start: int
     last_col_end: int
     last_col_indices: jnp.ndarray
-    csc_con_structure: tuple[jnp.ndarray, jnp.ndarray]
     csr_con_structure: tuple[jnp.ndarray, jnp.ndarray]
     con_csc_to_csr_subset_and_permutation: jnp.ndarray
+    con_csr_to_csc_subset_and_permutation: jnp.ndarray
+    A_shape: tuple[int, int]
 
     dims: dict
-    diffqcp_problem_struc: QCPStructureLayers
+    diffqcp_problem_struc: QCPStructureGPU | None = None
     julia_ctx: Julia_CTX | None = None
 
     def __init__(
@@ -132,23 +151,20 @@ class DIFFQCP_CTX:
     ):
         obj_indices, obj_ptr, (n, _) = objective_structure
         
-        self.csc_objective_structure = jnp.array(obj_indices), jnp.array(obj_ptr)
         obj_csr = sp.csc_array(
             (np.arange(obj_indices.size), obj_indices, obj_ptr),
             shape=(n,n),
         ).tocsr()
-        self.n = n
         self.csr_objective_structure = jnp.array(obj_csr.indices), jnp.array(obj_csr.indptr)
         self.obj_csc_to_csr_permutation = jnp.array(obj_csr.data)
+        self.obj_csr_to_csc_permutation = jnp.empty_like(self.obj_csc_to_csr_permutation)
+        self.obj_csr_to_csc_permutation[self.obj_csc_to_csr_permutation] = jnp.arange(jnp.size(self.obj_csc_to_csr_permutation))
 
         con_indices, con_ptr, (m, np1) = constraint_structure
         assert np1 == n + 1
+        self.A_shape = (m, n)
 
-        # NOTE(quill): stole the following from `mpax_if.py`
-        self.last_col_start = con_ptr[-2]
-        self.last_col_end = con_ptr[-1]
-        self.last_col_indices = jnp.ndarray(con_indices[self.last_col_start : self.last_col_end])
-        self.m = m
+        self.b_idxs = jnp.ndarray(con_indices[con_ptr[-2] : con_ptr[-1]])
 
         # Now construct the structure for just the A matrix as expected by `diffqcp`
         con_csr = sp.csc_array(
@@ -157,13 +173,18 @@ class DIFFQCP_CTX:
         ).tocsr()
         self.csr_con_structure = jnp.array(con_csr.indices), jnp.array(con_csr.indptr)
         self.con_csc_to_csr_subset_and_permutation = jnp.array(con_csr.data)
+        self.con_csr_to_csc_subset_and_permutation = jnp.empty_like(self.con_csc_to_csr_subset_and_permutation)
+        self.con_csr_to_csc_subset_and_permutation[self.con_csc_to_csr_subset_and_permutation] = jnp.arange(
+            jnp.size(self.con_csc_to_csr_subset_and_permutation)
+        )
 
         self.dims = data["dims"]
-        self.diffqcp_problem_struc = QCPStructureLayers(
-            data,
-            *self.csr_objective_structure,
-            *self.csr_con_structure
-        )
+        # TODO(quill): for future
+        # self.diffqcp_problem_struc = QCPStructureLayers(
+        #     data,
+        #     *self.csr_objective_structure,
+        #     *self.csr_con_structure
+        # )
 
     def jax_to_data(
         self,
@@ -179,18 +200,38 @@ class DIFFQCP_CTX:
             quad_obj_values = jnp.expand_dims(quad_obj_values, axis=1) if quad_obj_values is not None else None
             lin_obj_values = jnp.expand_dims(lin_obj_values, axis=1)
         else:
-            raise ValueError("The diffqcp backend for CVXPYlayers does not "
-                             "currently support batched problems.")
-            # originally_unbatched = False
-            # batch_size = con_values.shape[1]
+            originally_unbatched = False
+            batch_size = con_values.shape[1]
         
         device: Device = quad_obj_values.device
         
         if device.platform == "cpu":
-            pass
+            raise ValueError("diffqcp currently can only run on GPU-enabled workflows.")
         elif device.platform == "gpu":
             if self.julia_ctx is None:
                 self.julia_ctx = Julia_CTX(self.dims)
+
+            data_matrices = _build_gpu_cqp_matrices(
+                con_values, quad_obj_values, lin_obj_values, self.obj_csc_to_csr_permutation,
+                self.csr_objective_structure, self.P_shape, self.con_csc_to_csr_subset_and_permutation,
+                self.csr_con_structure, self.A_shape, self.last_col_indices, batch_size
+            )
+
+            if self.diffqcp_problem_struc is None:
+                self.diffqcp_problem_struc = QCPStructureGPU(
+                    data_matrices.Pjxs[0], data_matrices.Ajxs[0], self.dims
+                )
+
+            return DIFFQCP_gpu_data(
+                data_matrices=data_matrices,
+                qcp_structure=self.diffqcp_problem_struc,
+                P_csr_csc_perm=self.obj_csr_to_csc_permutation,
+                A_csr_csc_perm=self.con_csr_to_csc_subset_and_permutation,
+                b_idxs = self.b_idxs,
+                julia_ctx=self.julia_ctx,
+                originally_unbatched=originally_unbatched
+            )
+
         else:
             raise ValueError("CVXPYlayers does not currently support operations "
                              f"on {device.platform}s.")
@@ -210,45 +251,20 @@ class DIFFQCP_CTX:
         )
 
 
-def _compute_gradients(
-    self,
-    primal: Float[jax.Array, "batch n"],
-    dual: Float[jax.Array, "batch m"],
-    qcp_problem_structure,
-    b_idxs,
-    vjp: Callable,
-):
-    
-    dP_batch = []
-    dq_batch = []
-    dA_batch = []
-
-    ds = jnp.zeros_like(dual[0]) # No gradient w.r.t. slack
-
-    for i in range(self.batch_size):
-        dP, dA, dq, db = vjp(primal[i], dual[i], ds, qcp_problem_structure)
-        
-        con_grad = jnp.hstack([-dA.data, db[b_idxs[i]]])
-        lin_grad = jnp.hstack([dq, jnp.array([0.0])])
-        dA_batch.append(con_grad)
-        dq_batch.append(lin_grad)
-        dP_batch.append(dP.data)
-
-    return dP_batch, dq_batch, dA_batch
-
-
 def _solve_gpu(
-    Pjxs: list[Float[jsparse.BCSR, "n n"]],
-    Pcps: list[Float[csr_matrix, "n n"]],
-    qjxs: list[Float[jax.Array, " n"]],
-    qcps: list[Float[cp.ndarray, " n"]],
-    Ajxs: list[Float[jsparse.BCSR, "m n"]],
-    Acps: list[Float[csr_matrix, "m n"]],
-    bjxs: list[Float[jax.Array, " n"]],
-    bcps: list[Float[cp.ndarray, " m"]],
+    data_matrices: GpuDataMatrices,
     qcp_struc,
     julia_ctx: Julia_CTX
-):
+) -> tuple[list[Float[jax.Array, " n"]], list[Float[jax.Array, " m"]], list[Callable]]:
+
+    Pjxs = data_matrices.Pjxs
+    Pcps = data_matrices.Pcps
+    Ajxs = data_matrices.Ajxs
+    Acps = data_matrices.Acps
+    qjxs = data_matrices.qjxs
+    qcps = data_matrices.qcps
+    bjxs = data_matrices.bjxs
+    bcps = data_matrices.bcps
 
     xs, ys, vjps = [], [], []
     
@@ -262,6 +278,7 @@ def _solve_gpu(
         xjx = jax.dlpack.from_dlpack(xcp)
         yjx = jax.dlpack.from_dlpack(ycp)
         sjx = jax.dlpack.from_dlpack(scp)
+        qcp_struc = QCPStructureGPU(Pjxs[i], Ajxs[i], )
         qcp = DeviceQCP(
             Pjxs[i], Ajxs[i], qjxs[i], bjxs[i],
             xjx, yjx, sjx, qcp_struc
@@ -270,9 +287,36 @@ def _solve_gpu(
         ys.append(yjx)
         vjps.append(qcp.vjp)
 
-    primal = jnp.stack(xs)
-    dual = jnp.stack(ys)
-    return primal, dual, vjps
+    return xs, ys, vjps
+
+
+def _compute_gradients(
+    dprimal: Float[jax.Array, "batch n"],
+    ddual: Float[jax.Array, "batch m"],
+    P_csr_csc_perm: Integer[jax.Array, "..."],
+    A_csr_csc_perm: Integer[jax.Array, "..."],
+    b_idxs: Integer[jax.Array, "..."],
+    vjps: list[Callable],
+) -> tuple[list[jax.Array], list[jax.Array], list[jax.Array]]:
+    
+    dP_batch = []
+    dq_batch = []
+    dA_batch = []
+    num_batches = jnp.shape(dprimal)[0]
+
+    ds = jnp.zeros_like(ddual[0]) # No gradient w.r.t. slack
+
+    for i in range(num_batches):
+        # TODO(quill): add ability to pass parameers to `vjp`
+        dP, dA, dq, db = vjps[i](dprimal[i], ddual[i], ds)
+        
+        con_grad = jnp.hstack([-dA.data[A_csr_csc_perm], db[b_idxs]])
+        lin_grad = jnp.hstack([dq, jnp.array([0.0])])
+        dA_batch.append(con_grad)
+        dq_batch.append(lin_grad)
+        dP_batch.append(dP.data[P_csr_csc_perm])
+
+    return dP_batch, dq_batch, dA_batch
 
 
 @dataclass
@@ -286,78 +330,110 @@ class DIFFQCP_cpu_data:
 
 
 @dataclass
-class DIFFQCP_gpu_data_old:
+class DIFFQCP_gpu_data:
     
-    ctx: DIFFQCP_CTX # Reference to context with structure info
-    quad_obj_values: Float[jax.Array, "_ batch"] | None
-    lin_obj_values: Float[jax.Array, "_ batch"]
-    con_values: Float[jax.Array, "_ batch"]
-    batch_size: int
+    data_matrices: GpuDataMatrices
+    qcp_structure: QCPStructureGPU# QCPStructureLayers
+    P_csr_csc_perm: Integer[jax.Array, "..."]
+    A_csr_csc_perm: Integer[jax.Array, "..."]
+    b_idxs: Integer[jax.Array, "..."]
+    julia_ctx: Julia_CTX
     originally_unbatched: bool
 
-    def _solve(
+    def jax_solve(self, solver_args=None):
+        
+        if solver_args is None:
+            solver_args = {}
+
+        xs, ys, vjps = _solve_gpu(
+            self.data_matrices,
+            qcp_struc=self.qcp_structure,
+            julia_ctx=self.julia_ctx
+        )
+
+        primal = jnp.stack([x for x in xs])
+        dual = jnp.stack([y for y in ys])
+
+        return primal, dual, vjps
+
+    def jax_derivative(
         self,
-        solver_args=None
-    ) -> tuple[Float[jax.Array, "batch n"], Float[jax.Array, "batch m"], Callable]:
-        # NOTE(quill) skip batching for now; try with CUDA streams when adding batch support
-        import cupy as cp
-        from cupy.sparse import csr_matrix
+        dprimal: Float[jax.Array, "batch_size n"],
+        ddual: Float[jax.Array, "batch_size m"],
+        vjps: list[Callable]
+    ):
+        dP_batch, dq_batch, dA_batch = _compute_gradients(
+            dprimal=dprimal,
+            ddual=ddual,
+            P_csr_csc_perm=self.P_csr_csc_perm,
+            A_csr_csc_perm=self.A_csr_csc_perm,
+            b_idxs=self.b_idxs,
+            vjps=vjps
+        )
+
+        # Stack into shape (num_entries, batch_size)
+        dP_stacked = jnp.stack([jnp.array(g) for g in dP_batch]).T
+        dq_stacked = jnp.stack([jnp.array(g) for g in dq_batch]).T
+        dA_stacked = jnp.stack([jnp.array(g) for g in dA_batch]).T
+
+        # Squeeze batch dimension only if input was originally unbatched
+        if self.originally_unbatched:
+            dP_stacked = jnp.squeeze(dP_stacked, 1)
+            dq_stacked = jnp.squeeze(dq_stacked, 1)
+            dA_stacked = jnp.squeeze(dA_stacked, 1)
+
+        return (
+            dP_stacked,
+            dq_stacked,
+            dA_stacked,
+        )
+
+    def torch_solve(self, solver_args=None):
         
-        P_shape = (self.ctx.n, self.ctx.n)
-        if self.quad_obj_values is None:
-            Pjx = jsparse.empty(shape=P_shape, sparse_format="bcsr")
-            Pcp = csr_matrix(P_shape)
-        else:
-            Pjx_data = self.quad_obj_values[self.ctx.obj_csc_to_csr_permutation, 0]
-            Pjx = jsparse.BCSR((
-                Pjx_data,
-                self.ctx.csr_objective_structure[0],
-                self.ctx.csr_objective_structure[1]
-            ), shape=P_shape)
-            Pcp_data = cp.from_dlpack(Pjx_data)
-            Pcp = csr_matrix((
-                Pcp_data,
-                cp.from_dlpack(self.ctx.csr_objective_structure[0]),
-                cp.from_dlpack(self.ctx.csr_objective_structure[1])
-            ), shape=P_shape)
-        # use c for linear part of objective since `qcp` is used in context of `diffqcp` module
-        cjx = self.lin_obj_values[:-1, 0]
-        ccp = cp.from_dlpack(cjx)
-        
-        b_values = self.con_values[self.ctx.last_col_start : self.ctx.last_col_end, 0]
-        bjx = jnp.zeros(self.ctx.m)
-        bjx = bjx.at[self.ctx.last_col_indices].set(b_values)
-        bcp = cp.from_dlpack(bjx)
-        
-        A_shape = (self.ctx.m, self.ctx.n)
-        # Negate A to match DIFFQCP/DIFFCP convention.
-        Ajx_data = self.con_values[self.ctx.con_csc_to_csr_subset_and_permutation, 0]
-        Ajx = jsparse.BCSR((
-            Ajx_data,
-            self.ctx.csr_con_structure[0],
-            self.ctx.csr_con_structure[1]
-        ), shape=A_shape)
-        Acp_data = cp.from_dlpack(Ajx_data)
-        Acp = csr_matrix((
-            Acp_data,
-            cp.from_dlpack(self.ctx.csr_con_structure[0]),
-            cp.from_dlpack(self.ctx.csr_con_structure[1])
-        ), shape=A_shape)
+        if solver_args is None:
+            solver_args = {}
 
-        xcp, ycp, scp = self.ctx.julia_ctx.solve(Pcp, Acp, ccp, bcp)
-        x = jax.dlpack.from_dlpack(xcp)
-        y = jax.dlpack.from_dlpack(ycp)
-        s = jax.dlpack.from_dlpack(scp)
+        xs, ys, vjps = _solve_gpu(
+            self.data_matrices,
+            qcp_struc=self.qcp_structure,
+            julia_ctx=self.julia_ctx
+        )
 
-        qcp = DeviceQCP(Pjx, Ajx, cjx, bjx, x, y, s, self.ctx.diffqcp_problem_struc)
+        primal = torch.stack([torch.from_dlpack(x) for x in xs])
+        dual = torch.stack([torch.from_dlpack(y) for y in ys])
+        return primal, dual, vjps
 
-        # TODO(quill): put back in batch form
-        # TODO(quill): determine where you want to JIT
-        #   (remember you cannot JIT whole `vjp` if using nvmath for solve)
-        return x, y, qcp.vjp
-    
-    
+    def torch_derivative(
+        self,
+        dprimal: Float[torch.Tensor, "batch_size n"],
+        ddual: Float[torch.Tensor, "batch_size m"],
+        vjps: list[Callable]
+    ):
+        dP_batch, dq_batch, dA_batch = _compute_gradients(
+            dprimal=jax.dlpack.from_dlpack(dprimal),
+            ddual=jax.dlpack.from_dlpack(ddual),
+            P_csr_csc_perm=self.P_csr_csc_perm,
+            A_csr_csc_perm=self.A_csr_csc_perm,
+            b_idxs=self.b_idxs,
+            vjps=vjps
+        )
 
+        # Stack into shape (num_entries, batch_size)
+        dP_stacked = torch.stack([torch.from_dlpack(g) for g in dP_batch]).T
+        dq_stacked = torch.stack([torch.from_dlpack(g) for g in dq_batch]).T
+        dA_stacked = torch.stack([torch.from_dlpack(g) for g in dA_batch]).T
+
+        # Squeeze batch dimension only if input was originally unbatched
+        if self.originally_unbatched:
+            dP_stacked = dP_stacked.squeeze(1)
+            dq_stacked = dq_stacked.squeeze(1)
+            dA_stacked = dA_stacked.squeeze(1)
+
+        return (
+            dP_stacked,
+            dq_stacked,
+            dA_stacked,
+        )
 
 
 type DIFFQCP_data = DIFFQCP_cpu_data | DIFFQCP_gpu_data
