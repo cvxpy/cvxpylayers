@@ -46,7 +46,7 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 [project.optional-dependencies]
 torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0"]
+all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "diffqcp>=0.1.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvxpylayers"]
