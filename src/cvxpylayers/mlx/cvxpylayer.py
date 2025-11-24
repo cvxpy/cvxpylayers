@@ -318,7 +318,6 @@ class CvxpyLayer:
     ) -> None:
         if solver_args is None:
             solver_args = {}
-        print(f"[MLX DEBUG] CvxpyLayer.__init__: Creating layer with solver='{solver}'")
         self.ctx = pa.parse_args(
             problem,
             variables,
@@ -329,7 +328,6 @@ class CvxpyLayer:
             canon_backend=canon_backend,
             solver_args=solver_args,
         )
-        print(f"[MLX DEBUG] CvxpyLayer.__init__: Layer initialized with solver_ctx={type(self.ctx.solver_ctx).__name__}")
         reduced_P = getattr(self.ctx.reduced_P, "reduced_mat", None)
         self._P_dense = (
             _scipy_csr_to_numpy_array(reduced_P) if reduced_P is not None else None
@@ -390,16 +388,12 @@ class CvxpyLayer:
         @mx.custom_function
         def solve_layer(P_tensor, q_tensor, A_tensor):
             quad_values = P_tensor if has_P else None
-            print(f"[MLX DEBUG] solve_layer (forward): Calling mlx_to_data on {type(ctx.solver_ctx).__name__}")
             data = ctx.solver_ctx.mlx_to_data(
                 quad_values,
                 q_tensor,
                 A_tensor,
             )
-            print(f"[MLX DEBUG] solve_layer (forward): Created data object: {type(data).__name__}")
-            print(f"[MLX DEBUG] solve_layer (forward): Calling mlx_solve with solver_args={solver_args}")
             primal, dual, adj_batch = data.mlx_solve(solver_args)
-            print(f"[MLX DEBUG] solve_layer (forward): mlx_solve completed, primal.shape={primal.shape}, dual.shape={dual.shape}")
             info_storage["data"] = data
             info_storage["adj_batch"] = adj_batch
             info_storage["has_P"] = has_P
@@ -423,9 +417,7 @@ class CvxpyLayer:
             data = info_storage["data"]
             adj_batch = info_storage["adj_batch"]
 
-            print(f"[MLX DEBUG] solve_layer_vjp (backward): Calling mlx_derivative on {type(data).__name__}")
             dP, dq, dA = data.mlx_derivative(dprimal, ddual, adj_batch)
-            print(f"[MLX DEBUG] solve_layer_vjp (backward): mlx_derivative completed, dP={dP is not None}, dq.shape={dq.shape if dq is not None else None}, dA.shape={dA.shape if dA is not None else None}")
 
             if not info_storage["has_P"] or dP is None:
                 grad_P = _zeros_like(primals[0])
