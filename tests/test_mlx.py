@@ -10,7 +10,7 @@ import torch
 
 from cvxpylayers.mlx.cvxpylayer import CvxpyLayer
 from cvxpylayers.torch import CvxpyLayer as TorchCvxpyLayer
-
+print(f"using default_device as {mx.default_device()}")
 sys.path.append(os.path.dirname(__file__)) #pytests discovery hack
 
 

@@ -449,7 +449,6 @@ class MPAX_data:
         )
 
     def mlx_solve(self, solver_args=None):
-        print(f"[MLX DEBUG] MPAX_data.mlx_solve: Called with batch_size={self.batch_size}, solver_args={solver_args}")
         if mx is None:
             raise ImportError(
                 "MLX interface requires 'mlx' package to be installed. "
@@ -457,14 +456,12 @@ class MPAX_data:
             )
 
         # Use JAX solve (MPAX uses JAX internally)
-        print(f"[MLX DEBUG] MPAX_data.mlx_solve: Calling jax_solve")
         primal_jax, dual_jax, vjp_fun = self.jax_solve(solver_args)
 
         # Convert JAX arrays to MLX arrays
         primal = mx.array(np.array(primal_jax), dtype=mx.float64)
         dual = mx.array(np.array(dual_jax), dtype=mx.float64)
 
-        print(f"[MLX DEBUG] MPAX_data.mlx_solve: Completed, returning primal.shape={primal.shape}, dual.shape={dual.shape}")
         return primal, dual, vjp_fun
 
     def jax_derivative(self, primal, dual, fun):
@@ -494,7 +491,7 @@ class MPAX_data:
         )
 
     def mlx_derivative(self, primal, dual, adj_batch):
-        print(f"[MLX DEBUG] MPAX_data.mlx_derivative: Called with primal.shape={primal.shape if hasattr(primal, 'shape') else 'N/A'}, dual.shape={dual.shape if hasattr(dual, 'shape') else 'N/A'}, batch_size={self.batch_size}")
+
         if mx is None:
             raise ImportError(
                 "MLX interface requires 'mlx' package to be installed. "
@@ -514,5 +511,4 @@ class MPAX_data:
         lin_mlx = mx.array(np.array(lin), dtype=mx.float64)
         con_mlx = mx.array(np.array(con), dtype=mx.float64)
 
-        print(f"[MLX DEBUG] MPAX_data.mlx_derivative: Completed, returning quad={quad_mlx is not None}, lin.shape={lin_mlx.shape if lin_mlx is not None else None}, con.shape={con_mlx.shape if con_mlx is not None else None}")
         return quad_mlx, lin_mlx, con_mlx

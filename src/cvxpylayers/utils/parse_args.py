@@ -314,7 +314,6 @@ def parse_args(
     cone_dims = data["dims"]
 
     # Create solver context
-    print(f"[MLX DEBUG] parse_args: Creating solver context for solver='{solver}'")
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver,
         param_prob,
@@ -322,7 +321,6 @@ def parse_args(
         data,
         solver_args,
     )
-    print(f"[MLX DEBUG] parse_args: Solver context created: {type(solver_ctx).__name__}")
 
     # Build parameter ordering mapping
     user_order_to_col_order = _build_user_order_mapping(
