@@ -74,7 +74,7 @@ def test_example():
         (solution,) = cvxpylayer(A_mx, b_mx)
         return mx.sum(solution)
 
-    grad_loss = mx.grad(lambda A_, b_: mx.sum(cvxpylayer(A_, b_)[0]))
+    grad_loss = mx.grad(lambda A_, b_: mx.sum(cvxpylayer(A_, b_)[0]), argnums=(0, 1))
     grad_A, grad_b = grad_loss(A_mx, b_mx)
     assert grad_A.shape == A_mx.shape
     assert grad_b.shape == b_mx.shape
@@ -355,7 +355,7 @@ def test_shared_parameter():
     def f(A):
         (x1,) = layer1(A, solver_args=solver_args)
         (x2,) = layer2(A, solver_args=solver_args)
-        return mx.concatenate((x1, x2))
+        return mx.sum(mx.concatenate((x1, x2)))
 
     # Test that gradients can be computed
     grad_A = mx.grad(f)(A_mx)
