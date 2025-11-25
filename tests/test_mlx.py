@@ -10,8 +10,6 @@ import torch
 
 from cvxpylayers.mlx.cvxpylayer import CvxpyLayer
 from cvxpylayers.torch import CvxpyLayer as TorchCvxpyLayer
-print(f"using default_device as {mx.default_device()}")
-sys.path.append(os.path.dirname(__file__)) #pytests discovery hack
 
 
 def to_numpy(x):
@@ -802,7 +800,7 @@ def test_limited_multilayer_proj(n, k):
     """Test limited multilayer projection comparing MLX with PyTorch."""
     x = cp.Parameter(n)
     y = cp.Variable(n)
-    obj = -x * y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
+    obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
 
@@ -905,7 +903,7 @@ def test_ellipsoid_projection(n):
     _t = cp.Variable(n)
 
     obj = cp.Minimize(0.5 * cp.sum_squares(_x - _y))
-    cons = [0.5 * cp.sum_squares(_A * _t) <= 1, _t == (_y - _z)]
+    cons = [0.5 * cp.sum_squares(_A @ _t) <= 1, _t == (_y - _z)]
     prob = cp.Problem(obj, cons)
 
     # MLX and Torch layers

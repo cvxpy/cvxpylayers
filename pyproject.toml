@@ -17,7 +17,7 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.12"
 dependencies = [
-    "cvxpy>=1.8.0",
+    "cvxpy>=1.7.4",
     "diffcp>=1.1.0",
     "numpy >= 2.0.0",
     "scipy >= 1.16.0",
@@ -154,6 +154,3 @@ known-first-party = ["cvxpylayers"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
-
-[tool.uv.sources]
-cvxpy = { git = "https://github.com/cvxpy/cvxpy.git", branch = "master" }

@@ -20,8 +20,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         run: |
-          uv pip install --system -e ".[all]"
-          uv pip install --system mpax pytest
+          uv pip install --system -e ".[torch,jax]"
+          uv pip install --system "mlx[cpu]" mpax pytest
       - name: Run tests
         run: pytest
 
