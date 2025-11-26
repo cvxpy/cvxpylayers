@@ -448,6 +448,7 @@ class DIFFQCP_gpu_data:
         )
 
     def torch_solve(self, solver_args=None):
+        import torch
         
         if solver_args is None:
             solver_args = {}
@@ -468,6 +469,7 @@ class DIFFQCP_gpu_data:
         ddual: Float[torch.Tensor, "batch_size m"],
         vjps: list[Callable]
     ):
+        import torch
         dP_batch, dq_batch, dA_batch = _compute_gradients(
             # dprimal=jax.dlpack.from_dlpack(dprimal),
             dprimal=jnp.array(dprimal),
@@ -551,7 +553,7 @@ class Julia_CTX:
             self.jl.Float64, int(A.data.data.ptr), int(A.indices.data.ptr),
             int(A.indptr.data.ptr), *A.shape, A.nnz
         )
-        self.b = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(b.data.ptr), b.size)
+        self.jl.b = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(b.data.ptr), b.size)
 
         self.jl.seval("""solver = Clarabel.setup!(solver, P,q,A,b,cones)""")
         self.jl.Clarabel.solve_b(self.jl.solver)
