@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import scipy.sparse as sp
+from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict as scs_dims_to_solver_dict
 from cvxpy.reductions.solvers.conic_solvers.cuclarabel_conif import dims_to_solver_cones as dims_to_cusolver_cones
 
 try:
@@ -251,7 +252,7 @@ class DIFFQCP_CTX:
 
             if self.diffqcp_problem_struc is None:
                 self.diffqcp_problem_struc = QCPStructureGPU(
-                    data_matrices.Pjxs[0], data_matrices.Ajxs[0], self.dims
+                    data_matrices.Pjxs[0], data_matrices.Ajxs[0], scs_dims_to_solver_dict(self.dims)
                 )
 
             return DIFFQCP_gpu_data(
@@ -290,7 +291,7 @@ class DIFFQCP_CTX:
 
 def _solve_gpu(
     data_matrices: GpuDataMatrices,
-    qcp_struc,
+    qcp_struc: QCPStructureGPU,
     julia_ctx: Julia_CTX
 ) -> tuple[list[Float[jax.Array, " n"]], list[Float[jax.Array, " m"]], list[Callable]]:
 
@@ -315,7 +316,6 @@ def _solve_gpu(
         xjx = jax.dlpack.from_dlpack(xcp)
         yjx = jax.dlpack.from_dlpack(ycp)
         sjx = jax.dlpack.from_dlpack(scp)
-        qcp_struc = QCPStructureGPU(Pjxs[i], Ajxs[i], )
         qcp = DeviceQCP(
             Pjxs[i], Ajxs[i], qjxs[i], bjxs[i],
             xjx, yjx, sjx, qcp_struc
@@ -512,6 +512,7 @@ class Julia_CTX:
         from juliacall import Main as jl
         self.jl = jl
         # self.jl.seval('import Pkg; Pkg.develop(url="https://github.com/oxfordcontrol/Clarabel.jl.git")')
+        # self.jl.seval('import Pkg; Pkg.develop(url="https://github.com/PTNobel/Clarabel.jl.git")')
         # self.jl.seval('Pkg.add("CUDA")')
         self.jl.seval("using Clarabel, LinearAlgebra, SparseArrays")
         self.jl.seval("using CUDA, CUDA.CUSPARSE")
@@ -535,6 +536,7 @@ class Julia_CTX:
     ) -> tuple[cp.ndarray, cp.ndarray, cp.ndarray]:
         """Taken from `cvxpy`'s `clarabel_conif.py`"""
         nvars = q.size
+        self.jl.q = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(q.data.ptr), nvars)
         if P.nnz != 0:
             self.jl.P = self.jl.Clarabel.cupy_to_cucsrmat(
                 self.jl.Float64, int(P.data.data.ptr), int(P.indices.data.ptr),
@@ -544,7 +546,6 @@ class Julia_CTX:
             self.jl.seval(f"""
             P = CuSparseMatrixCSR(sparse(Float64[], Float64[], Float64[], {nvars}, {nvars}))
             """)
-        self.jl.q = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(q.data.ptr), nvars)
 
         self.jl.A = self.jl.Clarabel.cupy_to_cucsrmat(
             self.jl.Float64, int(A.data.data.ptr), int(A.indices.data.ptr),

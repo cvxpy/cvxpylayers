@@ -260,7 +260,7 @@ def parse_args(
     else:
         # Standard DCP path
         data, _, _ = problem.get_problem_data(
-            solver=solver,
+            solver=cp.CLARABEL,
             gp=False,
             verbose=verbose,
             canon_backend=canon_backend,

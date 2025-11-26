@@ -15,10 +15,11 @@ authors = [
     { name = "S. Diamond" },
 ]
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "cvxpy>=1.8.0",
     "diffcp>=1.1.0",
+    "diffqcp",
     "numpy >= 2.0.0",
     "scipy >= 1.16.0",
 ]
@@ -46,7 +47,7 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 [project.optional-dependencies]
 torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "diffqcp>=0.1.0"]
+all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvxpylayers"]
@@ -112,16 +113,6 @@ ignore-imports = true
 [tool.pylint.FORMAT]
 max-line-length = 88
 
-[tool.pytest.ini_options]
-#addopts = "--cov-report xml:coverage.xml --cov src.repository --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
-pythonpath = ["src"]
-log_cli = true
-log_cli_level = "DEBUG"
-log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
-log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-testpaths = "tests"
-markers = ["integration: marks as integration test"]
-
 [tool.ruff]
 # Follow cvxpy's ruff configuration for consistency
 target-version = "py312"
@@ -155,3 +146,4 @@ max-complexity = 25
 
 [tool.uv.sources]
 cvxpy = { git = "https://github.com/cvxpy/cvxpy.git", branch = "master" }
+diffqcp = { git = "https://github.com/cvxgrp/diffqcp.git", branch = "bugfix/more-packaging" }
