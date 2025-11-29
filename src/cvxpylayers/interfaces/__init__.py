@@ -17,6 +17,10 @@ def get_solver_ctx(
             )
 
             ctx_cls = CUCLARABEL_ctx
+        case "MOREAU":
+            from cvxpylayers.interfaces.moreau_if import MOREAU_ctx
+
+            ctx_cls = MOREAU_ctx
         case "DIFFCP":
             from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
 

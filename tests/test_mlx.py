@@ -3,10 +3,11 @@ import sys
 
 import cvxpy as cp
 import diffcp
-import mlx.core as mx
 import numpy as np
 import pytest
 import torch
+
+mx = pytest.importorskip("mlx.core")
 
 from cvxpylayers.mlx.cvxpylayer import CvxpyLayer
 from cvxpylayers.torch import CvxpyLayer as TorchCvxpyLayer
