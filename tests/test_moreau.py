@@ -7,10 +7,10 @@ import torch
 
 from cvxpylayers.torch import CvxpyLayer
 
-# Skip all tests in this module if moreau_torch is not installed (for PyTorch tests)
-# JAX tests use plain moreau
-moreau_torch = pytest.importorskip("moreau_torch")
+# Skip all tests in this module if moreau is not installed with PyTorch support
 moreau = pytest.importorskip("moreau")
+if moreau.TorchSolver is None:
+    pytest.skip("moreau.TorchSolver not available", allow_module_level=True)
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 

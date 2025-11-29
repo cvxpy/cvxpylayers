@@ -16,13 +16,7 @@ from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
 from cvxpylayers.utils.solver_utils import convert_csc_structure_to_csr_structure
 
-# Moreau torch bindings (for PyTorch path)
-try:
-    import moreau_torch
-except ImportError:
-    moreau_torch = None  # type: ignore[assignment]
-
-# Plain moreau (for JAX path - no torch bindings)
+# Moreau unified package (provides both NumPy and PyTorch interfaces)
 try:
     import moreau
 except ImportError:
@@ -61,30 +55,22 @@ def _detect_batch_size(con_values: TensorLike) -> tuple[int, bool]:
         return con_values.shape[1], False
 
 
-def _cvxpy_dims_to_moreau_cones(dims: dict, for_torch: bool = False):
+def _cvxpy_dims_to_moreau_cones(dims: dict):
     """Convert CVXPYLayers cone dimensions to Moreau Cones object.
 
     Args:
         dims: Dictionary with keys 'z', 'l', 'q', 'ep', 'p', etc.
-        for_torch: If True, use moreau_torch.Cones, else moreau.Cones
 
     Returns:
-        Cones object
+        moreau.Cones object
     """
-    if for_torch:
-        if moreau_torch is None:
-            raise ImportError(
-                "Moreau torch interface requires 'moreau_torch' package. "
-                "Build moreau with BUILD_PYTORCH_EXTENSION=ON"
-            )
-        cones = moreau_torch.Cones()
-    else:
-        if moreau is None:
-            raise ImportError(
-                "Moreau solver requires 'moreau' package. "
-                "Install with: pip install moreau"
-            )
-        cones = moreau.Cones()
+    if moreau is None:
+        raise ImportError(
+            "Moreau solver requires 'moreau' package. "
+            "Install with: pip install moreau"
+        )
+
+    cones = moreau.Cones()
 
     # Zero cone (equality constraints)
     cones.num_zero_cones = dims.get("z", 0)
@@ -112,8 +98,8 @@ def _cvxpy_dims_to_moreau_cones(dims: dict, for_torch: bool = False):
 class MOREAU_ctx:
     """Context class for Moreau solver.
 
-    Stores problem structure (CSR format) and creates solvers per batch size.
-    Batch size is fixed at solver construction for efficient memory pre-allocation.
+    Stores problem structure (CSR format) and creates solvers with lazy batch init.
+    Batch size is inferred from inputs at solve time (moreau handles auto-reset).
     """
 
     P_idx: np.ndarray | None
@@ -127,10 +113,8 @@ class MOREAU_ctx:
     A_shape: tuple[int, int]
     b_idx: np.ndarray
 
-    cones: Any  # moreau.Cones (for JAX)
-    cones_torch: Any  # moreau_torch.Cones (for PyTorch)
+    cones: Any  # moreau.Cones (unified for NumPy and PyTorch)
     dims: dict
-    _torch_solvers: dict  # Cache of moreau_torch.Solver by batch_size
 
     def __init__(
         self,
@@ -176,48 +160,39 @@ class MOREAU_ctx:
         self.dims = dims
         self.options = options or {}
 
-        # Create cones (lazily for each backend)
+        # Create cones and solver lazily
         self._cones = None
-        self._cones_torch = None
-        self._torch_solvers = {}  # Cache solvers by batch_size
+        self._torch_solver = None  # Single solver with lazy batch init
 
     @property
     def cones(self):
-        """Get moreau.Cones (for JAX path)."""
+        """Get moreau.Cones (unified for NumPy and PyTorch paths)."""
         if self._cones is None:
-            self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims), for_torch=False)
+            self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims))
         return self._cones
 
-    @property
-    def cones_torch(self):
-        """Get moreau_torch.Cones (for PyTorch path)."""
-        if self._cones_torch is None:
-            self._cones_torch = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims), for_torch=True)
-        return self._cones_torch
-
-    def get_torch_solver(self, batch_size: int):
-        """Get moreau_torch.Solver for given batch_size (cached by batch_size)."""
-        if batch_size not in self._torch_solvers:
-            if moreau_torch is None:
+    def get_torch_solver(self):
+        """Get moreau.TorchSolver with lazy batch initialization."""
+        if self._torch_solver is None:
+            if moreau is None or moreau.TorchSolver is None:
                 raise ImportError(
-                    "Moreau torch interface requires 'moreau_torch' package. "
+                    "Moreau torch interface requires 'moreau' package with PyTorch support. "
                     "Build moreau with BUILD_PYTORCH_EXTENSION=ON"
                 )
-            settings = moreau_torch.Settings()
+            settings = moreau.Settings()
             settings.verbose = self.options.get("verbose", False)
 
-            self._torch_solvers[batch_size] = moreau_torch.Solver(
+            self._torch_solver = moreau.TorchSolver(
                 n=self.P_shape[0],
                 m=self.A_shape[0],
-                batch_size=batch_size,
                 P_row_offsets=torch.tensor(self.P_row_offsets, dtype=torch.int64),
                 P_col_indices=torch.tensor(self.P_col_indices, dtype=torch.int64),
                 A_row_offsets=torch.tensor(self.A_row_offsets, dtype=torch.int64),
                 A_col_indices=torch.tensor(self.A_col_indices, dtype=torch.int64),
-                cones=self.cones_torch,
+                cones=self.cones,
                 settings=settings,
             )
-        return self._torch_solvers[batch_size]
+        return self._torch_solver
 
     def torch_to_data(
         self, quad_obj_values, lin_obj_values, con_values
@@ -280,7 +255,7 @@ class MOREAU_ctx:
             b=b,
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
-            solver=self.get_torch_solver(batch_size),
+            solver=self.get_torch_solver(),
             n=self.P_shape[0],
             m=self.A_shape[0],
         )
@@ -430,11 +405,10 @@ class MOREAU_data_jax:
         settings = moreau.Settings()
         settings.verbose = solver_args.get("verbose", self.options.get("verbose", False))
 
-        # Create solver
+        # Create solver (batch_size inferred from inputs via lazy init)
         solver = moreau.Solver(
             n=self.n,
             m=self.m,
-            batch_size=self.batch_size,
             P_row_offsets=self.P_row_offsets,
             P_col_indices=self.P_col_indices,
             A_row_offsets=self.A_row_offsets,
