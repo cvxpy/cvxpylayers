@@ -17,7 +17,7 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.12"
 dependencies = [
-    "cvxpy>=1.7.4",
+    "cvxpy @ git+https://github.com/optimalintellect/cvxpy-fork.git",
     "diffcp>=1.1.0",
     "numpy >= 2.0.0",
     "scipy >= 1.16.0",
@@ -48,8 +48,11 @@ torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
 mlx = ["mlx==0.27.1"]
 metal = ["mlx-metal==0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "diffqcp>=0.1.0", "mlx==0.27.1",
+all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "mlx==0.27.1",
     "mlx-metal==0.27.1"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvxpylayers"]

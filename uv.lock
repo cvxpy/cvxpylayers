@@ -257,19 +257,11 @@ wheels = [
 [[package]]
 name = "clarabel"
 version = "0.11.1"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/optimalintellect/Clarabel.rs.git#3a6c1fa7fc2bda83fcb13a9a2fa1e512b7e73e96" }
 dependencies = [
     { name = "cffi" },
     { name = "numpy" },
     { name = "scipy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/81/e2/47f692161779dbd98876015de934943effb667a014e6f79a6d746b3e4c2a/clarabel-0.11.1.tar.gz", hash = "sha256:e7c41c47f0e59aeab99aefff9e58af4a8753ee5269bbeecbd5526fc6f41b9598", size = 253949, upload-time = "2025-06-11T16:49:05.864Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/f7/f82698b6d00a40a80c67e9a32b2628886aadfaf7f7b32daa12a463e44571/clarabel-0.11.1-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c39160e4222040f051f2a0598691c4f9126b4d17f5b9e7678f76c71d611e12d8", size = 1039511, upload-time = "2025-06-11T16:48:58.525Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/8f/13650cfe25762b51175c677330e6471d5d2c5851a6fbd6df77f0681bb34e/clarabel-0.11.1-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:8963687ee250d27310d139eea5a6816f9c3ae31f33691b56579ca4f0f0b64b63", size = 935135, upload-time = "2025-06-11T16:48:59.901Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/9e/7af10d2b540b39f1a05d1ebba604fce933cc9bc0e65e88ec3b7a84976425/clarabel-0.11.1-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e4837b9d0db01e98239f04b1e3526a6cf568529d3c19a8b3f591befdc467f9bb", size = 1079226, upload-time = "2025-06-11T16:49:00.987Z" },
-    { url = "https://files.pythonhosted.org/packages/6b/a9/c76edf781ca3283186ff4b54a9a4fb51367fd04313a68e2b09f062407439/clarabel-0.11.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c8c41aaa6f3f8c0f3bd9d86c3e568dcaee079562c075bd2ec9fb3a80287380ef", size = 1164345, upload-time = "2025-06-11T16:49:02.675Z" },
-    { url = "https://files.pythonhosted.org/packages/41/e6/4eee3062088c221e5a18b054e51c69f616e0bb0dc1b0a1a5e0fe90dfa18e/clarabel-0.11.1-cp39-abi3-win_amd64.whl", hash = "sha256:557d5148a4377ae1980b65d00605ae870a8f34f95f0f6a41e04aa6d3edf67148", size = 887310, upload-time = "2025-06-11T16:49:04.277Z" },
 ]
 
 [[package]]
@@ -365,7 +357,7 @@ wheels = [
 [[package]]
 name = "cvxpy"
 version = "1.8.0"
-source = { git = "https://github.com/cvxpy/cvxpy.git?branch=master#ab16d41145efd9edb1016ddc7f1d61a9162bf0f8" }
+source = { git = "https://github.com/optimalintellect/cvxpy-fork.git#80005f15d62264f3a1c5329844475f50ffde607e" }
 dependencies = [
     { name = "clarabel" },
     { name = "numpy" },
@@ -389,11 +381,19 @@ dependencies = [
 all = [
     { name = "jax" },
     { name = "jaxlib" },
+    { name = "mlx" },
+    { name = "mlx-metal" },
     { name = "torch" },
 ]
 jax = [
     { name = "jax" },
     { name = "jaxlib" },
+]
+metal = [
+    { name = "mlx-metal" },
+]
+mlx = [
+    { name = "mlx" },
 ]
 torch = [
     { name = "diffcp" },
@@ -428,19 +428,23 @@ doc = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvxpy", git = "https://github.com/cvxpy/cvxpy.git?branch=master" },
+    { name = "cvxpy", git = "https://github.com/optimalintellect/cvxpy-fork.git" },
     { name = "diffcp", specifier = ">=1.1.0" },
     { name = "diffcp", marker = "extra == 'torch'", specifier = ">=1.1.0" },
     { name = "jax", marker = "extra == 'all'", specifier = ">=0.4.0" },
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.4.0" },
     { name = "jaxlib", marker = "extra == 'all'", specifier = ">=0.4.0" },
     { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.4.0" },
+    { name = "mlx", marker = "extra == 'all'", specifier = "==0.27.1" },
+    { name = "mlx", marker = "extra == 'mlx'", specifier = "==0.27.1" },
+    { name = "mlx-metal", marker = "extra == 'all'", specifier = "==0.27.1" },
+    { name = "mlx-metal", marker = "extra == 'metal'", specifier = "==0.27.1" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "scipy", specifier = ">=1.16.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["torch", "jax", "all"]
+provides-extras = ["torch", "mlx", "metal", "jax", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1000,6 +1004,34 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/53/21/783dfb51f40d2660afeb9bccf3612b99f6a803d980d2a09132b0f9d216ab/ml_dtypes-0.5.3-cp314-cp314t-macosx_10_13_universal2.whl", hash = "sha256:e12e29764a0e66a7a31e9b8bf1de5cc0423ea72979f45909acd4292de834ccd3", size = 689324, upload-time = "2025-07-29T18:39:07.567Z" },
     { url = "https://files.pythonhosted.org/packages/09/f7/a82d249c711abf411ac027b7163f285487f5e615c3e0716c61033ce996ab/ml_dtypes-0.5.3-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:19f6c3a4f635c2fc9e2aa7d91416bd7a3d649b48350c51f7f715a09370a90d93", size = 5275917, upload-time = "2025-07-29T18:39:09.339Z" },
     { url = "https://files.pythonhosted.org/packages/7f/3c/541c4b30815ab90ebfbb51df15d0b4254f2f9f1e2b4907ab229300d5e6f2/ml_dtypes-0.5.3-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5ab039ffb40f3dc0aeeeba84fd6c3452781b5e15bef72e2d10bcb33e4bbffc39", size = 5285284, upload-time = "2025-07-29T18:39:11.532Z" },
+]
+
+[[package]]
+name = "mlx"
+version = "0.27.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mlx-metal", marker = "sys_platform == 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/43/125102bbb2be6825880ae2dc8d8702f99cfa7753407f574457b36e422218/mlx-0.27.1-cp312-cp312-macosx_13_0_arm64.whl", hash = "sha256:0c570c9afb57c697bd864504115be8a7c4de97f0b80557a597d496ee426a6812", size = 549869, upload-time = "2025-07-25T22:55:32.698Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/79/0bf681700fc8b165517e907f9ec777b5a5d628004a65a777148f68c6baa0/mlx-0.27.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:ccff7bbbd9df302b26e79013ef6d0c3531c9ba5963ead521e2d85856811b86a0", size = 531671, upload-time = "2025-07-25T22:57:03.392Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/97/f1367b4892bef7f78e38737d3a28094e93124f11684a28a9e92ed5a13b2b/mlx-0.27.1-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:9ccadaed449c07dfeae484620992b904c17dfea7564f8df63095c60eed3af02b", size = 531672, upload-time = "2025-07-25T22:55:35.779Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/0f/3ebec0806ed2c5ba8ba151394cd62a46b4d83ea347da33af91b86d8969d4/mlx-0.27.1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:742c413e75605b71db69379a176da63e32ba19b9e9ad03b8763adbd1fcfcd394", size = 621661, upload-time = "2025-07-25T22:58:00.96Z" },
+    { url = "https://files.pythonhosted.org/packages/86/f6/4324386b0764deb692e14a97282a348a9a938aa8b441bf8b6c7599f418d4/mlx-0.27.1-cp313-cp313-macosx_13_0_arm64.whl", hash = "sha256:803669a28031766c2b0fe94c0a3bfd030184e706092f0a831b33620c1e2ef865", size = 549847, upload-time = "2025-07-25T22:55:17.581Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/4b/3194ccb03527a050c04d837d731a11599f8620e6ce16d3971798caae1d44/mlx-0.27.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:e9649b3d86ce564000797384510c9d07af38a9ce2a07df8e2f7c6a3e0f0f059e", size = 531664, upload-time = "2025-07-25T22:56:02.928Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/57/a6e0d8dc6e7ba08a64d71fb89d743e77446040113ea1dbb7950be8f60f39/mlx-0.27.1-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:5c501ceec7c6aa2ea1c850dd4e14e679f5416a142264b9d5d405a4e0aeb991b2", size = 531663, upload-time = "2025-07-25T22:55:38.62Z" },
+    { url = "https://files.pythonhosted.org/packages/48/96/6932e0fa866d08cdf77a3fc37cf624e4cac8960d2e297c3fd80afb49417d/mlx-0.27.1-cp313-cp313-manylinux_2_35_x86_64.whl", hash = "sha256:42bfbabdcd0b7aa1c94748c8963e66680a3cf3f599b01036db14e496bf276eb8", size = 621609, upload-time = "2025-07-25T22:58:21.477Z" },
+]
+
+[[package]]
+name = "mlx-metal"
+version = "0.27.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/77/89fa3327011f018638c9e943e1edc081ce9ca0ed296fe64d6daf93c6ff51/mlx_metal-0.27.1-py3-none-macosx_13_0_arm64.whl", hash = "sha256:c66d9b1adb3c0ea19492fba6493f672bc7542e65dd65f7e2995918815fbeb907", size = 33523035, upload-time = "2025-07-25T22:58:02.533Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/a8/ac706ad6ce834834762d5146d791f77710efc896c13ef47fd7d672099056/mlx_metal-0.27.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:fe4415ddd242974d91c7ca0699cd01507d17da8a5ba304122ef137cdb5e7fff4", size = 32926383, upload-time = "2025-07-25T22:57:54.194Z" },
+    { url = "https://files.pythonhosted.org/packages/78/77/6963681fb54ecaa0ae5de4209c15504a803a0edd1a33fd074e6c558fd5e0/mlx_metal-0.27.1-py3-none-macosx_15_0_arm64.whl", hash = "sha256:d025dea30bda8baa32c928cfa333eac64a5adc8d07656f8fc55072d99403ebc9", size = 32897065, upload-time = "2025-07-25T22:58:26.362Z" },
 ]
 
 [[package]]
@@ -1922,6 +1954,8 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6b/fa/3234f913fe9a6525a7b97c6dad1f51e72b917e6872e051a5e2ffd8b16fbb/ruamel.yaml.clib-0.2.14-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:70eda7703b8126f5e52fcf276e6c0f40b0d314674f896fc58c47b0aef2b9ae83", size = 137970, upload-time = "2025-09-22T19:51:09.472Z" },
     { url = "https://files.pythonhosted.org/packages/ef/ec/4edbf17ac2c87fa0845dd366ef8d5852b96eb58fcd65fc1ecf5fe27b4641/ruamel.yaml.clib-0.2.14-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:a0cb71ccc6ef9ce36eecb6272c81afdc2f565950cdcec33ae8e6cd8f7fc86f27", size = 739639, upload-time = "2025-09-22T19:51:10.566Z" },
     { url = "https://files.pythonhosted.org/packages/15/18/b0e1fafe59051de9e79cdd431863b03593ecfa8341c110affad7c8121efc/ruamel.yaml.clib-0.2.14-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:e7cb9ad1d525d40f7d87b6df7c0ff916a66bc52cb61b66ac1b2a16d0c1b07640", size = 764456, upload-time = "2025-09-22T19:51:11.736Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/cd/150fdb96b8fab27fe08d8a59fe67554568727981806e6bc2677a16081ec7/ruamel_yaml_clib-0.2.14-cp314-cp314-win32.whl", hash = "sha256:9b4104bf43ca0cd4e6f738cb86326a3b2f6eef00f417bd1e7efb7bdffe74c539", size = 102394, upload-time = "2025-11-14T21:57:36.703Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/e6/a3fa40084558c7e1dc9546385f22a93949c890a8b2e445b2ba43935f51da/ruamel_yaml_clib-0.2.14-cp314-cp314-win_amd64.whl", hash = "sha256:13997d7d354a9890ea1ec5937a219817464e5cc344805b37671562a401ca3008", size = 122673, upload-time = "2025-11-14T21:57:38.177Z" },
 ]
 
 [[package]]
