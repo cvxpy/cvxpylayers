@@ -112,8 +112,8 @@ def _cvxpy_dims_to_moreau_cones(dims: dict, for_torch: bool = False):
 class MOREAU_ctx:
     """Context class for Moreau solver.
 
-    Stores problem structure (CSR format) and creates solver once.
-    Batch size is inferred dynamically from input tensor shapes.
+    Stores problem structure (CSR format) and creates solvers per batch size.
+    Batch size is fixed at solver construction for efficient memory pre-allocation.
     """
 
     P_idx: np.ndarray | None
@@ -130,7 +130,7 @@ class MOREAU_ctx:
     cones: Any  # moreau.Cones (for JAX)
     cones_torch: Any  # moreau_torch.Cones (for PyTorch)
     dims: dict
-    torch_solver: Any  # moreau_torch.Solver (created lazily)
+    _torch_solvers: dict  # Cache of moreau_torch.Solver by batch_size
 
     def __init__(
         self,
@@ -179,7 +179,7 @@ class MOREAU_ctx:
         # Create cones (lazily for each backend)
         self._cones = None
         self._cones_torch = None
-        self._torch_solver = None
+        self._torch_solvers = {}  # Cache solvers by batch_size
 
     @property
     def cones(self):
@@ -195,10 +195,9 @@ class MOREAU_ctx:
             self._cones_torch = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims), for_torch=True)
         return self._cones_torch
 
-    @property
-    def torch_solver(self):
-        """Get moreau_torch.Solver (created once, batch size is dynamic)."""
-        if self._torch_solver is None:
+    def get_torch_solver(self, batch_size: int):
+        """Get moreau_torch.Solver for given batch_size (cached by batch_size)."""
+        if batch_size not in self._torch_solvers:
             if moreau_torch is None:
                 raise ImportError(
                     "Moreau torch interface requires 'moreau_torch' package. "
@@ -207,9 +206,10 @@ class MOREAU_ctx:
             settings = moreau_torch.Settings()
             settings.verbose = self.options.get("verbose", False)
 
-            self._torch_solver = moreau_torch.Solver(
+            self._torch_solvers[batch_size] = moreau_torch.Solver(
                 n=self.P_shape[0],
                 m=self.A_shape[0],
+                batch_size=batch_size,
                 P_row_offsets=torch.tensor(self.P_row_offsets, dtype=torch.int64),
                 P_col_indices=torch.tensor(self.P_col_indices, dtype=torch.int64),
                 A_row_offsets=torch.tensor(self.A_row_offsets, dtype=torch.int64),
@@ -217,7 +217,7 @@ class MOREAU_ctx:
                 cones=self.cones_torch,
                 settings=settings,
             )
-        return self._torch_solver
+        return self._torch_solvers[batch_size]
 
     def torch_to_data(
         self, quad_obj_values, lin_obj_values, con_values
@@ -280,7 +280,7 @@ class MOREAU_ctx:
             b=b,
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
-            solver=self.torch_solver,
+            solver=self.get_torch_solver(batch_size),
             n=self.P_shape[0],
             m=self.A_shape[0],
         )
@@ -443,36 +443,33 @@ class MOREAU_data_jax:
             settings=settings,
         )
 
-        # Stack values for batched solve
+        # Stack values for batched solve in (batch, dim) format
         if self.batch_size == 1:
-            P_values = self.P_vals_list[0]
-            A_values = self.A_vals_list[0]
-            q = self.q_list[0]
-            b = self.b_list[0]
+            # Single batch: add batch dimension
+            P_values = self.P_vals_list[0][np.newaxis, :]  # (1, nnzP)
+            A_values = self.A_vals_list[0][np.newaxis, :]  # (1, nnzA)
+            q = self.q_list[0][np.newaxis, :]  # (1, n)
+            b = self.b_list[0][np.newaxis, :]  # (1, m)
         else:
-            P_values = np.concatenate(self.P_vals_list) if self.P_vals_list[0].size > 0 else np.array([])
-            A_values = np.concatenate(self.A_vals_list)
-            q = np.concatenate(self.q_list)
-            b = np.concatenate(self.b_list)
+            # Stack into (batch, dim) shaped arrays
+            if self.P_vals_list[0].size > 0:
+                P_values = np.stack(self.P_vals_list)  # (batch, nnzP)
+            else:
+                P_values = np.zeros((self.batch_size, 0), dtype=np.float64)
+            A_values = np.stack(self.A_vals_list)  # (batch, nnzA)
+            q = np.stack(self.q_list)  # (batch, n)
+            b = np.stack(self.b_list)  # (batch, m)
 
-        # Solve
+        # Solve - moreau returns (batch, dim) shaped outputs
         result = solver.solve(P_values, A_values, q, b)
 
-        # Extract solutions
-        x = result["x"]
-        z = result["z"]
+        # Extract solutions - already in (batch, dim) format
+        x = result["x"]  # (batch, n)
+        z = result["z"]  # (batch, m)
 
-        # Reshape for batch
-        if self.batch_size == 1:
-            xs = [x]
-            zs = [z]
-        else:
-            xs = [x[i] for i in range(self.batch_size)]
-            zs = [z[i] for i in range(self.batch_size)]
-
-        # Stack results into batched arrays
-        primal = jnp.stack([jnp.array(xi) for xi in xs])
-        dual = jnp.stack([jnp.array(zi) for zi in zs])
+        # Convert to JAX arrays
+        primal = jnp.array(x)
+        dual = jnp.array(z)
 
         # No backward info
         backwards_info = None
