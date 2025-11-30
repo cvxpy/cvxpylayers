@@ -260,7 +260,7 @@ def parse_args(
     else:
         # Standard DCP path
         data, _, _ = problem.get_problem_data(
-            solver=solver if solver != 'DIFFQCP' else cp.CLARABEL,
+            solver=solver,
             gp=False,
             verbose=verbose,
             canon_backend=canon_backend,
