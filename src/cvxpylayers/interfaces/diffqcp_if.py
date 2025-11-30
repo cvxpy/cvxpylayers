@@ -229,46 +229,46 @@ class DIFFQCP_CTX:
             originally_unbatched = False
             batch_size = con_values.shape[1]
         
-        device: Device = quad_obj_values.device
+        device: Device = con_values.device
         
         if device.platform == "cpu":
-            raise ValueError("diffqcp currently can only run on GPU-enabled workflows.")
-        elif device.platform == "gpu":
-            if self.julia_ctx is None:
-                self.julia_ctx = Julia_CTX(self.dims)
+            gpu_device = next(d for d in jax.devices() if d.platform == "gpu")
+            con_values = jax.device_put(con_values, device=gpu_device)
+            quad_obj_values = (jax.device_put(quad_obj_values, device=gpu_device)
+                               if quad_obj_values is not None else None)
+            lin_obj_values = jax.device_put(lin_obj_values, device=gpu_device)
+            
+        if self.julia_ctx is None:
+            self.julia_ctx = Julia_CTX(self.dims)
 
-            data_matrices = _build_gpu_cqp_matrices(
-                con_values=con_values,
-                quad_obj_values=quad_obj_values,
-                lin_obj_values=lin_obj_values,
-                P_csr_idxs=self.P_csr_idxs,
-                P_structure=self.P_structure,
-                P_shape=self.P_shape,
-                A_csr_idxs=self.A_csr_idxs,
-                A_structure=self.A_structure,
-                A_shape=self.A_shape,
-                b_idxs=self.b_idxs,
-                batch_size=batch_size
+        data_matrices = _build_gpu_cqp_matrices(
+            con_values=con_values,
+            quad_obj_values=quad_obj_values,
+            lin_obj_values=lin_obj_values,
+            P_csr_idxs=self.P_csr_idxs,
+            P_structure=self.P_structure,
+            P_shape=self.P_shape,
+            A_csr_idxs=self.A_csr_idxs,
+            A_structure=self.A_structure,
+            A_shape=self.A_shape,
+            b_idxs=self.b_idxs,
+            batch_size=batch_size
+        )
+
+        if self.diffqcp_problem_struc is None:
+            self.diffqcp_problem_struc = QCPStructureGPU(
+                data_matrices.Pjxs[0], data_matrices.Ajxs[0], scs_dims_to_solver_dict(self.dims)
             )
 
-            if self.diffqcp_problem_struc is None:
-                self.diffqcp_problem_struc = QCPStructureGPU(
-                    data_matrices.Pjxs[0], data_matrices.Ajxs[0], scs_dims_to_solver_dict(self.dims)
-                )
-
-            return DIFFQCP_gpu_data(
-                data_matrices=data_matrices,
-                qcp_structure=self.diffqcp_problem_struc,
-                P_csr_to_csc_perm=self.P_csr_to_csc_permutation,
-                A_csr_to_csc_perm=self.A_csr_to_csc_permutation,
-                b_idxs = self.b_idxs,
-                julia_ctx=self.julia_ctx,
-                originally_unbatched=originally_unbatched
-            )
-
-        else:
-            raise ValueError("CVXPYlayers does not currently support operations "
-                             f"on {device.platform}s.")
+        return DIFFQCP_gpu_data(
+            data_matrices=data_matrices,
+            qcp_structure=self.diffqcp_problem_struc,
+            P_csr_to_csc_perm=self.P_csr_to_csc_permutation,
+            A_csr_to_csc_perm=self.A_csr_to_csc_permutation,
+            b_idxs = self.b_idxs,
+            julia_ctx=self.julia_ctx,
+            originally_unbatched=originally_unbatched
+        )
     
     def torch_to_data(
         self,

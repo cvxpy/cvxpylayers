@@ -12,16 +12,6 @@ def get_solver_ctx(
 
             ctx_cls = MPAX_ctx
         case "CUCLARABEL":
-            from cvxpylayers.interfaces.cuclarabel_if import (
-                CUCLARABEL_ctx,
-            )
-
-            ctx_cls = CUCLARABEL_ctx
-        case "DIFFCP":
-            from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
-
-            ctx_cls = DIFFCP_ctx
-        case "DIFFQCP":
             from cvxpylayers.interfaces.diffqcp_if import DIFFQCP_CTX
 
             return DIFFQCP_CTX(
@@ -30,6 +20,10 @@ def get_solver_ctx(
                 data=data,
                 options=kwargs
             )
+        case "DIFFCP":
+            from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
+
+            ctx_cls = DIFFCP_ctx
         case _:
             raise RuntimeError(
                 "Unknown solver. Check if your solver is supported by CVXPYlayers",
