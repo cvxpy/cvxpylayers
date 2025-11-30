@@ -387,6 +387,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "diffqcp" },
     { name = "jax" },
     { name = "jaxlib" },
     { name = "torch" },
@@ -406,7 +407,6 @@ dev = [
     { name = "covdefaults" },
     { name = "coverage" },
     { name = "ipykernel" },
-    { name = "jaxtyping" },
     { name = "pre-commit" },
     { name = "pre-commit-hooks" },
     { name = "pylint" },
@@ -432,6 +432,7 @@ requires-dist = [
     { name = "cvxpy", git = "https://github.com/cvxpy/cvxpy.git?branch=master" },
     { name = "diffcp", specifier = ">=1.1.0" },
     { name = "diffcp", marker = "extra == 'torch'", specifier = ">=1.1.0" },
+    { name = "diffqcp", marker = "extra == 'all'", specifier = ">=0.4.2" },
     { name = "jax", marker = "extra == 'all'", specifier = ">=0.4.0" },
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.4.0" },
     { name = "jaxlib", marker = "extra == 'all'", specifier = ">=0.4.0" },
@@ -449,7 +450,6 @@ dev = [
     { name = "covdefaults", specifier = "==2.3.0" },
     { name = "coverage", extras = ["toml"], specifier = "==7.6.12" },
     { name = "ipykernel", specifier = "==6.30.0" },
-    { name = "jaxtyping", specifier = ">=0.3.3" },
     { name = "pre-commit", specifier = "==4.2.0" },
     { name = "pre-commit-hooks", specifier = "==5.0.0" },
     { name = "pylint", specifier = "==3.3.4" },
@@ -529,6 +529,23 @@ wheels = [
 ]
 
 [[package]]
+name = "diffqcp"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "lineax" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/a2/9229706ce54312b76413905f3c1693a0da88c30d8918cdde602b56e2b706/diffqcp-0.4.2.tar.gz", hash = "sha256:e364d74ad8eb6b2fae953ede4938424bcb207d33ed7169149957fd7a0a7764d9", size = 45578 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/95/4e81ba67a52be8d6bc318375026a090e77a43b7f3002e99cff2caaafbf9c/diffqcp-0.4.2-py3-none-any.whl", hash = "sha256:bddecc9fda42720fca310a3e2313deacc8f26851ea42ff1548ff1bbc67f263da", size = 39582 },
+]
+
+[[package]]
 name = "dill"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -553,6 +570,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ae/ed/aefcc8cd0ba62a0560c3c18c33925362d46c6075480bfa4df87b28e169a9/docutils-0.21.2.tar.gz", hash = "sha256:3a6b18732edf182daa3cd12775bbb338cf5691468f91eeeb109deff6ebfa986f", size = 2204444 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/d7/9322c609343d929e75e7e5e6255e614fcc67572cfd083959cdef3b7aad79/docutils-0.21.2-py3-none-any.whl", hash = "sha256:dafca5b9e384f0e419294eb4d2ff9fa826435bf15f15b7bd45723e8ad76811b2", size = 587408 },
+]
+
+[[package]]
+name = "equinox"
+version = "0.13.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "typing-extensions" },
+    { name = "wadler-lindig" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ae/17/96a3b61a80c63c75974bd84318cee2818a23d60628e77fb6ed00eb623a69/equinox-0.13.2.tar.gz", hash = "sha256:509ad744ff99b7c684d45230d6890f9e78eac1a556d7a06db1eff664a3cac74f", size = 139386 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/ce/c3bc53bdda6edb050859939a8e91e206123f96f50906e7ba7c027c6c535f/equinox-0.13.2-py3-none-any.whl", hash = "sha256:bc1ee687e4841945d8b776664403839639a05e2f2c02c1da353ff3386e0e43b0", size = 179235 },
 ]
 
 [[package]]
@@ -856,6 +888,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/51/9187be60d989df97f5f0aba133fa54e7300f17616e065d1ada7d7646b6d6/jupyterlab_pygments-0.3.0.tar.gz", hash = "sha256:721aca4d9029252b11cfa9d185e5b5af4d54772bb8072f9b7036f4170054d35d", size = 512900 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/dd/ead9d8ea85bf202d90cc513b533f9c363121c7792674f78e0d8a854b63b4/jupyterlab_pygments-0.3.0-py3-none-any.whl", hash = "sha256:841a89020971da1d8693f1a99997aefc5dc424bb1b251fd6322462a1b8842780", size = 15884 },
+]
+
+[[package]]
+name = "lineax"
+version = "0.0.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6f/75/6ad88863640c6213887c8928aef406713ecfa3c61808c563b9a3f2bf0673/lineax-0.0.8.tar.gz", hash = "sha256:bb2778066b8882acc88ff569d8e415bc5aa387f751b14ae262c9f9607d7f25bb", size = 45304 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/a9/2d8d6002eb124e79f7c9ee2311b62f35289fc7e75ee0bbfbe5a4c7295bb9/lineax-0.0.8-py3-none-any.whl", hash = "sha256:1bd21d6c41afda233769d1c1096329ee75181825c9136be65c92b41f6daa1ddb", size = 68045 },
 ]
 
 [[package]]

@@ -19,7 +19,6 @@ requires-python = ">=3.12"
 dependencies = [
     "cvxpy>=1.8.0",
     "diffcp>=1.1.0",
-    "diffqcp",
     "numpy >= 2.0.0",
     "scipy >= 1.16.0",
 ]
@@ -47,7 +46,12 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 [project.optional-dependencies]
 torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0"]
+all = [
+    "torch>=2.0.0",
+ "jax>=0.4.0",
+ "jaxlib>=0.4.0",
+ "diffqcp>=0.4.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvxpylayers"]
@@ -69,7 +73,6 @@ dev = [
     "ty==0.0.1a16",
     "yamllint==1.35.1",
     "ipykernel==6.30.0",
-    "jaxtyping>=0.3.3",
 ]
 doc = [
     "sphinx >= 8.0.0",
@@ -146,4 +149,3 @@ max-complexity = 25
 
 [tool.uv.sources]
 cvxpy = { git = "https://github.com/cvxpy/cvxpy.git", branch = "master" }
-diffqcp = { git = "https://github.com/cvxgrp/diffqcp.git", branch = "bugfix/more-packaging" }
