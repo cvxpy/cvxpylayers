@@ -1,9 +1,9 @@
 from typing import Any, cast
 
 import cvxpy as cp
-import mlx.core as mx
 import numpy as np
 import scipy.sparse
+import mlx.core as mx
 
 import cvxpylayers.utils.parse_args as pa
 

@@ -5,6 +5,7 @@ def get_solver_ctx(
     data,
     kwargs,
 ):
+    ctx_cls = None
     match solver:
         case "MPAX":
             from cvxpylayers.interfaces.mpax_if import MPAX_ctx
