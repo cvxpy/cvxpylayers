@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import cvxpy as cp
 import scipy.sparse
@@ -8,9 +8,9 @@ import cvxpylayers.utils.parse_args as pa
 
 
 def _apply_gp_log_transform(
-    params: tuple[torch.Tensor, ...],
+    params: Tuple[torch.Tensor, ...],
     ctx: pa.LayersContext,
-) -> tuple[torch.Tensor, ...]:
+) -> Tuple[torch.Tensor, ...]:
     """Apply log transformation to geometric program (GP) parameters.
 
     Geometric programs are solved in log-space after conversion to DCP.
@@ -38,7 +38,7 @@ def _apply_gp_log_transform(
 
 
 def _flatten_and_batch_params(
-    params: tuple[torch.Tensor, ...],
+    params: Tuple[torch.Tensor, ...],
     ctx: pa.LayersContext,
     batch: tuple,
 ) -> torch.Tensor:
@@ -56,7 +56,7 @@ def _flatten_and_batch_params(
     Returns:
         Concatenated parameter tensor with shape (num_params, batch_size) or (num_params,)
     """
-    flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
+    flattened_params: List[Optional[torch.Tensor]] = [None] * (len(params) + 1)
 
     for i, param in enumerate(params):
         # Check if this parameter is batched or needs broadcasting
@@ -82,7 +82,7 @@ def _flatten_and_batch_params(
     )
     assert all(p is not None for p in flattened_params), "All parameters must be assigned"
 
-    p_stack = torch.cat(cast(list[torch.Tensor], flattened_params), -1)
+    p_stack = torch.cat(cast(List[torch.Tensor], flattened_params), -1)
     # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
     if batch:
         p_stack = p_stack.T
@@ -94,7 +94,7 @@ def _recover_results(
     dual: torch.Tensor,
     ctx: pa.LayersContext,
     batch: tuple,
-) -> tuple[torch.Tensor, ...]:
+) -> Tuple[torch.Tensor, ...]:
     """Recover variable values from primal/dual solutions.
 
     Extracts the requested variables from the solver's primal and dual
@@ -128,13 +128,13 @@ class CvxpyLayer(torch.nn.Module):
     def __init__(
         self,
         problem: cp.Problem,
-        parameters: list[cp.Parameter],
-        variables: list[cp.Variable],
-        solver: str | None = None,
+        parameters: List[cp.Parameter],
+        variables: List[cp.Variable],
+        solver: Optional[str] = None,
         gp: bool = False,
         verbose: bool = False,
-        canon_backend: str | None = None,
-        solver_args: dict[str, Any] | None = None,
+        canon_backend: Optional[str] = None,
+        solver_args: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__()
         if solver_args is None:
@@ -150,17 +150,19 @@ class CvxpyLayer(torch.nn.Module):
             solver_args=solver_args,
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
-            self.P = torch.nn.Buffer(  # type: ignore[arg-type]
-                scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat),  # type: ignore[attr-defined]
+            self.register_buffer(
+                "P", scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
             )
         else:
             self.P = None
-        self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.q.tocsr()))  # type: ignore[arg-type]
-        self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat))  # type: ignore[arg-type, attr-defined]
+        self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
+        self.register_buffer(
+            "A", scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined]
+        )
 
     def forward(
-        self, *params: torch.Tensor, solver_args: dict[str, Any] | None = None
-    ) -> tuple[torch.Tensor, ...]:
+        self, *params: torch.Tensor, solver_args: Optional[Dict[str, Any]] = None
+    ) -> Tuple[torch.Tensor, ...]:
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
@@ -195,17 +197,17 @@ class CvxpyLayer(torch.nn.Module):
 class _CvxpyLayer(torch.autograd.Function):
     @staticmethod
     def forward(
-        P_eval: torch.Tensor | None,
+        P_eval: Optional[torch.Tensor],
         q_eval: torch.Tensor,
         A_eval: torch.Tensor,
         cl_ctx: pa.LayersContext,
-        solver_args: dict[str, Any],
-    ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
+        solver_args: Dict[str, Any],
+    ) -> Tuple[torch.Tensor, torch.Tensor, Any, Any]:
         data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
         return *data.torch_solve(solver_args), data
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
+    def setup_context(ctx: Any, inputs: Tuple, outputs: Tuple) -> None:
         _, _, backwards, data = outputs
         ctx.backwards = backwards
         ctx.data = data
@@ -214,7 +216,7 @@ class _CvxpyLayer(torch.autograd.Function):
     @torch.autograd.function.once_differentiable
     def backward(
         ctx: Any, primal: torch.Tensor, dual: torch.Tensor, backwards: Any, data: Any
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor, None, None]:
         (
             dP,
             dq,
@@ -230,8 +232,8 @@ def reshape_fortran(x: torch.Tensor, shape: tuple) -> torch.Tensor:
 
 
 def scipy_csr_to_torch_csr(
-    scipy_csr: scipy.sparse.csr_array | None,
-) -> torch.Tensor | None:
+    scipy_csr: Optional[scipy.sparse.csr_array],
+) -> Optional[torch.Tensor]:
     if scipy_csr is None:
         return None
     # Use cast to help type checker understand scipy_csr is not None

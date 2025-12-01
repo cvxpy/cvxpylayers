@@ -1,17 +1,17 @@
-from typing import Any, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import cvxpy as cp
+import mlx.core as mx
 import numpy as np
 import scipy.sparse
-import mlx.core as mx
 
 import cvxpylayers.utils.parse_args as pa
 
 
 def _apply_gp_log_transform(
-    params: tuple[mx.array, ...],
+    params: Tuple[mx.array, ...],
     ctx: pa.LayersContext,
-) -> tuple[mx.array, ...]:
+) -> Tuple[mx.array, ...]:
     """Apply log transformation to geometric program (GP) parameters.
 
     Geometric programs are solved in log-space after conversion to DCP.
@@ -39,9 +39,9 @@ def _apply_gp_log_transform(
 
 
 def _flatten_and_batch_params(
-    params: tuple[mx.array, ...],
+    params: Tuple[mx.array, ...],
     ctx: pa.LayersContext,
-    batch: tuple[int, ...],
+    batch: Tuple[int, ...],
 ) -> mx.array:
     """Flatten and batch parameters into a single stacked array.
 
@@ -57,7 +57,7 @@ def _flatten_and_batch_params(
     Returns:
         Concatenated parameter array with shape (num_params, batch_size) or (num_params,)
     """
-    flattened_params: list[mx.array | None] = [None] * (len(params) + 1)
+    flattened_params: List[Optional[mx.array]] = [None] * (len(params) + 1)
 
     for i, param in enumerate(params):
         # Check if this parameter is batched or needs broadcasting
@@ -80,7 +80,7 @@ def _flatten_and_batch_params(
     flattened_params[-1] = mx.ones(batch + (1,), dtype=params[0].dtype)
     assert all(p is not None for p in flattened_params), "All parameters must be assigned"
 
-    p_stack = mx.concatenate(cast(list[mx.array], flattened_params), axis=-1)
+    p_stack = mx.concatenate(cast(List[mx.array], flattened_params), axis=-1)
     # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
     if batch:
         p_stack = mx.transpose(p_stack)
@@ -91,8 +91,8 @@ def _recover_results(
     primal: mx.array,
     dual: mx.array,
     ctx: pa.LayersContext,
-    batch: tuple[int, ...],
-) -> tuple[mx.array, ...]:
+    batch: Tuple[int, ...],
+) -> Tuple[mx.array, ...]:
     """Recover variable values from primal/dual solutions.
 
     Extracts the requested variables from the solver's primal and dual
@@ -122,7 +122,7 @@ def _recover_results(
     return results
 
 
-def _reshape_fortran(x: mx.array, shape: tuple[int, ...]) -> mx.array:
+def _reshape_fortran(x: mx.array, shape: Tuple[int, ...]) -> mx.array:
     """Reshape array using Fortran (column-major) order.
 
     MLX doesn't support order='F' in reshape, so we emulate it by
@@ -137,8 +137,8 @@ def _reshape_fortran(x: mx.array, shape: tuple[int, ...]) -> mx.array:
 
 
 def _scipy_csr_to_dense(
-    scipy_csr: scipy.sparse.csr_array | scipy.sparse.csr_matrix | None,
-) -> np.ndarray | None:
+    scipy_csr: Optional[Union[scipy.sparse.csr_array, scipy.sparse.csr_matrix]],
+) -> Optional[np.ndarray]:
     """Convert scipy sparse CSR matrix to dense numpy array.
 
     MLX does not currently support sparse linear algebra, so we convert
@@ -154,13 +154,13 @@ class CvxpyLayer:
     def __init__(
         self,
         problem: cp.Problem,
-        parameters: list[cp.Parameter],
-        variables: list[cp.Variable],
-        solver: str | None = None,
+        parameters: List[cp.Parameter],
+        variables: List[cp.Variable],
+        solver: Optional[str] = None,
         gp: bool = False,
         verbose: bool = False,
-        canon_backend: str | None = None,
-        solver_args: dict[str, Any] | None = None,
+        canon_backend: Optional[str] = None,
+        solver_args: Optional[Dict[str, Any]] = None,
     ) -> None:
         if solver_args is None:
             solver_args = {}
@@ -186,8 +186,8 @@ class CvxpyLayer:
     def __call__(
         self,
         *params: mx.array,
-        solver_args: dict[str, Any] | None = None,
-    ) -> tuple[mx.array, ...]:
+        solver_args: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[mx.array, ...]:
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
@@ -215,23 +215,23 @@ class CvxpyLayer:
     def forward(
         self,
         *params: mx.array,
-        solver_args: dict[str, Any] | None = None,
-    ) -> tuple[mx.array, ...]:
+        solver_args: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[mx.array, ...]:
         """Forward pass (alias for __call__)."""
         return self.__call__(*params, solver_args=solver_args)
 
     def _solve_with_vjp(
         self,
-        P_eval: mx.array | None,
+        P_eval: Optional[mx.array],
         q_eval: mx.array,
         A_eval: mx.array,
-        solver_args: dict[str, Any],
-    ) -> tuple[mx.array, mx.array]:
+        solver_args: Dict[str, Any],
+    ) -> Tuple[mx.array, mx.array]:
         """Solve the canonical problem with custom VJP for backpropagation."""
         ctx = self.ctx
 
         # Store data and adjoint in closure for backward pass
-        data_container: dict[str, Any] = {}
+        data_container: Dict[str, Any] = {}
 
         # Handle None P by using a dummy tensor (required for custom_function signature)
         param_dtype = q_eval.dtype
