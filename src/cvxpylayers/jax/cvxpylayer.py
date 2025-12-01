@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 
 import cvxpy as cp
 import jax
@@ -10,9 +10,9 @@ import cvxpylayers.utils.parse_args as pa
 
 
 def _apply_gp_log_transform(
-    params: Tuple[jnp.ndarray, ...],
+    params: tuple[jnp.ndarray, ...],
     ctx: pa.LayersContext,
-) -> Tuple[jnp.ndarray, ...]:
+) -> tuple[jnp.ndarray, ...]:
     """Apply log transformation to geometric program (GP) parameters.
 
     Geometric programs are solved in log-space after conversion to DCP.
@@ -40,7 +40,7 @@ def _apply_gp_log_transform(
 
 
 def _flatten_and_batch_params(
-    params: Tuple[jnp.ndarray, ...],
+    params: tuple[jnp.ndarray, ...],
     ctx: pa.LayersContext,
     batch: tuple,
 ) -> jnp.ndarray:
@@ -58,7 +58,7 @@ def _flatten_and_batch_params(
     Returns:
         Concatenated parameter array with shape (num_params, batch_size) or (num_params,)
     """
-    flattened_params: List[Optional[jnp.ndarray]] = [None] * (len(params) + 1)
+    flattened_params: list[jnp.ndarray | None] = [None] * (len(params) + 1)
 
     for i, param in enumerate(params):
         # Check if this parameter is batched or needs broadcasting
@@ -83,7 +83,7 @@ def _flatten_and_batch_params(
     flattened_params[-1] = jnp.ones(batch + (1,), dtype=params[0].dtype)
     assert all(p is not None for p in flattened_params), "All parameters must be assigned"
 
-    p_stack = jnp.concatenate(cast(List[jnp.ndarray], flattened_params), -1)
+    p_stack = jnp.concatenate(cast(list[jnp.ndarray], flattened_params), -1)
     # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
     if batch:
         p_stack = p_stack.T
@@ -95,7 +95,7 @@ def _recover_results(
     dual: jnp.ndarray,
     ctx: pa.LayersContext,
     batch: tuple,
-) -> Tuple[jnp.ndarray, ...]:
+) -> tuple[jnp.ndarray, ...]:
     """Recover variable values from primal/dual solutions.
 
     Extracts the requested variables from the solver's primal and dual
@@ -129,13 +129,13 @@ class CvxpyLayer:
     def __init__(
         self,
         problem: cp.Problem,
-        parameters: List[cp.Parameter],
-        variables: List[cp.Variable],
-        solver: Optional[str] = None,
+        parameters: list[cp.Parameter],
+        variables: list[cp.Variable],
+        solver: str | None = None,
         gp: bool = False,
         verbose: bool = False,
-        canon_backend: Optional[str] = None,
-        solver_args: Optional[Dict[str, Any]] = None,
+        canon_backend: str | None = None,
+        solver_args: dict[str, Any] | None = None,
     ) -> None:
         if solver_args is None:
             solver_args = {}
@@ -157,8 +157,8 @@ class CvxpyLayer:
         self.A: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined,assignment]
 
     def __call__(
-        self, *params: jnp.ndarray, solver_args: Optional[Dict[str, Any]] = None
-    ) -> Tuple[jnp.ndarray, ...]:
+        self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
+    ) -> tuple[jnp.ndarray, ...]:
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
@@ -210,8 +210,8 @@ class CvxpyLayer:
 
 
 def scipy_csr_to_jax_bcsr(
-    scipy_csr: Optional[scipy.sparse.csr_array],
-) -> Optional[jax.experimental.sparse.BCSR]:
+    scipy_csr: scipy.sparse.csr_array | None,
+) -> jax.experimental.sparse.BCSR | None:
     if scipy_csr is None:
         return None
     # Use cast to help type checker understand scipy_csr is not None

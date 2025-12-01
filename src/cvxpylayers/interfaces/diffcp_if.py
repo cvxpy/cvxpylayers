@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 import diffcp
 import numpy as np
@@ -24,12 +24,12 @@ except ImportError:
 
 if TYPE_CHECKING:
     # Type alias for multi-framework tensor types
-    TensorLike = Union[torch.Tensor, jnp.ndarray, np.ndarray, mx.array]
+    TensorLike = torch.Tensor | jnp.ndarray | np.ndarray | mx.array
 else:
     TensorLike = Any
 
 
-def _detect_batch_size(con_values: TensorLike) -> Tuple[int, bool]:
+def _detect_batch_size(con_values: TensorLike) -> tuple[int, bool]:
     """Detect batch size and whether input was originally unbatched.
 
     Handles both PyTorch tensors and JAX arrays by checking the number
@@ -57,14 +57,14 @@ def _detect_batch_size(con_values: TensorLike) -> Tuple[int, bool]:
 def _build_diffcp_matrices(
     con_values: TensorLike,
     lin_obj_values: TensorLike,
-    A_structure: Tuple[np.ndarray, np.ndarray],
-    A_shape: Tuple[int, int],
+    A_structure: tuple[np.ndarray, np.ndarray],
+    A_shape: tuple[int, int],
     b_idx: np.ndarray,
     batch_size: int,
-) -> Tuple[List[sp.csc_matrix],
-           List[np.ndarray],
-           List[np.ndarray],
-           List[np.ndarray]]:
+) -> tuple[list[sp.csc_matrix],
+           list[np.ndarray],
+           list[np.ndarray],
+           list[np.ndarray]]:
     """Build DIFFCP matrices from constraint and objective values.
 
     Converts parameter values into the conic form required by DIFFCP solver:
@@ -112,13 +112,13 @@ class DIFFCP_ctx:
 
     A_idxs: np.ndarray
     b_idx: np.ndarray
-    A_structure: Tuple[np.ndarray, np.ndarray]
-    A_shape: Tuple[int, int]
+    A_structure: tuple[np.ndarray, np.ndarray]
+    A_shape: tuple[int, int]
 
     G_idxs: np.ndarray
     h_slice: slice
-    G_structure: Tuple[np.ndarray, np.ndarray]
-    G_shape: Tuple[int, int]
+    G_structure: tuple[np.ndarray, np.ndarray]
+    G_shape: tuple[int, int]
 
     solver: Callable
 
@@ -255,10 +255,10 @@ def _compute_gradients(
     adj_batch: Callable,
     dprimal: TensorLike,
     ddual: TensorLike,
-    bs: List[np.ndarray],
-    b_idxs: List[np.ndarray],
+    bs: list[np.ndarray],
+    b_idxs: list[np.ndarray],
     batch_size: int,
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Compute gradients using DIFFCP's adjoint method.
 
     Uses implicit differentiation to compute gradients of the optimization
@@ -303,11 +303,11 @@ def _compute_gradients(
 
 @dataclass
 class DIFFCP_data:
-    As: List[sp.csc_matrix]
-    bs: List[np.ndarray]
-    cs: List[np.ndarray]
-    b_idxs: List[np.ndarray]
-    cone_dict: Dict[str, Union[int, List[int]]]
+    As: list[sp.csc_matrix]
+    bs: list[np.ndarray]
+    cs: list[np.ndarray]
+    b_idxs: list[np.ndarray]
+    cone_dict: dict[str, int | list[int]]
     batch_size: int
     originally_unbatched: bool
 

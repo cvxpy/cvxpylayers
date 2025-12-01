@@ -15,7 +15,7 @@ authors = [
     { name = "S. Diamond" },
 ]
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "cvxpy>=1.7.4",
     "diffcp>=1.1.0",
@@ -30,7 +30,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -129,7 +128,7 @@ markers = ["integration: marks as integration test"]
 
 [tool.ruff]
 # Follow cvxpy's ruff configuration for consistency
-target-version = "py39"
+target-version = "py310"
 line-length = 100
 
 extend-exclude = [

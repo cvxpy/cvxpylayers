@@ -13,7 +13,7 @@
   "venvPath": ".",
   "venv": ".venv",
   "typeCheckingMode": "basic",
-  "pythonVersion": "3.9",
+  "pythonVersion": "3.10",
   "pythonPlatform": "All",
   "reportMissingImports": true,
   "reportMissingTypeStubs": false,

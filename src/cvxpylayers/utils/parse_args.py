@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import cvxpy as cp
 import scipy.sparse
@@ -17,8 +17,8 @@ class SolverData(Protocol):
     """Protocol for data objects returned by solver context."""
 
     def torch_solve(
-        self, solver_args: Optional[Dict[str, Any]] = None
-    ) -> Tuple["torch.Tensor", "torch.Tensor", Any]:
+        self, solver_args: dict[str, Any] | None = None
+    ) -> tuple["torch.Tensor", "torch.Tensor", Any]:
         """Solve the problem using torch backend.
 
         Returns:
@@ -29,7 +29,7 @@ class SolverData(Protocol):
 
     def torch_derivative(
         self, primal: "torch.Tensor", dual: "torch.Tensor", adj_batch: Any
-    ) -> Tuple[Optional["torch.Tensor"], "torch.Tensor", "torch.Tensor"]:
+    ) -> tuple["torch.Tensor | None", "torch.Tensor", "torch.Tensor"]:
         """Compute derivatives using torch backend.
 
         Returns:
@@ -43,7 +43,7 @@ class SolverContext(Protocol):
 
     def torch_to_data(
         self,
-        quad_obj_values: Optional["torch.Tensor"],
+        quad_obj_values: "torch.Tensor | None",
         lin_obj_values: "torch.Tensor",
         con_values: "torch.Tensor",
     ) -> SolverData:
@@ -53,8 +53,8 @@ class SolverContext(Protocol):
 
 @dataclass
 class VariableRecovery:
-    primal: Optional[slice]
-    dual: Optional[slice]
+    primal: slice | None
+    dual: slice | None
 
     def recover(self, primal_sol: T, dual_sol: T) -> T:
         if self.primal is not None:
@@ -70,22 +70,22 @@ class VariableRecovery:
 
 @dataclass
 class LayersContext:
-    parameters: List[cp.Parameter]
+    parameters: list[cp.Parameter]
     reduced_P: scipy.sparse.csr_array
-    q: Optional[scipy.sparse.csr_array]
+    q: scipy.sparse.csr_array | None
     reduced_A: scipy.sparse.csr_array
-    cone_dims: Dict[str, Union[int, List[int]]]
+    cone_dims: dict[str, int | list[int]]
     solver_ctx: SolverContext
-    var_recover: List[VariableRecovery]
-    user_order_to_col_order: Dict[int, int]
-    batch_sizes: Optional[List[int]] = (
+    var_recover: list[VariableRecovery]
+    user_order_to_col_order: dict[int, int]
+    batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
     # GP (Geometric Programming) support
     gp: bool = False
     # Maps original GP parameters to their log-space DCP parameters
     # Used to determine which parameters need log transformation in forward pass
-    gp_param_to_log_param: Optional[Dict[cp.Parameter, cp.Parameter]] = None
+    gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -141,8 +141,8 @@ class LayersContext:
 
 def _validate_problem(
     problem: cp.Problem,
-    variables: List[cp.Variable],
-    parameters: List[cp.Parameter],
+    variables: list[cp.Variable],
+    parameters: list[cp.Parameter],
     gp: bool,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
@@ -176,11 +176,11 @@ def _validate_problem(
 
 
 def _build_user_order_mapping(
-    parameters: List[cp.Parameter],
+    parameters: list[cp.Parameter],
     param_prob: ParamConeProg,
     gp: bool,
-    gp_param_to_log_param: Optional[Dict[cp.Parameter, cp.Parameter]],
-) -> Dict[int, int]:
+    gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None,
+) -> dict[int, int]:
     """Build mapping from user parameter order to column order.
 
     CVXPY internally reorders parameters when canonicalizing problems. This
@@ -224,13 +224,13 @@ def _build_user_order_mapping(
 
 def parse_args(
     problem: cp.Problem,
-    variables: List[cp.Variable],
-    parameters: List[cp.Parameter],
-    solver: Optional[str],
+    variables: list[cp.Variable],
+    parameters: list[cp.Parameter],
+    solver: str | None,
     gp: bool = False,
     verbose: bool = False,
-    canon_backend: Optional[str] = None,
-    solver_args: Optional[Dict[str, Any]] = None,
+    canon_backend: str | None = None,
+    solver_args: dict[str, Any] | None = None,
 ) -> LayersContext:
     # Validate problem is DPP (disciplined parametrized programming)
     _validate_problem(problem, variables, parameters, gp)
