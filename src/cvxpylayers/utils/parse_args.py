@@ -6,7 +6,6 @@ import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 
 import cvxpylayers.interfaces
-from cvxpylayers.utils.dgp_reduction import _Dgp2DcpNoValueCheck
 
 if TYPE_CHECKING:
     import torch
@@ -239,11 +238,11 @@ def parse_args(
     if solver is None:
         solver = "DIFFCP"
 
-    # Handle GP problems using our custom reduction
+    # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
     gp_param_to_log_param = None
     if gp:
-        # Apply custom DGP→DCP reduction that doesn't require parameter values
-        dgp2dcp = _Dgp2DcpNoValueCheck()
+        # Apply native CVXPY DGP→DCP reduction
+        dgp2dcp = cp.reductions.Dgp2Dcp(problem)
         dcp_problem, _ = dgp2dcp.apply(problem)
 
         # Extract parameter mapping from the reduction

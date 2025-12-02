@@ -150,13 +150,15 @@ class CvxpyLayer(torch.nn.Module):
             solver_args=solver_args,
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
-            self.P = torch.nn.Buffer(  # type: ignore[arg-type]
-                scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat),  # type: ignore[attr-defined]
+            self.register_buffer(
+                "P", scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
             )
         else:
             self.P = None
-        self.q = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.q.tocsr()))  # type: ignore[arg-type]
-        self.A = torch.nn.Buffer(scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat))  # type: ignore[arg-type, attr-defined]
+        self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
+        self.register_buffer(
+            "A", scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined]
+        )
 
     def forward(
         self, *params: torch.Tensor, solver_args: dict[str, Any] | None = None

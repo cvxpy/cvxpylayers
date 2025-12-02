@@ -4,10 +4,12 @@ import sys
 from unittest import mock
 
 import cvxpy as cp
+import pytest
 
 
 def test_diffcp_torch_without_jax():
     """Test that PyTorch CvxpyLayer with DIFFCP works without JAX installed."""
+    pytest.importorskip("torch")
     print("Test 1: PyTorch CvxpyLayer with DIFFCP (no JAX)")
     print("=" * 60)
 
@@ -86,6 +88,7 @@ def test_diffcp_torch_without_jax():
 
 def test_diffcp_jax_without_torch():
     """Test that JAX CvxpyLayer with DIFFCP works without PyTorch installed."""
+    pytest.importorskip("jax")
     print("Test 2: JAX CvxpyLayer with DIFFCP (no PyTorch)")
     print("=" * 60)
 
