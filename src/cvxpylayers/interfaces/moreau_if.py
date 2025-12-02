@@ -7,9 +7,9 @@ Moreau is a conic optimization solver that solves problems of the form:
 
 where K is a product of cones.
 
-Supports both CPU and GPU (CUDA) tensors:
-- CUDA tensors: Uses moreau.TorchSolver for zero-copy GPU operations
-- CPU tensors: Uses moreau.Solver (numpy interface) with torch<->numpy conversion
+Supports both CPU and GPU (CUDA) tensors via moreau.torch.Solver:
+- CUDA tensors: Uses moreau.torch.Solver(device='cuda') for GPU operations
+- CPU tensors: Uses moreau.torch.Solver(device='cpu') with efficient batch solving
 """
 
 from dataclasses import dataclass
@@ -23,8 +23,10 @@ from cvxpylayers.utils.solver_utils import convert_csc_structure_to_csr_structur
 # Moreau unified package (provides both NumPy and PyTorch interfaces)
 try:
     import moreau
+    import moreau.torch as moreau_torch
 except ImportError:
     moreau = None  # type: ignore[assignment]
+    moreau_torch = None  # type: ignore[assignment]
 
 try:
     import jax.numpy as jnp
@@ -166,8 +168,8 @@ class MOREAU_ctx:
 
         # Create cones and solver lazily
         self._cones = None
-        self._torch_solver = None  # GPU solver with lazy batch init
-        self._cpu_solver = None  # CPU solver (numpy interface) with lazy batch init
+        self._torch_solver_cuda = None  # CUDA solver (moreau.torch.Solver) with lazy init
+        self._torch_solver_cpu = None  # CPU solver (moreau.torch.Solver) with lazy init
 
     @property
     def cones(self):
@@ -176,51 +178,59 @@ class MOREAU_ctx:
             self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims))
         return self._cones
 
-    def get_torch_solver(self):
-        """Get moreau.TorchSolver with lazy batch initialization."""
-        if self._torch_solver is None:
-            if moreau is None or moreau.TorchSolver is None:
-                raise ImportError(
-                    "Moreau torch interface requires 'moreau' package with PyTorch support. "
-                    "Build moreau with BUILD_PYTORCH_EXTENSION=ON"
+    def _get_settings(self):
+        """Get moreau.Settings configured from options."""
+        settings = moreau.Settings()
+        settings.verbose = self.options.get("verbose", False)
+        return settings
+
+    def get_torch_solver(self, device: str):
+        """Get moreau.torch.Solver for the specified device (lazy init).
+
+        Args:
+            device: 'cuda' or 'cpu'
+
+        Returns:
+            moreau.torch.Solver configured for the specified device
+        """
+        if device == 'cuda':
+            if self._torch_solver_cuda is None:
+                if moreau_torch is None or not moreau_torch.cuda_available():
+                    raise ImportError(
+                        "Moreau CUDA backend requires 'moreau' package with CUDA support. "
+                        "Install with: pip install moreau[cuda]"
+                    )
+                self._torch_solver_cuda = moreau_torch.Solver(
+                    n=self.P_shape[0],
+                    m=self.A_shape[0],
+                    P_row_offsets=torch.tensor(self.P_row_offsets, dtype=torch.int64),
+                    P_col_indices=torch.tensor(self.P_col_indices, dtype=torch.int64),
+                    A_row_offsets=torch.tensor(self.A_row_offsets, dtype=torch.int64),
+                    A_col_indices=torch.tensor(self.A_col_indices, dtype=torch.int64),
+                    cones=self.cones,
+                    settings=self._get_settings(),
+                    device='cuda',
                 )
-            settings = moreau.Settings()
-            settings.verbose = self.options.get("verbose", False)
-
-            self._torch_solver = moreau.TorchSolver(
-                n=self.P_shape[0],
-                m=self.A_shape[0],
-                P_row_offsets=torch.tensor(self.P_row_offsets, dtype=torch.int64),
-                P_col_indices=torch.tensor(self.P_col_indices, dtype=torch.int64),
-                A_row_offsets=torch.tensor(self.A_row_offsets, dtype=torch.int64),
-                A_col_indices=torch.tensor(self.A_col_indices, dtype=torch.int64),
-                cones=self.cones,
-                settings=settings,
-            )
-        return self._torch_solver
-
-    def get_cpu_solver(self):
-        """Get moreau.Solver (numpy interface) for CPU tensors with lazy batch init."""
-        if self._cpu_solver is None:
-            if moreau is None:
-                raise ImportError(
-                    "Moreau solver requires 'moreau' package. "
-                    "Install with: pip install moreau"
+            return self._torch_solver_cuda
+        else:
+            if self._torch_solver_cpu is None:
+                if moreau_torch is None:
+                    raise ImportError(
+                        "Moreau solver requires 'moreau' package. "
+                        "Install with: pip install moreau"
+                    )
+                self._torch_solver_cpu = moreau_torch.Solver(
+                    n=self.P_shape[0],
+                    m=self.A_shape[0],
+                    P_row_offsets=torch.tensor(self.P_row_offsets, dtype=torch.int64),
+                    P_col_indices=torch.tensor(self.P_col_indices, dtype=torch.int64),
+                    A_row_offsets=torch.tensor(self.A_row_offsets, dtype=torch.int64),
+                    A_col_indices=torch.tensor(self.A_col_indices, dtype=torch.int64),
+                    cones=self.cones,
+                    settings=self._get_settings(),
+                    device='cpu',
                 )
-            settings = moreau.Settings()
-            settings.verbose = self.options.get("verbose", False)
-
-            self._cpu_solver = moreau.Solver(
-                n=self.P_shape[0],
-                m=self.A_shape[0],
-                P_row_offsets=self.P_row_offsets,
-                P_col_indices=self.P_col_indices,
-                A_row_offsets=self.A_row_offsets,
-                A_col_indices=self.A_col_indices,
-                cones=self.cones,
-                settings=settings,
-            )
-        return self._cpu_solver
+            return self._torch_solver_cpu
 
     def torch_to_data(
         self, quad_obj_values, lin_obj_values, con_values
@@ -287,7 +297,7 @@ class MOREAU_ctx:
         b = b.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, m)
 
         # Select solver based on device
-        solver = self.get_torch_solver() if is_cuda else self.get_cpu_solver()
+        solver = self.get_torch_solver('cuda' if is_cuda else 'cpu')
 
         return MOREAU_data(
             P_values=P_values,
@@ -371,9 +381,9 @@ class MOREAU_ctx:
 class MOREAU_data:
     """Data class for PyTorch Moreau solver.
 
-    Supports both CPU and CUDA tensors:
-    - CUDA: Uses moreau.TorchSolver for zero-copy GPU operations
-    - CPU: Uses moreau.Solver (numpy interface) with zero-copy torch<->numpy
+    Supports both CPU and CUDA tensors via moreau.torch.Solver:
+    - CUDA: Uses moreau.torch.Solver(device='cuda') for GPU operations
+    - CPU: Uses moreau.torch.Solver(device='cpu') with efficient batch solving
     """
 
     P_values: Any  # torch.Tensor (batch, nnzP)
@@ -382,38 +392,25 @@ class MOREAU_data:
     b: Any  # torch.Tensor (batch, m)
     batch_size: int
     originally_unbatched: bool
-    solver: Any  # moreau.TorchSolver (CUDA) or moreau.Solver (CPU)
+    solver: Any  # moreau.torch.Solver (CPU or CUDA)
     n: int
     m: int
     is_cuda: bool = True  # Whether tensors are on CUDA
 
     def torch_solve(self, solver_args=None):
-        """Solve using moreau. Device-aware: uses GPU or CPU solver as appropriate."""
+        """Solve using moreau.torch.Solver."""
         if torch is None:
             raise ImportError(
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
-        if self.is_cuda:
-            # CUDA path: zero-copy GPU tensors with TorchSolver
-            x, z, s, status, obj_val = self.solver.solve(
-                self.P_values, self.A_values, self.q, self.b
-            )
-            primal = x
-            dual = z
-        else:
-            # CPU path: convert to numpy, solve, convert back
-            # numpy() on CPU contiguous tensors is zero-copy (shares memory)
-            P_np = self.P_values.numpy()
-            A_np = self.A_values.numpy()
-            q_np = self.q.numpy()
-            b_np = self.b.numpy()
+        # moreau.torch.Solver provides unified API for both CPU and CUDA
+        x, z, s, status, obj_val = self.solver.solve(
+            self.P_values, self.A_values, self.q, self.b
+        )
 
-            result = self.solver.solve(P_np, A_np, q_np, b_np)
-
-            # from_numpy shares memory with the numpy array (zero-copy)
-            primal = torch.from_numpy(result["x"])
-            dual = torch.from_numpy(result["z"])
+        primal = x
+        dual = z
 
         # No backward info - gradients not yet implemented
         backwards_info = None

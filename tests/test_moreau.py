@@ -9,9 +9,10 @@ from cvxpylayers.torch import CvxpyLayer
 
 # Skip all tests in this module if moreau is not installed
 moreau = pytest.importorskip("moreau")
+import moreau.torch as moreau_torch
 
-# Check for CUDA availability (TorchSolver requires CUDA)
-HAS_CUDA = torch.cuda.is_available() and moreau.TorchSolver is not None
+# Check for CUDA availability
+HAS_CUDA = torch.cuda.is_available() and moreau_torch.cuda_available()
 
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
