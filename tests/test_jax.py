@@ -1,9 +1,11 @@
-import cvxpy as cp
-import diffcp
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
+
+jax = pytest.importorskip("jax")
+
+import cvxpy as cp
+import diffcp
+import jax.numpy as jnp
 from jax import random
 from jax.test_util import check_grads
 
