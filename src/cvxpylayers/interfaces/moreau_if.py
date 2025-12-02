@@ -1,11 +1,15 @@
 """Moreau solver interface for CVXPYLayers.
 
-Moreau is a GPU-accelerated conic optimization solver that solves problems of the form:
+Moreau is a conic optimization solver that solves problems of the form:
     minimize    (1/2)x'Px + q'x
     subject to  Ax + s = b
                 s in K
 
 where K is a product of cones.
+
+Supports both CPU and GPU (CUDA) tensors:
+- CUDA tensors: Uses moreau.TorchSolver for zero-copy GPU operations
+- CPU tensors: Uses moreau.Solver (numpy interface) with torch<->numpy conversion
 """
 
 from dataclasses import dataclass
@@ -162,7 +166,8 @@ class MOREAU_ctx:
 
         # Create cones and solver lazily
         self._cones = None
-        self._torch_solver = None  # Single solver with lazy batch init
+        self._torch_solver = None  # GPU solver with lazy batch init
+        self._cpu_solver = None  # CPU solver (numpy interface) with lazy batch init
 
     @property
     def cones(self):
@@ -194,10 +199,38 @@ class MOREAU_ctx:
             )
         return self._torch_solver
 
+    def get_cpu_solver(self):
+        """Get moreau.Solver (numpy interface) for CPU tensors with lazy batch init."""
+        if self._cpu_solver is None:
+            if moreau is None:
+                raise ImportError(
+                    "Moreau solver requires 'moreau' package. "
+                    "Install with: pip install moreau"
+                )
+            settings = moreau.Settings()
+            settings.verbose = self.options.get("verbose", False)
+
+            self._cpu_solver = moreau.Solver(
+                n=self.P_shape[0],
+                m=self.A_shape[0],
+                P_row_offsets=self.P_row_offsets,
+                P_col_indices=self.P_col_indices,
+                A_row_offsets=self.A_row_offsets,
+                A_col_indices=self.A_col_indices,
+                cones=self.cones,
+                settings=settings,
+            )
+        return self._cpu_solver
+
     def torch_to_data(
         self, quad_obj_values, lin_obj_values, con_values
     ) -> "MOREAU_data":
-        """Prepare data for torch solve. Zero-copy GPU tensor operations."""
+        """Prepare data for torch solve.
+
+        Device-aware: uses GPU solver for CUDA tensors, CPU solver for CPU tensors.
+        - CUDA: Zero-copy GPU tensor operations with moreau.TorchSolver
+        - CPU: Uses moreau.Solver (numpy interface) with zero-copy torch<->numpy
+        """
         if torch is None:
             raise ImportError(
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
@@ -242,11 +275,19 @@ class MOREAU_ctx:
         # Extract q (linear cost)
         q = lin_obj_values[:-1, :]  # (n, batch), exclude constant term
 
+        # Detect device from input tensors
+        device = con_values.device
+        is_cuda = device.type == "cuda"
+
         # Transpose to (batch, dim) format for Moreau
-        P_values = P_values.T.contiguous().cuda().double()  # (batch, nnzP)
-        A_values = A_values.T.contiguous().cuda().double()  # (batch, nnzA)
-        q = q.T.contiguous().cuda().double()  # (batch, n)
-        b = b.T.contiguous().cuda().double()  # (batch, m)
+        # Use .to() which is a no-op if already on correct device/dtype (zero-copy for CUDA)
+        P_values = P_values.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, nnzP)
+        A_values = A_values.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, nnzA)
+        q = q.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, n)
+        b = b.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, m)
+
+        # Select solver based on device
+        solver = self.get_torch_solver() if is_cuda else self.get_cpu_solver()
 
         return MOREAU_data(
             P_values=P_values,
@@ -255,9 +296,10 @@ class MOREAU_ctx:
             b=b,
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
-            solver=self.get_torch_solver(),
+            solver=solver,
             n=self.P_shape[0],
             m=self.A_shape[0],
+            is_cuda=is_cuda,
         )
 
     def jax_to_data(
@@ -327,7 +369,12 @@ class MOREAU_ctx:
 
 @dataclass
 class MOREAU_data:
-    """Data class for PyTorch Moreau solver. Holds GPU tensors ready for solve."""
+    """Data class for PyTorch Moreau solver.
+
+    Supports both CPU and CUDA tensors:
+    - CUDA: Uses moreau.TorchSolver for zero-copy GPU operations
+    - CPU: Uses moreau.Solver (numpy interface) with zero-copy torch<->numpy
+    """
 
     P_values: Any  # torch.Tensor (batch, nnzP)
     A_values: Any  # torch.Tensor (batch, nnzA)
@@ -335,26 +382,38 @@ class MOREAU_data:
     b: Any  # torch.Tensor (batch, m)
     batch_size: int
     originally_unbatched: bool
-    solver: Any  # moreau_torch.Solver
+    solver: Any  # moreau.TorchSolver (CUDA) or moreau.Solver (CPU)
     n: int
     m: int
+    is_cuda: bool = True  # Whether tensors are on CUDA
 
     def torch_solve(self, solver_args=None):
-        """Solve using moreau_torch. Zero-copy GPU tensors."""
+        """Solve using moreau. Device-aware: uses GPU or CPU solver as appropriate."""
         if torch is None:
             raise ImportError(
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
-        # Direct call - solver handles (batch, dim) shaped tensors
-        x, z, s, status, obj_val = self.solver.solve(
-            self.P_values, self.A_values, self.q, self.b
-        )
+        if self.is_cuda:
+            # CUDA path: zero-copy GPU tensors with TorchSolver
+            x, z, s, status, obj_val = self.solver.solve(
+                self.P_values, self.A_values, self.q, self.b
+            )
+            primal = x
+            dual = z
+        else:
+            # CPU path: convert to numpy, solve, convert back
+            # numpy() on CPU contiguous tensors is zero-copy (shares memory)
+            P_np = self.P_values.numpy()
+            A_np = self.A_values.numpy()
+            q_np = self.q.numpy()
+            b_np = self.b.numpy()
 
-        # x shape: (batch, n), z shape: (batch, m)
-        # Return primal (x) and dual (z)
-        primal = x
-        dual = z
+            result = self.solver.solve(P_np, A_np, q_np, b_np)
+
+            # from_numpy shares memory with the numpy array (zero-copy)
+            primal = torch.from_numpy(result["x"])
+            dual = torch.from_numpy(result["z"])
 
         # No backward info - gradients not yet implemented
         backwards_info = None

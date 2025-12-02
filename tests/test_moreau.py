@@ -7,10 +7,12 @@ import torch
 
 from cvxpylayers.torch import CvxpyLayer
 
-# Skip all tests in this module if moreau is not installed with PyTorch support
+# Skip all tests in this module if moreau is not installed
 moreau = pytest.importorskip("moreau")
-if moreau.TorchSolver is None:
-    pytest.skip("moreau.TorchSolver not available", allow_module_level=True)
+
+# Check for CUDA availability (TorchSolver requires CUDA)
+HAS_CUDA = torch.cuda.is_available() and moreau.TorchSolver is not None
+
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
@@ -473,3 +475,185 @@ def test_backward_not_implemented():
     # Backward pass should raise NotImplementedError
     with pytest.raises(NotImplementedError, match="not yet implemented"):
         x_sol.sum().backward()
+
+
+# ============================================================================
+# CPU-specific tests
+# ============================================================================
+
+
+def test_cpu_equality_only():
+    """Test CPU path with only equality constraints."""
+    # minimize x^T x subject to Ax = b
+    n, m = 5, 2
+    x = cp.Variable(n)
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
+
+    np.random.seed(100)
+    A_val = np.random.randn(m, n)
+    b_val = np.random.randn(m)
+
+    # Set parameter values for direct solve
+    A.value = A_val
+    b.value = b_val
+    problem.solve()
+    assert problem.status == "optimal"
+    true_sol = x.value
+
+    # Test with CPU tensors (explicitly on CPU)
+    layer_moreau = CvxpyLayer(problem, [A, b], [x], solver="MOREAU")
+    A_tensor = torch.tensor(A_val, device="cpu")
+    b_tensor = torch.tensor(b_val, device="cpu")
+
+    (x_sol,) = layer_moreau(A_tensor, b_tensor)
+
+    # Verify output is on CPU
+    assert x_sol.device.type == "cpu", f"Expected CPU tensor, got {x_sol.device}"
+
+    # Verify solution is correct
+    error = np.linalg.norm(x_sol.numpy() - true_sol)
+    assert error < 1e-3, f"CPU solver error: {error:.6e}"
+
+
+def test_cpu_mixed_constraints():
+    """Test CPU path with both equality and inequality constraints."""
+    n = 3
+    x = cp.Variable(n)
+    A = cp.Parameter((1, n))
+    b = cp.Parameter(1)
+    G = cp.Parameter((2, n))
+    h = cp.Parameter(2)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b, G @ x >= h])
+
+    A_val = np.array([[1.0, 1.0, 1.0]])  # sum(x) = 3
+    b_val = np.array([3.0])
+    G_val = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])  # x[0] >= 0, x[1] >= 0
+    h_val = np.array([0.0, 0.0])
+
+    # Get ground truth
+    A.value = A_val
+    b.value = b_val
+    G.value = G_val
+    h.value = h_val
+    problem.solve()
+    true_sol = x.value
+
+    # Test with CPU tensors
+    layer_moreau = CvxpyLayer(problem, [A, b, G, h], [x], solver="MOREAU")
+
+    A_tensor = torch.tensor(A_val, device="cpu")
+    b_tensor = torch.tensor(b_val, device="cpu")
+    G_tensor = torch.tensor(G_val, device="cpu")
+    h_tensor = torch.tensor(h_val, device="cpu")
+
+    (x_sol,) = layer_moreau(A_tensor, b_tensor, G_tensor, h_tensor)
+
+    # Verify output is on CPU
+    assert x_sol.device.type == "cpu"
+
+    # Verify solution
+    error = np.linalg.norm(x_sol.numpy() - true_sol)
+    assert error < 1e-3, f"CPU solver error: {error:.6e}"
+
+
+def test_cpu_batched():
+    """Test CPU path with batched inputs."""
+    n, m = 4, 2
+    batch_size = 3
+    x = cp.Variable(n)
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
+
+    np.random.seed(100)
+    A_val = np.random.randn(m, n)
+    b_val_batch = np.random.randn(batch_size, m)
+
+    # Test with CPU tensors
+    layer_moreau = CvxpyLayer(problem, [A, b], [x], solver="MOREAU")
+
+    A_tensor = torch.tensor(A_val, device="cpu")
+    b_tensor = torch.tensor(b_val_batch, device="cpu")
+
+    (x_sol,) = layer_moreau(A_tensor, b_tensor)
+
+    # Verify output shape and device
+    assert x_sol.shape == (batch_size, n), f"Expected shape ({batch_size}, {n}), got {x_sol.shape}"
+    assert x_sol.device.type == "cpu"
+
+    # Verify each batch element
+    for i in range(batch_size):
+        A.value = A_val
+        b.value = b_val_batch[i]
+        problem.solve()
+        true_sol = x.value
+
+        error = np.linalg.norm(x_sol[i].numpy() - true_sol)
+        assert error < 1e-3, f"Batch {i} error: {error:.6e}"
+
+
+def test_cpu_output_device_matches_input():
+    """Test that output tensors are on the same device as input tensors."""
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer_moreau = CvxpyLayer(problem, [b], [x], solver="MOREAU")
+
+    # Test CPU
+    b_cpu = torch.randn(n, device="cpu")
+    (x_cpu,) = layer_moreau(b_cpu)
+    assert x_cpu.device.type == "cpu", f"Expected CPU output, got {x_cpu.device}"
+
+
+@pytest.mark.skipif(not HAS_CUDA, reason="CUDA not available or TorchSolver not built")
+def test_cuda_output_device_matches_input():
+    """Test that CUDA output tensors are on the same device as input tensors."""
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer_moreau = CvxpyLayer(problem, [b], [x], solver="MOREAU")
+
+    # Test CUDA
+    b_cuda = torch.randn(n, device="cuda")
+    (x_cuda,) = layer_moreau(b_cuda)
+    assert x_cuda.device.type == "cuda", f"Expected CUDA output, got {x_cuda.device}"
+
+
+@pytest.mark.skipif(not HAS_CUDA, reason="CUDA not available or TorchSolver not built")
+def test_cpu_and_cuda_solutions_match():
+    """Test that CPU and CUDA paths produce the same solution."""
+    n = 4
+    x = cp.Variable(n)
+    A = cp.Parameter((2, n))
+    b = cp.Parameter(2)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
+
+    np.random.seed(42)
+    A_val = np.random.randn(2, n)
+    b_val = np.random.randn(2)
+
+    layer_moreau = CvxpyLayer(problem, [A, b], [x], solver="MOREAU")
+
+    # Solve on CPU
+    A_cpu = torch.tensor(A_val, device="cpu")
+    b_cpu = torch.tensor(b_val, device="cpu")
+    (x_cpu,) = layer_moreau(A_cpu, b_cpu)
+
+    # Solve on CUDA
+    A_cuda = torch.tensor(A_val, device="cuda")
+    b_cuda = torch.tensor(b_val, device="cuda")
+    (x_cuda,) = layer_moreau(A_cuda, b_cuda)
+
+    # Compare solutions
+    diff = torch.norm(x_cpu - x_cuda.cpu()).item()
+    assert diff < 1e-5, f"CPU and CUDA solutions differ by {diff:.6e}"
