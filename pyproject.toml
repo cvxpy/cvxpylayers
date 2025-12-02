@@ -17,7 +17,7 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.10"
 dependencies = [
-    "cvxpy @ git+https://github.com/optimalintellect/cvxpy-fork.git",
+    "cvxpy>=1.7.4",
     "diffcp>=1.1.0",
     "numpy>=1.22.4",
     "scipy>=1.13.0",
@@ -123,7 +123,7 @@ max-line-length = 88
 #addopts = "--cov-report xml:coverage.xml --cov src.repository --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
 pythonpath = ["src"]
 log_cli = true
-log_cli_level = "DEBUG"
+log_cli_level = "WARNING"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 testpaths = "tests"
