@@ -84,19 +84,14 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
     # Nonnegative cone (inequality constraints)
     cones.num_nonneg_cones = dims.get("l", 0)
 
-    # Second-order cones
-    # dims['q'] is a list of SOC dimensions
-    soc_dims = dims.get("q", [])
-    cones.num_soc_cones = len(soc_dims)
+    # Second-order cones - preserve actual SOC dimensions
+    cones.soc_dims = list(dims.get("q", []))
 
     # Exponential cones
     cones.num_exp_cones = dims.get("ep", 0)
 
     # Power cones
-    power_alphas = dims.get("p", [])
-    cones.num_power_cones = len(power_alphas)
-    if power_alphas:
-        cones.power_alphas = list(power_alphas)
+    cones.power_alphas = list(dims.get("p", []))
 
     return cones
 
@@ -195,7 +190,7 @@ class MOREAU_ctx:
         """
         if device == 'cuda':
             if self._torch_solver_cuda is None:
-                if moreau_torch is None or not moreau_torch.cuda_available():
+                if moreau_torch is None or not moreau.device_available('cuda'):
                     raise ImportError(
                         "Moreau CUDA backend requires 'moreau' package with CUDA support. "
                         "Install with: pip install moreau[cuda]"

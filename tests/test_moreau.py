@@ -12,7 +12,7 @@ moreau = pytest.importorskip("moreau")
 import moreau.torch as moreau_torch
 
 # Check for CUDA availability
-HAS_CUDA = torch.cuda.is_available() and moreau_torch.cuda_available()
+HAS_CUDA = torch.cuda.is_available() and moreau.device_available('cuda')
 
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
