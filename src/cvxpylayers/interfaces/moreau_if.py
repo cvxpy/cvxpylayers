@@ -174,9 +174,18 @@ class MOREAU_ctx:
         return self._cones
 
     def _get_settings(self):
-        """Get moreau.Settings configured from options."""
+        """Get moreau.Settings configured from self.options.
+
+        Accepts any moreau.Settings field names directly (e.g., max_iter,
+        tol_gap_abs, verbose, etc.).
+        """
         settings = moreau.Settings()
-        settings.verbose = self.options.get("verbose", False)
+
+        # Set any field that exists on moreau.Settings
+        for key, value in self.options.items():
+            if hasattr(settings, key):
+                setattr(settings, key, value)
+
         return settings
 
     def get_torch_solver(self, device: str):

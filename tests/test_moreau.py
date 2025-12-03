@@ -658,3 +658,60 @@ def test_cpu_and_cuda_solutions_match():
     # Compare solutions
     diff = torch.norm(x_cpu - x_cuda.cpu()).item()
     assert diff < 1e-5, f"CPU and CUDA solutions differ by {diff:.6e}"
+
+
+# ============================================================================
+# Solver options tests
+# ============================================================================
+
+
+def test_solver_args_actually_used():
+    """Test that solver_args actually affect the solver's behavior.
+
+    This verifies solver_args are truly passed to the solver by:
+    1. Solving with very restrictive max_iter (should give suboptimal solution)
+    2. Solving with normal settings (should give better solution)
+    3. Verifying the solutions differ, proving solver_args were used
+
+    Note: moreau uses 'max_iter' (not 'max_iters') and 'tol_gap_abs' (not 'eps').
+    """
+    np.random.seed(123)
+    m, n = 50, 20
+
+    x = cp.Variable(n)
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+
+    # Least squares problem: minimize ||Ax - b||^2
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
+
+    layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver="MOREAU")
+
+    A_th = torch.randn(m, n).double()
+    b_th = torch.randn(m).double()
+
+    # Solve with very restrictive iterations (should stop early, suboptimal)
+    (x_restricted,) = layer(A_th, b_th, solver_args={"max_iter": 1})
+
+    # Solve with proper iterations (should converge to optimal)
+    (x_optimal,) = layer(A_th, b_th, solver_args={"max_iter": 200, "tol_gap_abs": 1e-10})
+
+    # The solutions should differ if solver_args were actually used
+    # With only 1 iteration, the solution should be far from optimal
+    diff = torch.norm(x_restricted - x_optimal).item()
+    assert diff > 1e-3, (
+        f"Solutions with max_iter=1 and max_iter=200 are too similar (diff={diff}). "
+        "This suggests solver_args are not being passed to the solver."
+    )
+
+    # The optimal solution should have much lower objective value
+    def compute_objective(x_sol):
+        return torch.sum((A_th @ x_sol - b_th) ** 2).item()
+
+    obj_restricted = compute_objective(x_restricted)
+    obj_optimal = compute_objective(x_optimal)
+
+    assert obj_optimal < obj_restricted, (
+        f"Optimal objective ({obj_optimal}) should be less than restricted ({obj_restricted}). "
+        "This suggests solver_args are not being used properly."
+    )
