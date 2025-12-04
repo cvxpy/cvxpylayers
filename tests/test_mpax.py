@@ -40,7 +40,7 @@ def compare_solvers(problem, params, param_vals, variables):
     for param, val in zip(params, param_vals, strict=True):
         param.value = val
     for var, sol in zip(variables, sols_diffcp, strict=True):
-        var.value = sol.detach().numpy()
+        var.value = sol.detach().cpu().numpy()
     diffcp_obj = problem.objective.value
 
     # Test MPAX
@@ -51,7 +51,7 @@ def compare_solvers(problem, params, param_vals, variables):
     for param, val in zip(params, param_vals, strict=True):
         param.value = val
     for var, sol in zip(variables, sols_mpax, strict=True):
-        var.value = sol.detach().numpy()
+        var.value = sol.detach().cpu().numpy()
     mpax_obj = problem.objective.value
 
     # Compare objectives
@@ -70,11 +70,11 @@ def compare_solvers(problem, params, param_vals, variables):
         assert diffcp_err < 1e-3, f"DIFFCP var {i} error: ||DIFFCP - true|| = {diffcp_err:.6e}"
 
         # Compare MPAX vs ground truth
-        mpax_err = np.linalg.norm(sol_mpax.detach().numpy() - sol_true)
+        mpax_err = np.linalg.norm(sol_mpax.detach().cpu().numpy() - sol_true)
         assert mpax_err < 1e-3, f"MPAX var {i} error: ||MPAX - true|| = {mpax_err:.6e}"
 
         # Compare MPAX vs DIFFCP
-        primal_diff = torch.norm(sol_mpax - sol_diffcp).item()
+        primal_diff = torch.norm(sol_mpax.cpu() - sol_diffcp).item()
         assert primal_diff < 1e-3, (
             f"Primal variable {i} differs: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
         )
@@ -111,14 +111,14 @@ def compare_solvers_batched(problem, params, param_vals_batch, variables):
 
         # Compare DIFFCP for this batch element
         for var, sol in zip(variables, sols_diffcp, strict=True):
-            var.value = sol[batch_idx].detach().numpy()
+            var.value = sol[batch_idx].detach().cpu().numpy()
         diffcp_obj = problem.objective.value
 
         # Compare MPAX for this batch element
         for param, val in zip(params, param_vals_single, strict=True):
             param.value = val.numpy() if hasattr(val, "numpy") else val
         for var, sol in zip(variables, sols_mpax, strict=True):
-            var.value = sol[batch_idx].detach().numpy()
+            var.value = sol[batch_idx].detach().cpu().numpy()
         mpax_obj = problem.objective.value
 
         # Compare objectives
@@ -132,10 +132,10 @@ def compare_solvers_batched(problem, params, param_vals_batch, variables):
         for i, (sol_mpax, sol_diffcp, sol_true) in enumerate(
             zip(sols_mpax, sols_diffcp, true_sol, strict=True)
         ):
-            mpax_err = np.linalg.norm(sol_mpax[batch_idx].detach().numpy() - sol_true)
+            mpax_err = np.linalg.norm(sol_mpax[batch_idx].detach().cpu().numpy() - sol_true)
             assert mpax_err < 1e-3, f"Batch {batch_idx}, var {i}: ||MPAX - true|| = {mpax_err:.6e}"
 
-            primal_diff = torch.norm(sol_mpax[batch_idx] - sol_diffcp[batch_idx]).item()
+            primal_diff = torch.norm(sol_mpax[batch_idx].cpu() - sol_diffcp[batch_idx]).item()
             assert primal_diff < 1e-3, (
                 f"Batch {batch_idx}, var {i}: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
             )
@@ -353,7 +353,7 @@ def test_mixed_batched_unbatched():
 
     # Compare MPAX vs DIFFCP for each batch element
     for batch_idx in range(batch_size):
-        primal_diff = torch.norm(sols_mpax[0][batch_idx] - sols_diffcp[0][batch_idx]).item()
+        primal_diff = torch.norm(sols_mpax[0][batch_idx].cpu() - sols_diffcp[0][batch_idx]).item()
         assert primal_diff < 1e-3, f"Batch {batch_idx}: ||MPAX - DIFFCP|| = {primal_diff:.6e}"
 
 

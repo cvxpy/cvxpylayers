@@ -58,11 +58,12 @@ class VariableRecovery:
     shape: tuple[int, ...]
 
     def recover(self, primal_sol: T, dual_sol: T) -> T:
+        batch = tuple(primal_sol.shape[:-1])
         if self.primal is not None:
             # Use ellipsis slicing to handle both batched and unbatched
-            return fortran_reshape(primal_sol[..., self.primal], self.shape)  # type: ignore[index]
+            return fortran_reshape(primal_sol[..., self.primal], batch + self.shape)  # type: ignore[index]
         if self.dual is not None:
-            return fortran_reshape(dual_sol[..., self.dual], self.shape)  # type: ignore[index]
+            return fortran_reshape(dual_sol[..., self.dual], batch + self.shape)  # type: ignore[index]
         raise RuntimeError(
             "Invalid VariableRecovery: both primal and dual slices are None. "
             "At least one must be set to recover variable values."
@@ -70,6 +71,9 @@ class VariableRecovery:
 
 
 def fortran_reshape(array, shape):
+    if shape == ():
+        return array.reshape(shape)
+
     import sys
 
     if "torch" not in sys.modules:

@@ -13,7 +13,7 @@ class TestVariableRecovery:
 
     def test_recover_primal_unbatched(self):
         """Test primal recovery without batch dimension."""
-        var_recovery = VariableRecovery(primal=slice(0, 3), dual=None)
+        var_recovery = VariableRecovery(primal=slice(0, 3), dual=None, shape=(3,))
         primal_sol = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         dual_sol = np.array([0.0, 0.0])
 
@@ -22,7 +22,7 @@ class TestVariableRecovery:
 
     def test_recover_primal_batched(self):
         """Test primal recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=slice(1, 4), dual=None)
+        var_recovery = VariableRecovery(primal=slice(1, 4), dual=None, shape=(3,))
         primal_sol = np.array(
             [
                 [0.0, 1.0, 2.0, 3.0, 4.0],
@@ -37,7 +37,7 @@ class TestVariableRecovery:
 
     def test_recover_dual_unbatched(self):
         """Test dual recovery without batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(0, 2))
+        var_recovery = VariableRecovery(primal=None, dual=slice(0, 2), shape=(2,))
         primal_sol = np.array([1.0, 2.0, 3.0])
         dual_sol = np.array([0.5, 1.5, 2.5])
 
@@ -46,7 +46,7 @@ class TestVariableRecovery:
 
     def test_recover_dual_batched(self):
         """Test dual recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3))
+        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3), shape=(1,))
         primal_sol = np.array([[1.0], [2.0]])
         dual_sol = np.array(
             [
@@ -61,7 +61,7 @@ class TestVariableRecovery:
 
     def test_recover_neither_raises_error(self):
         """Test that RuntimeError is raised when both primal and dual are None."""
-        var_recovery = VariableRecovery(primal=None, dual=None)
+        var_recovery = VariableRecovery(primal=None, dual=None, shape=(1,))
         primal_sol = np.array([1.0, 2.0])
         dual_sol = np.array([0.5, 1.5])
 
