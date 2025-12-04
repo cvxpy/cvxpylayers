@@ -440,7 +440,9 @@ class CUCLARABEL_data:
             dA_stacked,
         )
 
-    def torch_solve(self, solver_args=None):
+    def torch_solve(
+        self, solver_args: dict[str, Any] | None = None
+    ) -> tuple["torch.Tensor", "torch.Tensor", Any]:
         import torch
 
         if solver_args is None:
@@ -459,7 +461,7 @@ class CUCLARABEL_data:
         dprimal: Float[torch.Tensor, "batch_size n"],
         ddual: Float[torch.Tensor, "batch_size m"],
         vjps: list[Callable],
-    ):
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
         import torch
 
         dP_batch, dq_batch, dA_batch = _compute_gradients(

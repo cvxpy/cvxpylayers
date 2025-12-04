@@ -3,13 +3,13 @@ import pytest
 
 jax = pytest.importorskip("jax")
 
-import cvxpy as cp
-import diffcp
-import jax.numpy as jnp
-from jax import random
-from jax.test_util import check_grads
+import cvxpy as cp  # noqa: E402
+import diffcp  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
+from jax import random  # noqa: E402
+from jax.test_util import check_grads  # noqa: E402
 
-from cvxpylayers.jax import CvxpyLayer
+from cvxpylayers.jax import CvxpyLayer  # noqa: E402
 
 
 def sigmoid(z):
@@ -470,9 +470,9 @@ def test_batched_gp():
     x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
 
     # Check shapes - batched results are (batch_size, 1) for scalar variables
-    assert x_batch.shape == (batch_size, 1)
-    assert y_batch.shape == (batch_size, 1)
-    assert z_batch.shape == (batch_size, 1)
+    assert x_batch.shape == (batch_size,)
+    assert y_batch.shape == (batch_size,)
+    assert z_batch.shape == (batch_size,)
 
     # Verify each batch element by solving individually
     for i in range(batch_size):
@@ -481,13 +481,13 @@ def test_batched_gp():
         c.value = float(c_batch[i])
         problem.solve(cp.CLARABEL, gp=True)
 
-        assert np.allclose(x.value, x_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert np.allclose(x.value, x_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for x"
         )
-        assert np.allclose(y.value, y_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert np.allclose(y.value, y_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for y"
         )
-        assert np.allclose(z.value, z_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert np.allclose(z.value, z_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for z"
         )
 

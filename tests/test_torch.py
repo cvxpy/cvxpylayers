@@ -7,10 +7,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-# from cvxpylayers.utils import backward_numpy, forward_numpy
-from torch.autograd import grad
+from torch.autograd import grad  # noqa: E402
 
-from cvxpylayers.torch import CvxpyLayer
+from cvxpylayers.torch import CvxpyLayer  # noqa: E402
 
 torch.set_default_dtype(torch.double)
 
@@ -481,10 +480,10 @@ def test_batched_gp():
     # Forward pass
     x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
 
-    # Check shapes - batched results are (batch_size, 1) for scalar variables
-    assert x_batch.shape == (batch_size, 1)
-    assert y_batch.shape == (batch_size, 1)
-    assert z_batch.shape == (batch_size, 1)
+    # Check shapes - batched results are (batch_size,) for scalar variables
+    assert x_batch.shape == (batch_size,)
+    assert y_batch.shape == (batch_size,)
+    assert z_batch.shape == (batch_size,)
 
     # Verify each batch element by solving individually
     for i in range(batch_size):
@@ -493,13 +492,13 @@ def test_batched_gp():
         c.value = c_batch[i].item()
         problem.solve(cp.CLARABEL, gp=True)
 
-        assert torch.allclose(torch.tensor(x.value), x_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert torch.allclose(torch.tensor(x.value), x_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for x"
         )
-        assert torch.allclose(torch.tensor(y.value), y_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert torch.allclose(torch.tensor(y.value), y_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for y"
         )
-        assert torch.allclose(torch.tensor(z.value), z_batch[i, 0], atol=1e-4, rtol=1e-4), (
+        assert torch.allclose(torch.tensor(z.value), z_batch[i], atol=1e-4, rtol=1e-4), (
             f"Mismatch in batch {i} for z"
         )
 
@@ -684,3 +683,27 @@ def test_solver_args_actually_used():
         f"Optimal objective ({obj_optimal}) should be less than restricted ({obj_restricted}). "
         "This suggests solver_args are not being used properly."
     )
+
+
+def test_nd_array_variable():
+    _ = set_seed(123)
+    m, n, k = 50, 20, 10
+
+    A = cp.Parameter((m, n))
+    b = cp.Parameter((m, k))
+    x = cp.Variable((n, k))
+    obj = cp.sum_squares(A @ x - b) + 0.01 * cp.sum_squares(x)
+    prob = cp.Problem(cp.Minimize(obj))
+
+    layer = CvxpyLayer(prob, [A, b], [x])
+
+    A_th = torch.randn(m, n).double()
+    b_th = torch.randn(m, k).double()
+
+    # Solve with very restrictive iterations (should stop early, suboptimal)
+    (x_th,) = layer(A_th, b_th)
+
+    A.value = A_th.numpy()
+    b.value = b_th.numpy()
+    prob.solve()
+    assert np.allclose(x.value, x_th.numpy(), atol=1e-4, rtol=1e-4)
