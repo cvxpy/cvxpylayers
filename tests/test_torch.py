@@ -4,7 +4,8 @@ import cvxpy as cp
 import diffcp
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 # from cvxpylayers.utils import backward_numpy, forward_numpy
 from torch.autograd import grad

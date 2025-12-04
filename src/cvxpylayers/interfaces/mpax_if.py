@@ -20,13 +20,28 @@ try:
 except ImportError:
     torch = None  # type: ignore[assignment]
 
+try:
+    import mlx.core as mx
+except ImportError:
+    mx = None  # type: ignore[assignment]
+
+if torch is not None:
+    from torch import TYPE_CHECKING
+    if TYPE_CHECKING:
+        # Type alias for multi-framework tensor types
+        TensorLike = torch.Tensor | jnp.ndarray | np.ndarray | mx.array
+    else:
+        TensorLike = Any
+
 
 def _parse_objective_structure(
     objective_structure: tuple,
-) -> tuple[slice, np.ndarray, tuple[np.ndarray, np.ndarray], tuple[int, int], int]:
+) -> tuple[slice, np.ndarray, tuple[np.ndarray, np.ndarray],
+           tuple[int, int], int]:
     """Parse objective structure to extract quadratic (Q) matrix components.
 
-    Converts CVXPY's canonical objective structure into sparse matrix components
+    Converts CVXPY's canonical objective structure
+    into sparse matrix components
     for the quadratic cost matrix Q in the QP formulation.
 
     Args:
@@ -56,12 +71,14 @@ def _parse_objective_structure(
     return c_slice, Q_idxs, Q_structure, Q_shape, n
 
 
-def _initialize_solver(options: dict[str, Any] | None) -> tuple[Callable, bool]:
+def _initialize_solver(options:
+                       dict[str, Any] | None) -> tuple[Callable, bool]:
     """Initialize MPAX solver based on options.
 
     Args:
         options: Solver options dictionary containing:
-            - warm_start: Whether to use warm starting (currently must be False)
+            - warm_start: Whether to use warm
+            starting (currently must be False)
             - algorithm: "raPDHG" or "r2HPDHG"
             - Additional solver-specific options
 
@@ -122,25 +139,32 @@ class MPAX_ctx:
     ):
         if mpax is None or jax is None:
             raise ImportError(
-                "MPAX solver requires 'mpax' and 'jax' packages to be installed. "
+                "MPAX solver requires 'mpax' and 'jax' "
+                "packages to be installed. "
                 "Install with: pip install mpax jax"
             )
 
         # Parse objective structure
-        self.c_slice, self.Q_idxs, self.Q_structure, self.Q_shape, n = _parse_objective_structure(
-            objective_structure
+        self.c_slice, self.Q_idxs, self.Q_structure, self.Q_shape, n = (
+            _parse_objective_structure(
+                objective_structure)
         )
 
-        # Parse constraint structure - splits into equality (A) and inequality (G) matrices
+        # Parse constraint structure - splits into equality
+        # (A) and inequality (G) matrices
         con_indices, con_ptr, (m, np1) = constraint_structure
         assert np1 == n + 1
 
-        # Extract indices for the last column (which contains b and h RHS values)
-        # Use indices instead of slices because sparse matrices may have reduced out
+        # Extract indices for the last column
+        # (which contains b and h RHS values)
+        # Use indices instead of slices because
+        # sparse matrices may have reduced out
         # explicit zeros, so we need to reconstruct the full dense vectors
         self.last_col_start = con_ptr[-2]
         self.last_col_end = con_ptr[-1]
-        self.last_col_indices = con_indices[self.last_col_start : self.last_col_end]
+        self.last_col_indices = con_indices[
+            self.last_col_start:self.last_col_end
+        ]
         self.m = m  # Total number of constraint rows
 
         # Convert to CSR format for row-based splitting
@@ -148,24 +172,35 @@ class MPAX_ctx:
             (np.arange(con_indices.size), con_indices, con_ptr[:-1]),
             shape=(m, n),
         ).tocsr()
-        split = con_csr.indptr[dims.zero]  # Split point between equality and inequality
+        # Split point between equality and inequality
 
+        split = con_csr.indptr[dims.zero]
         # Extract equality constraints (A)
         self.A_idxs = con_csr.data[:split]
-        self.A_structure = con_csr.indices[:split], con_csr.indptr[: dims.zero + 1]
+        self.A_structure = con_csr.indices[:split], \
+            con_csr.indptr[: dims.zero + 1]
         self.A_shape = (dims.zero, n)
 
         # Extract inequality constraints (G)
         self.G_idxs = con_csr.data[split:]
-        self.G_structure = con_csr.indices[split:], con_csr.indptr[dims.zero :] - split
+        self.G_structure = con_csr.indices[split:], \
+            con_csr.indptr[dims.zero:] - split
         self.G_shape = (m - dims.zero, n)
 
         # Precompute split_at to avoid binary search on every solve
         self.split_at = int(jnp.searchsorted(self.last_col_indices, dims.zero))
 
         # Set bounds
-        self.lower = lower_bounds if lower_bounds is not None else -jnp.inf * jnp.ones(n)
-        self.upper = upper_bounds if upper_bounds is not None else jnp.inf * jnp.ones(n)
+        self.lower = (
+            lower_bounds
+            if lower_bounds is not None
+            else -jnp.inf * jnp.ones(n)
+        )
+        self.upper = (
+            upper_bounds
+            if upper_bounds is not None
+            else jnp.inf * jnp.ones(n)
+        )
 
         # Initialize solver
         self.solver, self.warm_start = _initialize_solver(options)
@@ -209,6 +244,47 @@ class MPAX_ctx:
             jnp.array(con_values),
         )
 
+    def mlx_to_data(
+        self,
+        quad_obj_values,
+        lin_obj_values,
+        con_values,
+    ) -> "MPAX_data":
+
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        # Detect batch size and whether input was originally unbatched
+        if con_values.ndim == 1:
+            originally_unbatched = True
+            batch_size = 1
+            # Add batch dimension for uniform handling
+            con_values = mx.expand_dims(con_values, axis=1)
+            lin_obj_values = mx.expand_dims(lin_obj_values, axis=1)
+            quad_obj_values = mx.expand_dims(quad_obj_values, axis=1)
+        else:
+            originally_unbatched = False
+            batch_size = con_values.shape[1]
+
+        # Convert to JAX arrays for MPAX (MPAX uses JAX internally)
+        # MLX arrays can be converted to numpy first, then to JAX
+        import jax.numpy as jnp
+        quad_obj_values_jax = jnp.array(np.array(quad_obj_values))
+        lin_obj_values_jax = jnp.array(np.array(lin_obj_values))
+        con_values_jax = jnp.array(np.array(con_values))
+
+        return MPAX_data(
+            ctx=self,
+            quad_obj_values=quad_obj_values_jax,
+            lin_obj_values=lin_obj_values_jax,
+            con_values=con_values_jax,
+            batch_size=batch_size,
+            originally_unbatched=originally_unbatched,
+        )
+
 
 def _extract_rhs_vectors(
     con_vals_i: jnp.ndarray, ctx: "MPAX_ctx"
@@ -228,7 +304,7 @@ def _extract_rhs_vectors(
             - h_vals: Dense inequality constraint RHS vector
     """
     # Extract sparse RHS values from last column
-    rhs_sparse_values = con_vals_i[ctx.last_col_start : ctx.last_col_end]
+    rhs_sparse_values = con_vals_i[ctx.last_col_start: ctx.last_col_end]
     rhs_row_indices = ctx.last_col_indices
 
     num_eq_constraints = ctx.A_shape[0]
@@ -372,6 +448,22 @@ class MPAX_data:
             vjp_fun,
         )
 
+    def mlx_solve(self, solver_args=None):
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        # Use JAX solve (MPAX uses JAX internally)
+        primal_jax, dual_jax, vjp_fun = self.jax_solve(solver_args)
+
+        # Convert JAX arrays to MLX arrays
+        primal = mx.array(np.array(primal_jax), dtype=mx.float64)
+        dual = mx.array(np.array(dual_jax), dtype=mx.float64)
+
+        return primal, dual, vjp_fun
+
     def jax_derivative(self, primal, dual, fun):
         raise NotImplementedError(
             "Backward pass is not implemented for MPAX solver. "
@@ -397,3 +489,26 @@ class MPAX_data:
             torch.utils.dlpack.from_dlpack(lin),
             torch.utils.dlpack.from_dlpack(con),
         )
+
+    def mlx_derivative(self, primal, dual, adj_batch):
+
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        # Convert MLX arrays to JAX arrays for derivative computation
+        import jax.numpy as jnp
+        primal_jax = jnp.array(np.array(primal))
+        dual_jax = jnp.array(np.array(dual))
+
+        # Compute derivatives using JAX
+        quad, lin, con = self.jax_derivative(primal_jax, dual_jax, adj_batch)
+
+        # Convert back to MLX
+        quad_mlx = mx.array(np.array(quad), dtype=mx.float64) if quad is not None else None
+        lin_mlx = mx.array(np.array(lin), dtype=mx.float64)
+        con_mlx = mx.array(np.array(con), dtype=mx.float64)
+
+        return quad_mlx, lin_mlx, con_mlx

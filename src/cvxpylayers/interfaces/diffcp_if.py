@@ -17,9 +17,14 @@ try:
 except ImportError:
     torch = None  # type: ignore[assignment]
 
+try:
+    import mlx.core as mx
+except ImportError:
+    mx = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
     # Type alias for multi-framework tensor types
-    TensorLike = torch.Tensor | jnp.ndarray | np.ndarray
+    TensorLike = torch.Tensor | jnp.ndarray | np.ndarray | mx.array
 else:
     TensorLike = Any
 
@@ -38,9 +43,11 @@ def _detect_batch_size(con_values: TensorLike) -> tuple[int, bool]:
             - batch_size: Number of batch elements (1 if unbatched)
             - originally_unbatched: True if input had no batch dimension
     """
-    # Handle both torch tensors (.dim()) and jax/numpy arrays (.ndim)
-    ndim = con_values.dim() if hasattr(con_values, "dim") else con_values.ndim  # type: ignore[attr-defined]
-
+    # Handle both torch tensors (.dim()) and jax/numpy/mlx arrays (.ndim)
+    ndim = (
+            con_values.dim() if hasattr(con_values, "dim")
+            else con_values.ndim  # type: ignore[attr-defined]
+            )
     if ndim == 1:
         return 1, True  # Unbatched input
     else:
@@ -54,7 +61,10 @@ def _build_diffcp_matrices(
     A_shape: tuple[int, int],
     b_idx: np.ndarray,
     batch_size: int,
-) -> tuple[list[sp.csc_matrix], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+) -> tuple[list[sp.csc_matrix],
+           list[np.ndarray],
+           list[np.ndarray],
+           list[np.ndarray]]:
     """Build DIFFCP matrices from constraint and objective values.
 
     Converts parameter values into the conic form required by DIFFCP solver:
@@ -125,11 +135,12 @@ class DIFFCP_ctx:
 
         self.A_structure = (con_indices, con_ptr)
         self.A_shape = (m, np1)
-        self.b_idx = con_indices[con_ptr[-2] : con_ptr[-1]]
+        self.b_idx = con_indices[con_ptr[-2]: con_ptr[-1]]
 
         self.dims = dims
 
-    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
+    def torch_to_data(self, quad_obj_values,
+                      lin_obj_values, con_values) -> "DIFFCP_data":
         batch_size, originally_unbatched = _detect_batch_size(con_values)
 
         # Add batch dimension for uniform handling if needed
@@ -157,7 +168,8 @@ class DIFFCP_ctx:
             originally_unbatched=originally_unbatched,
         )
 
-    def jax_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "DIFFCP_data":
+    def jax_to_data(self, quad_obj_values,
+                    lin_obj_values, con_values) -> "DIFFCP_data":
         if jnp is None:
             raise ImportError(
                 "JAX interface requires 'jax' package to be installed. "
@@ -175,6 +187,53 @@ class DIFFCP_ctx:
         As, bs, cs, b_idxs = _build_diffcp_matrices(
             con_values,
             lin_obj_values,
+            self.A_structure,
+            self.A_shape,
+            self.b_idx,
+            batch_size,
+        )
+
+        return DIFFCP_data(
+            As=As,
+            bs=bs,
+            cs=cs,
+            b_idxs=b_idxs,
+            cone_dict=dims_to_solver_dict(self.dims),
+            batch_size=batch_size,
+            originally_unbatched=originally_unbatched,
+        )
+
+    def mlx_to_data(self, quad_obj_values,
+                    lin_obj_values, con_values) -> "DIFFCP_data":
+
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        # Convert to numpy arrays if they're MLX arrays
+        if isinstance(con_values, np.ndarray):
+            con_values_np = con_values
+        else:
+            con_values_np = np.array(con_values, dtype=np.float32)
+
+        if isinstance(lin_obj_values, np.ndarray):
+            lin_obj_values_np = lin_obj_values
+        else:
+            lin_obj_values_np = np.array(lin_obj_values, dtype=np.float32)
+
+        batch_size, originally_unbatched = _detect_batch_size(con_values_np)
+
+        # Add batch dimension for uniform handling if needed
+        if originally_unbatched:
+            con_values_np = np.expand_dims(con_values_np, 1)
+            lin_obj_values_np = np.expand_dims(lin_obj_values_np, 1)
+
+        # Build matrices
+        As, bs, cs, b_idxs = _build_diffcp_matrices(
+            con_values_np,
+            lin_obj_values_np,
             self.A_structure,
             self.A_shape,
             self.b_idx,
@@ -222,7 +281,7 @@ def _compute_gradients(
     # Convert incoming gradients to lists for DIFFCP
     dxs = [np.array(dprimal[i]) for i in range(batch_size)]
     dys = [np.array(ddual[i]) for i in range(batch_size)]
-    dss = [np.zeros_like(bs[i]) for i in range(batch_size)]  # No gradient w.r.t. slack
+    dss = [np.zeros_like(bs[i]) for i in range(batch_size)]
 
     # Call DIFFCP's batch adjoint to get gradients w.r.t. problem data
     dAs, dbs, dcs = adj_batch(dxs, dys, dss)
@@ -231,7 +290,8 @@ def _compute_gradients(
     dq_batch = []
     dA_batch = []
     for i in range(batch_size):
-        # Negate dA because A was negated in forward pass, but not db (b was not negated)
+        # Negate dA because A was negated in forward pass,
+        #but not db (b was not negated)
         con_grad = np.hstack([-dAs[i].data, dbs[i][b_idxs[i]]])
         # Add zero gradient for constant offset term
         lin_grad = np.hstack([dcs[i], np.array([0.0])])
@@ -254,7 +314,8 @@ class DIFFCP_data:
     def torch_solve(self, solver_args=None):
         if torch is None:
             raise ImportError(
-                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+                "PyTorch interface requires 'torch' package."
+                "Install with: pip install torch"
             )
 
         if solver_args is None:
@@ -276,7 +337,8 @@ class DIFFCP_data:
     def torch_derivative(self, primal, dual, adj_batch):
         if torch is None:
             raise ImportError(
-                "PyTorch interface requires 'torch' package. Install with: pip install torch"
+                "PyTorch interface requires 'torch' package."
+                "Install with: pip install torch"
             )
 
         # Compute gradients
@@ -333,6 +395,73 @@ class DIFFCP_data:
         if self.originally_unbatched:
             dq_stacked = jnp.squeeze(dq_stacked, 1)
             dA_stacked = jnp.squeeze(dA_stacked, 1)
+
+        return (
+            None,
+            dq_stacked,
+            dA_stacked,
+        )
+
+    def mlx_solve(self, solver_args=None):
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        if solver_args is None:
+            solver_args = {}
+
+        # Always use batch solve
+        xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
+            self.As,
+            self.bs,
+            self.cs,
+            [self.cone_dict] * self.batch_size,
+            **solver_args,
+        )
+        # Stack results into batched arrays
+        # MLX doesn't support float64 on GPU, use float32 instead
+        primal = mx.stack([mx.array(x, dtype=mx.float32) for x in xs])
+        dual = mx.stack([mx.array(y, dtype=mx.float32) for y in ys])
+        return primal, dual, adj_batch
+
+    def mlx_derivative(self, dprimal, ddual, adj_batch):
+        if mx is None:
+            raise ImportError(
+                "MLX interface requires 'mlx' package to be installed. "
+                "Install with: pip install mlx"
+            )
+
+        # Convert MLX arrays to numpy for gradient computation
+        # Handle both batched and unbatched cases
+        dprimal_np = np.array(dprimal, dtype=np.float32)
+        ddual_np = np.array(ddual, dtype=np.float32)
+
+        # Ensure proper shape for _compute_gradients
+        # which expects indexable arrays
+        # If unbatched, add batch dimension
+        if dprimal_np.ndim == 1:
+            dprimal_np = dprimal_np[np.newaxis, :]
+        if ddual_np.ndim == 1:
+            ddual_np = ddual_np[np.newaxis, :]
+
+        # Compute gradients
+        dq_batch, dA_batch = _compute_gradients(
+            adj_batch, dprimal_np, ddual_np, self.bs, self.b_idxs, self.batch_size
+        )
+
+        # Stack into shape (num_entries, batch_size) and convert to MLX
+        # MLX doesn't support float64 on GPU, use float32 instead
+        dq_stacked = mx.stack([mx.array(g, dtype=mx.float32) for g in dq_batch])
+        dq_stacked = mx.transpose(dq_stacked)
+        dA_stacked = mx.stack([mx.array(g, dtype=mx.float32) for g in dA_batch])
+        dA_stacked = mx.transpose(dA_stacked)
+
+        # Squeeze batch dimension only if input was originally unbatched
+        if self.originally_unbatched:
+            dq_stacked = mx.squeeze(dq_stacked, 1)
+            dA_stacked = mx.squeeze(dA_stacked, 1)
 
         return (
             None,
