@@ -5,11 +5,10 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 import scipy.sparse as sp
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict as scs_dims_to_solver_dict
-from cvxpy.reductions.solvers.conic_solvers.cuclarabel_conif import dims_to_solver_cones as dims_to_cusolver_cones
+from cvxpy.reductions.solvers.conic_solvers.cuclarabel_conif import dims_to_solver_cones as dims_to_cuclarabel_cones
 
 try:
     import jax
-    jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     from jaxlib._jax import Device
     import jax.experimental.sparse as jsparse
@@ -21,9 +20,9 @@ except ImportError:
 
 if TYPE_CHECKING:
     import torch
-    import cupy as cp
+    import cupy
     from cupyx.scipy.sparse import csr_matrix
-    TensorLike = jax.Array | cp.ndarray | csr_matrix
+    TensorLike = jax.Array | cupy.ndarray | csr_matrix
 
 
 @dataclass
@@ -33,9 +32,9 @@ class GpuDataMatrices:
     Ajxs: list[jsparse.BCSR]
     Acps: list[csr_matrix]
     qjxs: list[jax.Array]
-    qcps: list[cp.ndarray]
+    qcps: list[cupy.ndarray]
     bjxs: list[jax.Array]
-    bcps: list[cp.ndarray]
+    bcps: list[cupy.ndarray]
 
 
 def _build_gpu_cqp_matrices(
@@ -79,7 +78,7 @@ def _build_gpu_cqp_matrices(
         `GpuDataMatrices` object consisting of lists JAX sparse matrices and vectors and
         corresponding lists of CuPy reference objects. (i.e., zero-copied data.)
     """
-    import cupy as cp
+    import cupy
     from cupyx.scipy.sparse import csr_matrix
 
     Pjxs, qjxs, Ajxs, bjxs = [], [], [], []
@@ -102,35 +101,34 @@ def _build_gpu_cqp_matrices(
                 quad_vals_i,
                 *P_structure
             ), shape=P_shape)
-            Pcp_data = cp.from_dlpack(quad_vals_i)
+            Pcp_data = cupy.from_dlpack(quad_vals_i)
             Pcp = csr_matrix((
                 Pcp_data,
-                cp.from_dlpack(P_structure[0]),
-                cp.from_dlpack(P_structure[1]),
+                cupy.from_dlpack(P_structure[0]),
+                cupy.from_dlpack(P_structure[1]),
             ), shape=P_shape)
         
         # Negate A to match CuClarabel / diffqcp convention.
         Ajx_data = -con_vals_i[A_csr_idxs]
-        # Build augmented matrix [A | b] from sparse structure
         Ajx = jsparse.BCSR((
             Ajx_data,
             *A_structure
         ), shape=A_shape)
-        Acp_data = cp.from_dlpack(Ajx_data)
+        Acp_data = cupy.from_dlpack(Ajx_data)
         Acp = csr_matrix((
             Acp_data,
-            cp.from_dlpack(A_structure[0]),
-            cp.from_dlpack(A_structure[1])
+            cupy.from_dlpack(A_structure[0]),
+            cupy.from_dlpack(A_structure[1])
         ), shape=A_shape)
 
         bjx = jnp.zeros(A_shape[0])
         bjx = bjx.at[b_idxs].set(con_vals_i[-jnp.size(b_idxs):])
-        bcp = cp.from_dlpack(bjx)
+        bcp = cupy.from_dlpack(bjx)
 
         Pjxs.append(Pjx)
         Pcps.append(Pcp)
         qjxs.append(lin_vals_i)
-        qcps.append(cp.from_dlpack(lin_vals_i))
+        qcps.append(cupy.from_dlpack(lin_vals_i))
         Ajxs.append(Ajx)
         Acps.append(Acp)
         bjxs.append(bjx)
@@ -142,7 +140,7 @@ def _build_gpu_cqp_matrices(
     )
 
 
-class DIFFQCP_CTX:
+class CUCLARABEL_ctx:
 
     P_structure: tuple[Integer[jax.Array, "_"], Integer[jax.Array, "_"]]
     P_csr_idxs: Integer[jax.Array, "_"] | None
@@ -156,6 +154,7 @@ class DIFFQCP_CTX:
     b_idxs: Integer[jax.Array, "_"]
 
     dims: dict
+    options: dict | None
     diffqcp_problem_struc: QCPStructureGPU | None = None
     julia_ctx: Julia_CTX | None = None
 
@@ -209,6 +208,7 @@ class DIFFQCP_CTX:
             self.P_csr_idxs = None
             self.P_csr_to_csc_permutation = None
 
+        self.options = options
         self.dims = data["dims"]
 
 
@@ -217,7 +217,7 @@ class DIFFQCP_CTX:
         quad_obj_values: Float[jax.Array, "_ *batch"] | None,
         lin_obj_values: Float[jax.Array, "_ *batch"],
         con_values: Float[jax.Array, "_ *batch"]
-    ) -> DIFFQCP_data:
+    ) -> CUCLARABEL_data:
         
         if jnp.ndim(con_values) == 1:
             originally_unbatched = True
@@ -232,7 +232,8 @@ class DIFFQCP_CTX:
         device: Device = con_values.device
         
         if device.platform == "cpu":
-            gpu_device = next(d for d in jax.devices() if d.platform == "gpu")
+            gpu_device = (self.options.pop('device', next(d for d in jax.devices() if d.platform == 'gpu'))
+                          if self.options is not None else next(d for d in jax.devices() if d.platform == "gpu"))
             con_values = jax.device_put(con_values, device=gpu_device)
             quad_obj_values = (jax.device_put(quad_obj_values, device=gpu_device)
                                if quad_obj_values is not None else None)
@@ -260,7 +261,7 @@ class DIFFQCP_CTX:
                 data_matrices.Pjxs[0], data_matrices.Ajxs[0], scs_dims_to_solver_dict(self.dims)
             )
 
-        return DIFFQCP_gpu_data(
+        return CUCLARABEL_data(
             data_matrices=data_matrices,
             qcp_structure=self.diffqcp_problem_struc,
             P_csr_to_csc_perm=self.P_csr_to_csc_permutation,
@@ -275,7 +276,7 @@ class DIFFQCP_CTX:
         quad_obj_values: Float[torch.Tensor, "_ *batch"] | None,
         lin_obj_values: Float[torch.Tensor, "_ *batch"],
         con_values: Float[torch.Tensor, "_ *batch"]
-    ) -> DIFFQCP_data:
+    ) -> CUCLARABEL_data:
 
         return self.jax_to_data(
             quad_obj_values=(jax.dlpack.from_dlpack(quad_obj_values.detach()) if quad_obj_values is not None
@@ -379,17 +380,7 @@ def _compute_gradients(
 
 
 @dataclass
-class DIFFQCP_cpu_data:
-    
-    batch_size: int
-    originally_unbatched: bool
-
-    def _solve(self, solver_args=None):
-        raise NotImplementedError
-
-
-@dataclass
-class DIFFQCP_gpu_data:
+class CUCLARABEL_data:
     
     data_matrices: GpuDataMatrices
     qcp_structure: QCPStructureGPU # QCPStructureLayers
@@ -495,9 +486,6 @@ class DIFFQCP_gpu_data:
             dq_stacked,
             dA_stacked,
         )
-
-
-type DIFFQCP_data = DIFFQCP_cpu_data | DIFFQCP_gpu_data
         
 
 class Julia_CTX:
@@ -517,7 +505,7 @@ class Julia_CTX:
         self.jl.seval("using Clarabel, LinearAlgebra, SparseArrays")
         self.jl.seval("using CUDA, CUDA.CUSPARSE")
         
-        dims_to_cusolver_cones(self.jl, dims)
+        dims_to_cuclarabel_cones(self.jl, dims)
 
         self.jl.seval("""
         settings = Clarabel.Settings(direct_solve_method = :cudss)
@@ -529,12 +517,12 @@ class Julia_CTX:
 
     def _solve_first_time(
         self,
-        P: cp.csr_matrix,
-        A: cp.csr_matrix,
-        q: cp.ndarray,
-        b: cp.ndarray,
-    ) -> tuple[cp.ndarray, cp.ndarray, cp.ndarray]:
-        """Taken from `cvxpy`'s `clarabel_conif.py`"""
+        P: cupy.csr_matrix,
+        A: cupy.csr_matrix,
+        q: cupy.ndarray,
+        b: cupy.ndarray,
+    ) -> tuple[cupy.ndarray, cupy.ndarray, cupy.ndarray]:
+        """Taken from `cvxpy`'s `cuclarabel_conif.py`"""
         nvars = q.size
         self.jl.q = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(q.data.ptr), nvars)
         if P.nnz != 0:
@@ -564,11 +552,11 @@ class Julia_CTX:
     
     def solve(
         self,
-        P: cp.csr_matrix,
-        A: cp.csr_matrix,
-        q: cp.ndarray,
-        b: cp.ndarray
-    ) -> tuple[cp.ndarray, cp.ndarray, cp.ndarray]:
+        P: cupy.csr_matrix,
+        A: cupy.csr_matrix,
+        q: cupy.ndarray,
+        b: cupy.ndarray
+    ) -> tuple[cupy.ndarray, cupy.ndarray, cupy.ndarray]:
         
         # TODO(quill): determine the feasibility of the following.
         # - We'd probably have to cache the data matrices
@@ -589,7 +577,7 @@ class Julia_CTX:
 def JuliaCuVector2CuPyArray(jl, jl_arr):
     """Taken from https://github.com/cvxgrp/CuClarabel/blob/main/src/python/jl2py.py.
     """
-    import cupy as cp
+    import cupy
     # Get the device pointer from Julia
     pDevice = jl.Int(jl.pointer(jl_arr))
 
@@ -599,17 +587,17 @@ def JuliaCuVector2CuPyArray(jl, jl_arr):
 
     # Map Julia type to CuPy dtype
     if dtype == jl.Float64:
-        dtype = cp.float64
+        dtype = cupy.float64
     else:
-        dtype = cp.float32
+        dtype = cupy.float32
 
     # Compute memory size in bytes (assuming 1D vector)
-    size_bytes = int(span[0] * cp.dtype(dtype).itemsize)
+    size_bytes = int(span[0] * cupy.dtype(dtype).itemsize)
 
     # Create CuPy memory view from the Julia pointer
-    mem = cp.cuda.UnownedMemory(pDevice, size_bytes, owner=None)
-    memptr = cp.cuda.MemoryPointer(mem, 0)
+    mem = cupy.cuda.UnownedMemory(pDevice, size_bytes, owner=None)
+    memptr = cupy.cuda.MemoryPointer(mem, 0)
 
     # Wrap into CuPy ndarray
-    arr = cp.ndarray(shape=span, dtype=dtype, memptr=memptr)
+    arr = cupy.ndarray(shape=span, dtype=dtype, memptr=memptr)
     return arr

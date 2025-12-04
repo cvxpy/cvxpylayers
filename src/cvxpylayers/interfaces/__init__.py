@@ -12,9 +12,9 @@ def get_solver_ctx(
 
             ctx_cls = MPAX_ctx
         case "CUCLARABEL":
-            from cvxpylayers.interfaces.diffqcp_if import DIFFQCP_CTX
+            from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx
 
-            return DIFFQCP_CTX(
+            return CUCLARABEL_ctx(
                 objective_structure=param_prob.reduced_P.problem_data_index,
                 constraint_structure=param_prob.reduced_A.problem_data_index,
                 data=data,
