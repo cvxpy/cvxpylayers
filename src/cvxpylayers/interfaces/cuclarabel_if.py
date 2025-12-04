@@ -9,6 +9,9 @@ from cvxpy.reductions.solvers.conic_solvers.cuclarabel_conif import dims_to_solv
 
 try:
     import jax
+    # NOTE(quill): following will only work if this is the beginning of a JAX program.
+    #   Or (obviously) 64 bit arithmetic has already been set.
+    jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     from jaxlib._jax import Device
     import jax.experimental.sparse as jsparse
