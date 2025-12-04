@@ -55,17 +55,33 @@ class SolverContext(Protocol):
 class VariableRecovery:
     primal: slice | None
     dual: slice | None
+    shape: tuple[int, ...]
 
     def recover(self, primal_sol: T, dual_sol: T) -> T:
         if self.primal is not None:
             # Use ellipsis slicing to handle both batched and unbatched
-            return primal_sol[..., self.primal]  # type: ignore[index]
+            return fortran_reshape(primal_sol[..., self.primal], self.shape)  # type: ignore[index]
         if self.dual is not None:
-            return dual_sol[..., self.dual]  # type: ignore[index]
+            return fortran_reshape(dual_sol[..., self.dual], self.shape)  # type: ignore[index]
         raise RuntimeError(
             "Invalid VariableRecovery: both primal and dual slices are None. "
             "At least one must be set to recover variable values."
         )
+
+
+def fortran_reshape(array, shape):
+    import sys
+
+    if "torch" not in sys.modules:
+        return array.reshape(shape, order="F")
+    import torch
+
+    if isinstance(array, torch.Tensor):
+        from cvxpylayers.torch.cvxpylayer import reshape_fortran
+
+        return reshape_fortran(array, shape)
+    else:
+        return array.reshape(shape, order="F")
 
 
 @dataclass
@@ -296,6 +312,7 @@ def parse_args(
             VariableRecovery(
                 slice(start := param_prob.var_id_to_col[v.id], start + v.size),
                 None,
+                v.shape,
             )
             for v in variables
         ],
