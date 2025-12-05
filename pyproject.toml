@@ -50,7 +50,7 @@ torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
 mlx = ["mlx==0.27.1"]
 metal = ["mlx-metal==0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "mlx==0.27.1",
+all = ["torch>=2.0.0", "jax>=0.4.0", "jaxlib>=0.4.0", "diffqcp>=0.4.2", "mlx==0.27.1",
     "mlx-metal==0.27.1"]
 
 [tool.hatch.metadata]

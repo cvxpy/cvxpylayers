@@ -11,6 +11,7 @@ from cvxpylayers.torch import CvxpyLayer
 # Skip all tests in this module if juliacall is not installed
 pytest.importorskip("juliacall")
 jax = pytest.importorskip("jax")
+jax.config.update("jax_enable_x64", True)
 jnp = pytest.importorskip("jax.numpy")
 
 torch.set_default_dtype(torch.double)
