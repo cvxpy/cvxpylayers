@@ -15,7 +15,7 @@ authors = [
     { name = "S. Diamond" },
 ]
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "cvxpy>=1.7.4",
     "diffcp>=1.1.0",
