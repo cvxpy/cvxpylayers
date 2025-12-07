@@ -52,7 +52,7 @@ metal = ["mlx-metal==0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
 all = [
     "torch>=2.0.0",
-    "diffqcp>=0.4.3",
+    "diffqcp>=0.4.4",
  "jax>=0.4.0",
  "jaxlib>=0.4.0",
  "mlx==0.27.1",
