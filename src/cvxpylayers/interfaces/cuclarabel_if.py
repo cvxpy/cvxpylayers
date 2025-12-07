@@ -369,7 +369,7 @@ def _compute_gradients(
 
     dslack = jnp.zeros_like(ddual[0])  # No gradient w.r.t. slack
 
-    import equinox
+    import equinox as eqx
     
     # NOTE(quill): doing the following to enforce only one comilation of QCP.vjp
     @eqx.filter_jit

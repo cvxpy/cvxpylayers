@@ -43,3 +43,4 @@ Additionally, to use the fully GPU-accelerated pathway, install:
 - Install [juliacall](https://juliapy.github.io/PythonCall.jl/stable/juliacall/)
 - Install [cupy](https://cupy.dev/)
 - Install [diffqcp](https://github.com/cvxgrp/diffqcp)
+- Install [lineax](https://github.com/patrick-kidger/lineax) from main. (*e.g.*, `uv add "lineax @ git+https://github.com/patrick-kidger/lineax.git"`)
