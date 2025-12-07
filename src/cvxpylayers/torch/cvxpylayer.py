@@ -211,6 +211,8 @@ class _CvxpyLayer(torch.autograd.Function):
         _, _, backwards, data = outputs
         ctx.backwards = backwards
         ctx.data = data
+        ctx.device = inputs[1].device
+        ctx.dtype = inputs[1].dtype
 
     @staticmethod
     @torch.autograd.function.once_differentiable
@@ -222,6 +224,11 @@ class _CvxpyLayer(torch.autograd.Function):
             dq,
             dA,
         ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
+        if dP is not None:
+            dP = torch.as_tensor(dP, device=ctx.device, dtype=ctx.dtype)
+            dP = None if len(dP) == 0 else dP
+        dA = torch.as_tensor(dA, device=ctx.device, dtype=ctx.dtype)
+        dq = torch.as_tensor(dq, device=ctx.device, dtype=ctx.dtype)
         return dP, dq, dA, None, None
 
 
