@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import scipy.sparse as sp
@@ -302,7 +302,7 @@ class CUCLARABEL_ctx:
 
 def _solve_gpu(
     data_matrices: GpuDataMatrices, qcp_struc: QCPStructureGPU, julia_ctx: Julia_CTX
-) -> tuple[list[Float[jax.Array, " n"]], list[Float[jax.Array, " m"]], list[Callable]]:
+) -> tuple[list[Float[jax.Array, " n"]], list[Float[jax.Array, " m"]], list[DeviceQCP]]:
     Pjxs = data_matrices.Pjxs
     Pcps = data_matrices.Pcps
     Ajxs = data_matrices.Ajxs
@@ -325,7 +325,7 @@ def _solve_gpu(
         qcp = DeviceQCP(Pjxs[i], Ajxs[i], qjxs[i], bjxs[i], xjx, yjx, sjx, qcp_struc)
         xs.append(xjx)
         ys.append(yjx)
-        vjps.append(qcp.vjp)
+        vjps.append(qcp)
 
     return xs, ys, vjps
 
@@ -333,7 +333,7 @@ def _solve_gpu(
 def _compute_gradients(
     dprimal: Float[jax.Array, "batch n"],
     ddual: Float[jax.Array, "batch m"],
-    vjps: list[Callable],
+    vjps: list[DeviceQCP],
     P_csr_to_csc_perm: Integer[jax.Array, "..."] | None,
     A_csr_to_csc_perm: Integer[jax.Array, "..."],
     b_idxs: Integer[jax.Array, "..."],
@@ -367,11 +367,18 @@ def _compute_gradients(
     dA_batch = []
     num_batches = jnp.shape(dprimal)[0]
 
-    ds = jnp.zeros_like(ddual[0])  # No gradient w.r.t. slack
+    dslack = jnp.zeros_like(ddual[0])  # No gradient w.r.t. slack
 
+    import equinox
+    
+    # NOTE(quill): doing the following to enforce only one comilation of QCP.vjp
+    @eqx.filter_jit
+    def _compute_vjp(qcp_module_instance: DeviceQCP, dx, dy, ds):
+        return qcp_module_instance.vjp(dx, dy, ds)
+    
     for i in range(num_batches):
         # TODO(quill): add ability to pass parameters to `vjp`
-        dP, dA, dq, db = vjps[i](dprimal[i], ddual[i], ds)
+        dP, dA, dq, db = _compute_vjp(vjps[i], dprimal[i], ddual[i], dslack)
 
         con_grad = jnp.hstack([-dA.data[A_csr_to_csc_perm], db[b_idxs]])
         lin_grad = jnp.hstack([dq, jnp.array([0.0])])
@@ -412,7 +419,7 @@ class CUCLARABEL_data:
         self,
         dprimal: Float[jax.Array, "batch_size n"],
         ddual: Float[jax.Array, "batch_size m"],
-        vjps: list[Callable],
+        vjps: list[DeviceQCP],
     ):
         dP_batch, dq_batch, dA_batch = _compute_gradients(
             dprimal=dprimal,
@@ -460,7 +467,7 @@ class CUCLARABEL_data:
         self,
         dprimal: Float[torch.Tensor, "batch_size n"],
         ddual: Float[torch.Tensor, "batch_size m"],
-        vjps: list[Callable],
+        vjps: list[DeviceQCP],
     ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
         import torch
 
