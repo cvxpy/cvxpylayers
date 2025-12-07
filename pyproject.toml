@@ -1,0 +1,167 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cvxpylayers"
+version = "1.0.0-alpha"
+description = "Solve and differentiate Convex Optimization problems on the GPU"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "A. Agrawal" },
+    { name = "B. Amos" },
+    { name = "S. Barratt" },
+    { name = "S. Diamond" },
+]
+maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
+requires-python = ">=3.11"
+dependencies = [
+    "cvxpy>=1.7.4",
+    "diffcp>=1.1.0",
+    "numpy>=1.22.4",
+    "scipy>=1.13.0",
+]
+keywords = ["convex optimization", "cvxpy", "mathematical programming"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/cvxpy/cvxpylayers"
+Repository = "https://github.com/cvxpy/cvxpylayers.git"
+Documentation = "https://github.com/cvxpy/cvxpylayers"
+"Bug Tracker" = "https://github.com/cvxpy/cvxpylayers/issues"
+
+[project.optional-dependencies]
+torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
+mlx = ["mlx==0.27.1"]
+metal = ["mlx-metal==0.27.1"]
+jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
+all = [
+    "torch>=2.0.0",
+    "diffqcp>=0.4.4",
+ "jax>=0.4.0",
+ "jaxlib>=0.4.0",
+ "mlx==0.27.1",
+ "mlx-metal==0.27.1",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cvxpylayers"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/examples", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependency-groups]
+dev = [
+    "codespell==2.4.1",
+    "covdefaults==2.3.0",
+    "coverage[toml]==7.6.12",
+    "pre-commit==4.2.0",
+    "pre-commit-hooks==5.0.0",
+    "pylint==3.3.4",
+    "pytest==8.4.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.7",
+    "ty==0.0.1a16",
+    "yamllint==1.35.1",
+    "ipykernel==6.30.0",
+]
+doc = [
+    "sphinx >= 8.0.0",
+    "sphinxcontrib.jquery >= 4.1.0",
+    "sphinx-inline-tabs >= 2023.4.21",
+    "sphinx-design >= 0.6.1",
+    "sphinx-immaterial >= 0.13.5",
+    "myst-parser >= 4.0.0",
+    "sphinx-autobuild>=2024.10.3",
+    "nbsphinx >= 0.9.7",
+]
+
+[tool.coverage.run]
+plugins = ["covdefaults"]
+source = ["src/cvxpylayers"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 50
+omit = []
+
+[tool.ty.rules]
+possibly-unresolved-reference = "warn"
+
+[tool.pylint.MASTER]
+extension-pkg-whitelist = ["orjson"]
+ignore = ["tests"]
+
+[tool.pylint.BASIC]
+good-names = ["_", "ex", "fp", "i", "id", "j", "k", "on", "Run", "T"]
+
+[tool.pylint.DESIGN]
+max-attributes = 8
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = ["duplicate-code", "format", "unsubscriptable-object"]
+
+[tool.pylint.SIMILARITIES]
+ignore-imports = true
+
+[tool.pylint.FORMAT]
+max-line-length = 88
+
+[tool.pytest.ini_options]
+#addopts = "--cov-report xml:coverage.xml --cov src.repository --cov-fail-under 0 --cov-append -m 'not integration' --cov-report term-missing"
+pythonpath = ["src"]
+log_cli = true
+log_cli_level = "WARNING"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+testpaths = "tests"
+markers = ["integration: marks as integration test"]
+
+[tool.ruff]
+# Follow cvxpy's ruff configuration for consistency
+target-version = "py310"
+line-length = 100
+
+extend-exclude = [
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# Similar to cvxpy, only enable specific rule categories
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "W605",   # invalid escape sequences in docstrings
+    "PT",     # pytest-style (flake8-pytest-style)
+]
+
+ignore = [
+    "E721",   # Do not compare types, use isinstance() (same as cvxpy)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cvxpylayers"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
