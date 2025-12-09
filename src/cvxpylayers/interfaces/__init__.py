@@ -35,3 +35,35 @@ def get_solver_ctx(
         data.get("upper_bound"),
         kwargs,
     )
+
+
+def get_torch_cvxpylayer(solver):
+    """Get the _CvxpyLayer class for the given solver.
+
+    Args:
+        solver: Solver name string (e.g., "DIFFCP", "MOREAU", "CUCLARABEL", "MPAX")
+
+    Returns:
+        The _CvxpyLayer class for the specified solver
+    """
+    match solver:
+        case "MPAX":
+            from cvxpylayers.interfaces.mpax_if import _CvxpyLayer
+
+            return _CvxpyLayer
+        case "CUCLARABEL":
+            from cvxpylayers.interfaces.cuclarabel_if import _CvxpyLayer
+
+            return _CvxpyLayer
+        case "MOREAU":
+            from cvxpylayers.interfaces.moreau_if import _CvxpyLayer
+
+            return _CvxpyLayer
+        case "DIFFCP":
+            from cvxpylayers.interfaces.diffcp_if import _CvxpyLayer
+
+            return _CvxpyLayer
+        case _:
+            raise RuntimeError(
+                "Unknown solver. Check if your solver is supported by CVXPYlayers",
+            )

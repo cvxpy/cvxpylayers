@@ -23,10 +23,44 @@ except ImportError:
     mx = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
+    import cvxpylayers.utils.parse_args as pa
+
     # Type alias for multi-framework tensor types
     TensorLike = torch.Tensor | jnp.ndarray | np.ndarray | mx.array
 else:
     TensorLike = Any
+
+
+if torch is not None:
+    class _CvxpyLayer(torch.autograd.Function):
+        @staticmethod
+        def forward(
+            P_eval: torch.Tensor | None,
+            q_eval: torch.Tensor,
+            A_eval: torch.Tensor,
+            cl_ctx: "pa.LayersContext",
+            solver_args: dict[str, Any],
+        ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
+            data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
+            return *data.torch_solve(solver_args), data
+
+        @staticmethod
+        def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
+            _, _, backwards, data = outputs
+            ctx.backwards = backwards
+            ctx.data = data
+
+        @staticmethod
+        @torch.autograd.function.once_differentiable
+        def backward(
+            ctx: Any, primal: torch.Tensor, dual: torch.Tensor, backwards: Any, data: Any
+        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
+            (
+                dP,
+                dq,
+                dA,
+            ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
+            return dP, dq, dA, None, None
 
 
 def _detect_batch_size(con_values: TensorLike) -> tuple[int, bool]:

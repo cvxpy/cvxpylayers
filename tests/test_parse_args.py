@@ -46,7 +46,7 @@ class TestVariableRecovery:
 
     def test_recover_dual_batched(self):
         """Test dual recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3), shape=(1,))
+        var_recovery = VariableRecovery(primal=None, dual=slice(1, 2), shape=(1,))
         primal_sol = np.array([[1.0], [2.0]])
         dual_sol = np.array(
             [
@@ -56,7 +56,7 @@ class TestVariableRecovery:
         )
 
         result = var_recovery.recover(primal_sol, dual_sol)
-        expected = np.array([[0.5, 1.5], [3.5, 4.5]])
+        expected = np.array([[0.5], [3.5]])
         np.testing.assert_array_equal(result, expected)
 
     def test_recover_neither_raises_error(self):

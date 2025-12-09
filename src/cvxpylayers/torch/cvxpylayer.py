@@ -151,13 +151,15 @@ class CvxpyLayer(torch.nn.Module):
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
             self.register_buffer(
-                "P", scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
+                "P",
+                scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat),  # type: ignore[attr-defined]
             )
         else:
             self.P = None
         self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
         self.register_buffer(
-            "A", scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined]
+            "A",
+            scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat),  # type: ignore[attr-defined]
         )
 
     def forward(
@@ -181,6 +183,11 @@ class CvxpyLayer(torch.nn.Module):
         q_eval = self.q.to(dtype=param_dtype) @ p_stack
         A_eval = self.A.to(dtype=param_dtype) @ p_stack
 
+        # Get the solver-specific _CvxpyLayer class
+        from cvxpylayers.interfaces import get_torch_cvxpylayer
+
+        _CvxpyLayer = get_torch_cvxpylayer(self.ctx.solver)
+
         # Solve optimization problem
         primal, dual, _, _ = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
@@ -192,44 +199,6 @@ class CvxpyLayer(torch.nn.Module):
 
         # Recover results and apply GP inverse transform if needed
         return _recover_results(primal, dual, self.ctx, batch)
-
-
-class _CvxpyLayer(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        P_eval: torch.Tensor | None,
-        q_eval: torch.Tensor,
-        A_eval: torch.Tensor,
-        cl_ctx: pa.LayersContext,
-        solver_args: dict[str, Any],
-    ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
-        data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
-        return *data.torch_solve(solver_args), data
-
-    @staticmethod
-    def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
-        _, _, backwards, data = outputs
-        ctx.backwards = backwards
-        ctx.data = data
-        ctx.device = inputs[1].device
-        ctx.dtype = inputs[1].dtype
-
-    @staticmethod
-    @torch.autograd.function.once_differentiable
-    def backward(
-        ctx: Any, primal: torch.Tensor, dual: torch.Tensor, backwards: Any, data: Any
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
-        (
-            dP,
-            dq,
-            dA,
-        ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
-        if dP is not None:
-            dP = torch.as_tensor(dP, device=ctx.device, dtype=ctx.dtype)
-            dP = None if len(dP) == 0 else dP
-        dA = torch.as_tensor(dA, device=ctx.device, dtype=ctx.dtype)
-        dq = torch.as_tensor(dq, device=ctx.device, dtype=ctx.dtype)
-        return dP, dq, dA, None, None
 
 
 def reshape_fortran(x: torch.Tensor, shape: tuple) -> torch.Tensor:
@@ -260,4 +229,3 @@ def scipy_csr_to_torch_csr(
     )
 
     return torch_csr
-

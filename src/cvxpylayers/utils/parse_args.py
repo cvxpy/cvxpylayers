@@ -96,6 +96,7 @@ class LayersContext:
     reduced_A: scipy.sparse.csr_array
     cone_dims: dict[str, int | list[int]]
     solver_ctx: SolverContext
+    solver: str
     var_recover: list[VariableRecovery]
     user_order_to_col_order: dict[int, int]
     batch_sizes: list[int] | None = (
@@ -312,6 +313,7 @@ def parse_args(
         param_prob.reduced_A,
         cone_dims,
         solver_ctx,
+        solver,
         var_recover=[
             VariableRecovery(
                 slice(start := param_prob.var_id_to_col[v.id], start + v.size),
