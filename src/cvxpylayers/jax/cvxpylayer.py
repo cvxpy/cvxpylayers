@@ -126,6 +126,39 @@ def _recover_results(
 
 
 class CvxpyLayer:
+    """A differentiable convex optimization layer for JAX.
+
+    This layer wraps a parametrized CVXPY problem, solving it in the forward pass
+    and computing gradients via implicit differentiation. Compatible with
+    ``jax.grad``, ``jax.jit``, and ``jax.vmap``.
+
+    Example:
+        >>> import cvxpy as cp
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> from cvxpylayers.jax import CvxpyLayer
+        >>>
+        >>> # Define a simple QP
+        >>> x = cp.Variable(2)
+        >>> A = cp.Parameter((3, 2))
+        >>> b = cp.Parameter(3)
+        >>> problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)), [x >= 0])
+        >>>
+        >>> # Create the layer
+        >>> layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+        >>>
+        >>> # Solve and compute gradients
+        >>> A_jax = jax.random.normal(jax.random.PRNGKey(0), (3, 2))
+        >>> b_jax = jax.random.normal(jax.random.PRNGKey(1), (3,))
+        >>> (solution,) = layer(A_jax, b_jax)
+        >>>
+        >>> # Gradient computation
+        >>> def loss_fn(A, b):
+        ...     (x,) = layer(A, b)
+        ...     return jnp.sum(x)
+        >>> grads = jax.grad(loss_fn, argnums=[0, 1])(A_jax, b_jax)
+    """
+
     def __init__(
         self,
         problem: cp.Problem,
@@ -137,6 +170,29 @@ class CvxpyLayer:
         canon_backend: str | None = None,
         solver_args: dict[str, Any] | None = None,
     ) -> None:
+        """Initialize the differentiable optimization layer.
+
+        Args:
+            problem: A CVXPY Problem. Must be DPP-compliant (``problem.is_dpp()``
+                must return True).
+            parameters: List of CVXPY Parameters that will be filled with values
+                at runtime. Order must match the order of arrays passed to __call__().
+            variables: List of CVXPY Variables whose optimal values will be returned
+                by __call__(). Order determines the order of returned arrays.
+            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
+                If None, uses the default diffcp solver.
+            gp: If True, problem is a geometric program. Parameters will be
+                log-transformed before solving.
+            verbose: If True, print solver output.
+            canon_backend: Backend for canonicalization. Options are 'diffcp',
+                'cuclarabel', or None (auto-select).
+            solver_args: Default keyword arguments passed to the solver.
+                Can be overridden per-call in __call__().
+
+        Raises:
+            AssertionError: If problem is not DPP-compliant.
+            ValueError: If parameters or variables are not part of the problem.
+        """
         if solver_args is None:
             solver_args = {}
         self.ctx = pa.parse_args(
@@ -159,6 +215,34 @@ class CvxpyLayer:
     def __call__(
         self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
     ) -> tuple[jnp.ndarray, ...]:
+        """Solve the optimization problem and return optimal variable values.
+
+        Args:
+            *params: Array values for each CVXPY Parameter, in the same order
+                as the ``parameters`` argument to __init__(). Each array shape must
+                match the corresponding Parameter shape, optionally with a batch
+                dimension prepended. Batched and unbatched parameters can be mixed;
+                unbatched parameters are broadcast.
+            solver_args: Keyword arguments passed to the solver, overriding any
+                defaults set in __init__().
+
+        Returns:
+            Tuple of arrays containing optimal values for each CVXPY Variable
+            specified in the ``variables`` argument to __init__(). If inputs are
+            batched, outputs will have matching batch dimensions.
+
+        Raises:
+            RuntimeError: If the solver fails to find a solution.
+
+        Example:
+            >>> # Single problem
+            >>> (x_opt,) = layer(A_array, b_array)
+            >>>
+            >>> # Batched: solve 10 problems in parallel
+            >>> A_batch = jax.random.normal(key, (10, 3, 2))
+            >>> b_batch = jax.random.normal(key, (10, 3))
+            >>> (x_batch,) = layer(A_batch, b_batch)  # x_batch.shape = (10, 2)
+        """
         if solver_args is None:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
