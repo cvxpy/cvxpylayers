@@ -49,6 +49,47 @@ h2 {
     margin-bottom: 1rem !important;
 }
 
+/* Feature cards */
+.sd-card-feature {
+    border-left: 3px solid var(--color-brand-primary) !important;
+}
+
+.sd-card-feature .sd-card-title {
+    color: var(--color-brand-primary) !important;
+}
+
+/* Use case cards - compact pills */
+.sd-card-usecase {
+    background: var(--color-background-secondary) !important;
+    border: none !important;
+    padding: 0.5rem !important;
+}
+
+.sd-card-usecase .sd-card-title {
+    font-size: 0.95rem !important;
+    margin-bottom: 0.25rem !important;
+}
+
+.sd-card-usecase .sd-card-body {
+    font-size: 0.85rem !important;
+    color: var(--color-foreground-secondary) !important;
+}
+
+/* Buttons */
+.sd-btn-primary {
+    border-radius: 8px !important;
+}
+
+/* Dropdown styling */
+details.sd-dropdown {
+    border-radius: 8px !important;
+}
+
+/* Badge row centering */
+p:has(> a > img[alt="PyPI"]) {
+    text-align: center;
+}
+
 /* Dark mode adjustments */
 @media (prefers-color-scheme: dark) {
     .sd-card:hover {
@@ -65,5 +106,9 @@ h2 {
 
     .sd-card-mlx {
         background: linear-gradient(180deg, rgba(20, 124, 229, 0.1) 0%, transparent 100%) !important;
+    }
+
+    .sd-card-usecase {
+        background: var(--color-background-hover) !important;
     }
 }

@@ -1,85 +1,219 @@
 # CVXPYlayers
 
-**Differentiable convex optimization layers for PyTorch, JAX, and MLX**
+```{raw} html
+<p align="center" style="margin: 2rem 0;">
+  <a href="https://pypi.org/project/cvxpylayers/"><img src="https://img.shields.io/pypi/v/cvxpylayers?style=flat-square&color=blue" alt="PyPI"></a>
+  <a href="https://github.com/cvxpy/cvxpylayers"><img src="https://img.shields.io/github/stars/cvxpy/cvxpylayers?style=flat-square&color=yellow" alt="GitHub stars"></a>
+  <a href="https://github.com/cvxpy/cvxpylayers/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="License"></a>
+  <a href="https://arxiv.org/abs/1910.12430"><img src="https://img.shields.io/badge/NeurIPS-2019-red?style=flat-square" alt="NeurIPS 2019"></a>
+</p>
+```
 
-CVXPYlayers is a Python library for constructing differentiable convex optimization layers using [CVXPY](https://www.cvxpy.org/). A convex optimization layer solves a parametrized convex optimization problem in the forward pass and computes gradients via implicit differentiation in the backward pass.
+```{raw} html
+<p align="center" style="font-size: 1.4rem; color: var(--color-foreground-secondary); margin-bottom: 2rem;">
+  <strong>Differentiable convex optimization layers for deep learning</strong>
+</p>
+```
 
-::::{grid} 1 1 2 3
-:gutter: 2
+Embed convex optimization problems directly into your neural networks. CVXPYlayers solves parametrized problems in the forward pass and computes gradients via implicit differentiation in the backward pass.
 
-:::{grid-item-card} PyTorch
+---
+
+## Frameworks
+
+::::{grid} 1 1 3 3
+:gutter: 3
+
+:::{grid-item-card} **PyTorch**
 :link: api/torch
 :link-type: doc
+:class-card: sd-card-pytorch
 
-`torch.nn.Module` integration with full autograd support.
+Full `torch.nn.Module` integration with autograd support. The most popular choice for deep learning.
 :::
 
-:::{grid-item-card} JAX
+:::{grid-item-card} **JAX**
 :link: api/jax
 :link-type: doc
+:class-card: sd-card-jax
 
-Compatible with `jax.grad`, `jax.jit`, and `jax.vmap`.
+Works with `jax.grad`, `jax.jit`, and `jax.vmap`. Perfect for functional ML workflows.
 :::
 
-:::{grid-item-card} MLX
+:::{grid-item-card} **MLX**
 :link: api/mlx
 :link-type: doc
+:class-card: sd-card-mlx
 
-Apple Silicon acceleration with MLX framework.
+Optimized for Apple Silicon. Unified memory architecture for M1/M2/M3 chips.
 :::
+
 ::::
 
-## Installation
+---
 
-```bash
-pip install cvxpylayers
-```
+## Get Started in 30 Seconds
 
-For framework-specific installations:
+::::{grid} 1 1 2 2
+:gutter: 4
 
-```bash
-pip install cvxpylayers[torch]  # PyTorch
-pip install cvxpylayers[jax]    # JAX
-pip install cvxpylayers[mlx]    # MLX (Apple Silicon)
-```
-
-## Quick Example
+:::{grid-item}
+:columns: 12 12 7 7
 
 ```python
 import cvxpy as cp
 import torch
 from cvxpylayers.torch import CvxpyLayer
 
-# Define a parametrized convex optimization problem
-n, m = 2, 3
-x = cp.Variable(n)
-A = cp.Parameter((m, n))
-b = cp.Parameter(m)
-constraints = [x >= 0]
-objective = cp.Minimize(0.5 * cp.pnorm(A @ x - b, p=1))
-problem = cp.Problem(objective, constraints)
+# Define optimization problem
+x = cp.Variable(2)
+A = cp.Parameter((3, 2))
+b = cp.Parameter(3)
+problem = cp.Problem(
+    cp.Minimize(cp.sum_squares(A @ x - b)),
+    [x >= 0]
+)
 
-# Create a differentiable layer
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+# Wrap as differentiable layer
+layer = CvxpyLayer(problem,
+    parameters=[A, b],
+    variables=[x]
+)
 
-# Solve and differentiate
-A_tch = torch.randn(m, n, requires_grad=True)
-b_tch = torch.randn(m, requires_grad=True)
-(solution,) = layer(A_tch, b_tch)
-solution.sum().backward()  # Gradients flow through the optimization
+# Solve + backprop
+A_t = torch.randn(3, 2, requires_grad=True)
+b_t = torch.randn(3, requires_grad=True)
+(solution,) = layer(A_t, b_t)
+solution.sum().backward()  # Gradients flow!
+```
+:::
+
+:::{grid-item}
+:columns: 12 12 5 5
+
+**Install**
+```bash
+pip install cvxpylayers[torch]
 ```
 
-## Features
+**What's happening?**
 
-- **Disciplined Parametrized Programming (DPP)**: Problems must follow CVXPY's DPP rules for automatic differentiation
-- **GPU Acceleration**: Full GPU support with CuClarabel solver (PyTorch)
-- **Batched Execution**: Solve multiple problem instances in parallel
-- **Geometric Programs**: Support for log-log convex programs with `gp=True`
-- **Multiple Solvers**: Clarabel, SCS, ECOS, and CuClarabel backends
+1. Define a convex problem with CVXPY
+2. Wrap it as a `CvxpyLayer`
+3. Use it like any PyTorch layer
+4. Gradients computed automatically
+
+```{button-ref} quickstart
+:color: primary
+:expand:
+
+Quickstart Guide
+```
+
+:::
+
+::::
+
+---
+
+## Why CVXPYlayers?
+
+::::{grid} 1 1 2 2
+:gutter: 3
+
+:::{grid-item-card} Encode Domain Knowledge
+:class-card: sd-card-feature
+
+Inject constraints and structure into your models. Physics, fairness, safety — if you can write it as a convex program, you can differentiate through it.
+:::
+
+:::{grid-item-card} GPU Accelerated
+:class-card: sd-card-feature
+
+CuClarabel solver keeps everything on GPU. No CPU-GPU transfers for large-scale optimization.
+:::
+
+:::{grid-item-card} Batched Solving
+:class-card: sd-card-feature
+
+Solve thousands of problem instances in parallel. First dimension is batch — just like PyTorch.
+:::
+
+:::{grid-item-card} Multiple Solvers
+:class-card: sd-card-feature
+
+Clarabel, SCS, ECOS, and CuClarabel. Pick the right solver for your problem structure.
+:::
+
+::::
+
+---
+
+## Used For
+
+::::{grid} 2 2 4 4
+:gutter: 2
+
+:::{grid-item-card} Control
+:text-align: center
+:class-card: sd-card-usecase
+
+MPC, LQR, path planning
+:::
+
+:::{grid-item-card} Finance
+:text-align: center
+:class-card: sd-card-usecase
+
+Portfolio optimization
+:::
+
+:::{grid-item-card} ML
+:text-align: center
+:class-card: sd-card-usecase
+
+Constrained learning
+:::
+
+:::{grid-item-card} Robotics
+:text-align: center
+:class-card: sd-card-usecase
+
+Motion planning
+:::
+
+::::
+
+```{button-ref} examples/index
+:color: primary
+:outline:
+:expand:
+
+Browse Examples
+```
+
+---
 
 ## Research
 
-This library accompanies our [NeurIPS 2019 paper](https://web.stanford.edu/~boyd/papers/pdf/diff_cvxpy.pdf) on differentiable convex optimization layers. For an introduction, see our [blog post](https://locuslab.github.io/2019-10-28-cvxpylayers/).
+This library accompanies our **NeurIPS 2019 paper**:
+
+> Agrawal, A., Amos, B., Barratt, S., Boyd, S., Diamond, S., & Kolter, Z. (2019).
+> [Differentiable Convex Optimization Layers](https://web.stanford.edu/~boyd/papers/pdf/diff_cvxpy.pdf).
+> *Advances in Neural Information Processing Systems*.
+
+For an introduction, see our [blog post](https://locuslab.github.io/2019-10-28-cvxpylayers/).
+
+:::{dropdown} BibTeX Citation
+```bibtex
+@inproceedings{cvxpylayers2019,
+  author={Agrawal, A. and Amos, B. and Barratt, S. and Boyd, S. and Diamond, S. and Kolter, Z.},
+  title={Differentiable Convex Optimization Layers},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2019},
+}
+```
+:::
 
 ```{toctree}
 :maxdepth: 2
@@ -90,17 +224,4 @@ quickstart
 guide/index
 api/index
 examples/index
-```
-
-## Citing
-
-If you use CVXPYlayers for research, please cite:
-
-```bibtex
-@inproceedings{cvxpylayers2019,
-  author={Agrawal, A. and Amos, B. and Barratt, S. and Boyd, S. and Diamond, S. and Kolter, Z.},
-  title={Differentiable Convex Optimization Layers},
-  booktitle={Advances in Neural Information Processing Systems},
-  year={2019},
-}
 ```
