@@ -51,41 +51,35 @@ class SolverContext(Protocol):
         ...
 
 
+# Default reshape function for numpy/jax arrays
+def _default_reshape(array, shape):
+    return array.reshape(shape, order="F")
+
+
 @dataclass
 class VariableRecovery:
     primal: slice | None
     dual: slice | None
     shape: tuple[int, ...]
 
-    def recover(self, primal_sol: T, dual_sol: T) -> T:
+    def recover(self, primal_sol: T, dual_sol: T, reshape_fn=_default_reshape) -> T:
+        """Extract and reshape variable from primal or dual solution.
+
+        Args:
+            primal_sol: Primal solution array
+            dual_sol: Dual solution array
+            reshape_fn: Function to reshape array with Fortran order semantics.
+                        Defaults to numpy-style reshape with order="F".
+        """
         batch = tuple(primal_sol.shape[:-1])
         if self.primal is not None:
-            # Use ellipsis slicing to handle both batched and unbatched
-            return fortran_reshape(primal_sol[..., self.primal], batch + self.shape)  # type: ignore[index]
+            return reshape_fn(primal_sol[..., self.primal], batch + self.shape)  # type: ignore[index]
         if self.dual is not None:
-            return fortran_reshape(dual_sol[..., self.dual], batch + self.shape)  # type: ignore[index]
+            return reshape_fn(dual_sol[..., self.dual], batch + self.shape)  # type: ignore[index]
         raise RuntimeError(
             "Invalid VariableRecovery: both primal and dual slices are None. "
             "At least one must be set to recover variable values."
         )
-
-
-def fortran_reshape(array, shape):
-    if shape == ():
-        return array.reshape(shape)
-
-    import sys
-
-    if "torch" not in sys.modules:
-        return array.reshape(shape, order="F")
-    import torch
-
-    if isinstance(array, torch.Tensor):
-        from cvxpylayers.torch.cvxpylayer import reshape_fortran
-
-        return reshape_fortran(array, shape)
-    else:
-        return array.reshape(shape, order="F")
 
 
 @dataclass

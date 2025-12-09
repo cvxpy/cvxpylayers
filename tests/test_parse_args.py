@@ -46,7 +46,7 @@ class TestVariableRecovery:
 
     def test_recover_dual_batched(self):
         """Test dual recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3), shape=(1,))
+        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3), shape=(2,))
         primal_sol = np.array([[1.0], [2.0]])
         dual_sol = np.array(
             [
