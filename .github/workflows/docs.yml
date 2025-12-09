@@ -32,10 +32,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[doc]"
-          # Install frameworks for autodoc (optional, uses mocks if not available)
+          pip install -e .
+          # Install doc dependencies
+          pip install sphinx furo myst-parser sphinx-design sphinx-copybutton nbsphinx sphinx-autobuild
+          # Install frameworks for autodoc
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install jax jaxlib
+          pip install "mlx[cpu]"
 
       - name: Build documentation
         run: |
