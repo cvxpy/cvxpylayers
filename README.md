@@ -236,6 +236,8 @@ pytest tests/
 Below is a list of projects using CVXPYlayers. If you have used CVXPYlayers in a project, you're welcome to make a PR to add it to this list.
 * [Learning Convex Optimization Control Policies](https://web.stanford.edu/~boyd/papers/learning_cocps.html)
 * [Learning Convex Optimization Models](https://web.stanford.edu/~boyd/papers/learning_copt_models.html)
+* [DeepDow](https://github.com/jankrepl/deepdow) - Portfolio optimization with deep learning
+* [NeuroMANCER](https://github.com/pnnl/neuromancer) - PNNL's PyTorch library for constrained optimization, physics-informed system identification, and model predictive control
 
 ## License
 CVXPYlayers carries an Apache 2.0 license.
