@@ -1,126 +1,100 @@
 # Installation
 
-## Basic Installation
+## Quick Install
 
-Install CVXPYlayers using pip:
+::::{grid} 1 1 2 2
+:gutter: 3
+
+:::{grid-item-card} Most Users
+:class-card: sd-border-primary
+
+```bash
+pip install cvxpylayers[torch]
+```
+
+Includes PyTorch and all dependencies.
+:::
+
+:::{grid-item-card} Minimal Install
+:class-card: sd-border-secondary
 
 ```bash
 pip install cvxpylayers
 ```
 
-## Framework-Specific Installation
-
-CVXPYlayers supports PyTorch, JAX, and MLX. Install with your preferred framework:
-
-::::{tab-set}
-
-:::{tab-item} PyTorch
-```bash
-pip install cvxpylayers[torch]
-```
-:::
-
-:::{tab-item} JAX
-```bash
-pip install cvxpylayers[jax]
-```
-:::
-
-:::{tab-item} MLX
-```bash
-pip install cvxpylayers[mlx]
-```
-MLX is optimized for Apple Silicon (M1/M2/M3).
-:::
-
-:::{tab-item} All Frameworks
-```bash
-pip install cvxpylayers[all]
-```
+Core only — add framework extras as needed.
 :::
 
 ::::
 
-## Dependencies
+---
 
-CVXPYlayers requires:
+## Choose Your Framework
 
-| Package | Version | Purpose |
-|---------|---------|---------|
-| Python | >= 3.11 | Runtime |
-| NumPy | >= 1.22.4 | Array operations |
-| CVXPY | >= 1.7.4 | Problem specification |
-| diffcp | >= 1.1.0 | Differentiable cone programming |
+::::{tab-set}
 
-Framework dependencies:
-
-| Framework | Version |
-|-----------|---------|
-| PyTorch | >= 2.0 |
-| JAX | >= 0.4.0 |
-| MLX | >= 0.27.1 |
-
-## GPU Acceleration (CuClarabel)
-
-For GPU-accelerated solving on NVIDIA GPUs, install the CuClarabel backend:
-
-### Prerequisites
-
-1. **Julia**: Install from [julialang.org](https://julialang.org/)
-
-2. **CuClarabel**: Install the Julia package
-   ```julia
-   using Pkg
-   Pkg.add(url="https://github.com/oxfordcontrol/Clarabel.jl", rev="CuClarabel")
-   ```
-
-3. **Python packages**:
-   ```bash
-   pip install juliacall cupy diffqcp
-   pip install "lineax @ git+https://github.com/patrick-kidger/lineax.git"
-   ```
-
-### Usage
-
-```python
-import cvxpy as cp
-from cvxpylayers.torch import CvxpyLayer
-
-# Create layer with CuClarabel solver
-layer = CvxpyLayer(
-    problem,
-    parameters=[A, b],
-    variables=[x],
-    solver=cp.CUCLARABEL
-).to("cuda")
-```
-
-## Development Installation
-
-For contributing or development:
+:::{tab-item} PyTorch
+:sync: pytorch
 
 ```bash
-git clone https://github.com/cvxpy/cvxpylayers.git
-cd cvxpylayers
-pip install -e ".[all]"
+pip install cvxpylayers[torch]
 ```
 
-Install development dependencies:
+**Requirements:** PyTorch >= 2.0
+
+The most popular choice. Full `torch.nn.Module` integration with autograd support.
+:::
+
+:::{tab-item} JAX
+:sync: jax
 
 ```bash
-pip install -e ".[dev]"
+pip install cvxpylayers[jax]
 ```
 
-## Verifying Installation
+**Requirements:** JAX >= 0.4.0
 
-Test your installation:
+Functional style with `jax.grad`, `jax.jit`, and `jax.vmap`.
+:::
+
+:::{tab-item} MLX
+:sync: mlx
+
+```bash
+pip install cvxpylayers[mlx]
+```
+
+**Requirements:** MLX >= 0.27.1, Apple Silicon Mac
+
+Optimized for M1/M2/M3 chips with unified memory.
+:::
+
+:::{tab-item} All Frameworks
+:sync: all
+
+```bash
+pip install cvxpylayers[all]
+```
+
+Install everything — useful for development or testing.
+:::
+
+::::
+
+---
+
+## Verify Installation
+
+::::{tab-set}
+
+:::{tab-item} PyTorch
+:sync: pytorch
 
 ```python
 import cvxpy as cp
 import torch
 from cvxpylayers.torch import CvxpyLayer
 
-# Simple test problem
 x = cp.Variable(2)
 A = cp.Parameter((2, 2))
 b = cp.Parameter(2)
@@ -130,6 +104,146 @@ layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
 A_t = torch.eye(2, requires_grad=True)
 b_t = torch.ones(2, requires_grad=True)
 (sol,) = layer(A_t, b_t)
-print(f"Solution: {sol}")
-print(f"Installation successful!")
+
+print(f"Solution: {sol}")  # tensor([1., 1.])
+print("Installation successful!")
+```
+:::
+
+:::{tab-item} JAX
+:sync: jax
+
+```python
+import cvxpy as cp
+import jax.numpy as jnp
+from cvxpylayers.jax import CvxpyLayer
+
+x = cp.Variable(2)
+A = cp.Parameter((2, 2))
+b = cp.Parameter(2)
+problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
+
+layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+A_jax = jnp.eye(2)
+b_jax = jnp.ones(2)
+(sol,) = layer(A_jax, b_jax)
+
+print(f"Solution: {sol}")  # [1., 1.]
+print("Installation successful!")
+```
+:::
+
+:::{tab-item} MLX
+:sync: mlx
+
+```python
+import cvxpy as cp
+import mlx.core as mx
+from cvxpylayers.mlx import CvxpyLayer
+
+x = cp.Variable(2)
+A = cp.Parameter((2, 2))
+b = cp.Parameter(2)
+problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
+
+layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+A_mx = mx.eye(2)
+b_mx = mx.ones(2)
+(sol,) = layer(A_mx, b_mx)
+
+print(f"Solution: {sol}")  # [1., 1.]
+print("Installation successful!")
+```
+:::
+
+::::
+
+---
+
+## GPU Acceleration
+
+:::{admonition} CuClarabel — NVIDIA GPU Support
+:class: tip
+
+For large-scale problems, CuClarabel keeps everything on GPU with no CPU transfers.
+:::
+
+::::{grid} 1 1 3 3
+:gutter: 2
+
+:::{grid-item-card} Step 1: Julia
+Install from [julialang.org](https://julialang.org/)
+:::
+
+:::{grid-item-card} Step 2: CuClarabel
+```julia
+using Pkg
+Pkg.add(url="https://github.com/oxfordcontrol/Clarabel.jl", rev="CuClarabel")
+```
+:::
+
+:::{grid-item-card} Step 3: Python
+```bash
+pip install juliacall cupy diffqcp
+```
+:::
+
+::::
+
+**Usage:**
+
+```python
+import cvxpy as cp
+from cvxpylayers.torch import CvxpyLayer
+
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x],
+    solver=cp.CUCLARABEL
+).to("cuda")
+
+# Parameters must be on GPU
+A_gpu = A_t.cuda()
+b_gpu = b_t.cuda()
+(solution,) = layer(A_gpu, b_gpu)
+```
+
+---
+
+## Dependencies
+
+:::{dropdown} Core Dependencies
+| Package | Version | Purpose |
+|---------|---------|---------|
+| Python | >= 3.11 | Runtime |
+| NumPy | >= 1.22.4 | Array operations |
+| CVXPY | >= 1.7.4 | Problem specification |
+| diffcp | >= 1.1.0 | Differentiable cone programming |
+:::
+
+:::{dropdown} Framework Dependencies
+| Framework | Version |
+|-----------|---------|
+| PyTorch | >= 2.0 |
+| JAX | >= 0.4.0 |
+| MLX | >= 0.27.1 |
+:::
+
+---
+
+## Development Setup
+
+For contributing:
+
+```bash
+git clone https://github.com/cvxpy/cvxpylayers.git
+cd cvxpylayers
+pip install -e ".[all,dev]"
+```
+
+Run tests:
+
+```bash
+pytest tests/
 ```

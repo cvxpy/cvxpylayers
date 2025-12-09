@@ -1,17 +1,29 @@
 # Quickstart
 
-This guide walks through creating your first differentiable convex optimization layer.
+Build your first differentiable optimization layer in 4 steps.
 
-## Overview
+```{raw} html
+<style>
+.step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    background: var(--color-brand-primary);
+    color: white;
+    border-radius: 50%;
+    font-weight: bold;
+    margin-right: 0.75rem;
+}
+</style>
+```
 
-CVXPYlayers lets you:
-1. Define a parametrized convex optimization problem in CVXPY
-2. Wrap it as a differentiable layer
-3. Compute gradients through the optimization
+---
 
-## Step 1: Define the Problem
+## <span class="step-number">1</span> Define the Problem
 
-First, define a parametrized convex optimization problem using CVXPY:
+Create a parametrized convex optimization problem with CVXPY:
 
 ```python
 import cvxpy as cp
@@ -19,152 +31,198 @@ import cvxpy as cp
 # Problem dimensions
 n, m = 2, 3
 
-# Decision variable
+# Decision variable (what we solve for)
 x = cp.Variable(n)
 
-# Parameters (values provided at runtime)
+# Parameters (inputs that change at runtime)
 A = cp.Parameter((m, n))
 b = cp.Parameter(m)
 
-# Constraints
-constraints = [x >= 0]
-
-# Objective
-objective = cp.Minimize(0.5 * cp.pnorm(A @ x - b, p=1))
-
-# Problem
-problem = cp.Problem(objective, constraints)
+# Build the problem
+problem = cp.Problem(
+    cp.Minimize(cp.sum_squares(A @ x - b)),  # Objective
+    [x >= 0]                                   # Constraints
+)
 ```
 
-## Step 2: Verify DPP Compliance
+:::{tip}
+**Parameters** are placeholders for values you'll provide later. **Variables** are what the solver finds.
+:::
 
-Your problem must follow [Disciplined Parametrized Programming (DPP)](https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming) rules:
+---
+
+## <span class="step-number">2</span> Check DPP Compliance
+
+Your problem must follow [Disciplined Parametrized Programming](https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming) rules:
 
 ```python
 assert problem.is_dpp(), "Problem must be DPP-compliant"
 ```
 
-DPP ensures the problem structure is fixed and only parameter values change. This is required for automatic differentiation.
+:::{dropdown} What is DPP?
+DPP ensures the problem structure is fixed — only parameter *values* change, not the problem shape. This is required for implicit differentiation.
 
-## Step 3: Create the Layer
+**Valid:** Parameters in linear/affine expressions
+```python
+A @ x - b  # Good: A and b appear linearly
+```
 
-Wrap the problem as a differentiable layer:
+**Invalid:** Parameters that change problem structure
+```python
+cp.quad_form(x, P)  # P as parameter may break DPP
+```
+:::
+
+---
+
+## <span class="step-number">3</span> Create the Layer
+
+Wrap your problem as a differentiable layer:
 
 ::::{tab-set}
 
 :::{tab-item} PyTorch
+:sync: pytorch
+
 ```python
 import torch
 from cvxpylayers.torch import CvxpyLayer
 
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],   # CVXPY parameters (in order)
+    variables=[x]        # Variables to return
+)
 ```
 :::
 
 :::{tab-item} JAX
+:sync: jax
+
 ```python
 import jax
 from cvxpylayers.jax import CvxpyLayer
 
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x]
+)
 ```
 :::
 
 :::{tab-item} MLX
+:sync: mlx
+
 ```python
 import mlx.core as mx
 from cvxpylayers.mlx import CvxpyLayer
 
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x]
+)
 ```
 :::
 
 ::::
 
-## Step 4: Solve and Differentiate
+---
 
-Pass parameter values to get solutions, then backpropagate:
+## <span class="step-number">4</span> Solve & Differentiate
+
+Pass tensor values and backpropagate:
 
 ::::{tab-set}
 
 :::{tab-item} PyTorch
+:sync: pytorch
+
 ```python
-# Create parameter tensors
-A_tch = torch.randn(m, n, requires_grad=True)
-b_tch = torch.randn(m, requires_grad=True)
+# Create tensors with gradients enabled
+A_t = torch.randn(m, n, requires_grad=True)
+b_t = torch.randn(m, requires_grad=True)
 
-# Forward pass: solve the optimization problem
-(solution,) = layer(A_tch, b_tch)
+# Forward: solve the optimization
+(solution,) = layer(A_t, b_t)
 
-# Backward pass: compute gradients
+# Backward: compute gradients
 loss = solution.sum()
 loss.backward()
 
 print(f"Solution: {solution}")
-print(f"Gradient w.r.t. A: {A_tch.grad}")
-print(f"Gradient w.r.t. b: {b_tch.grad}")
+print(f"dL/dA: {A_t.grad}")
+print(f"dL/db: {b_t.grad}")
 ```
 :::
 
 :::{tab-item} JAX
-```python
-# Create parameter arrays
-key = jax.random.PRNGKey(0)
-key, k1, k2 = jax.random.split(key, 3)
-A_jax = jax.random.normal(k1, shape=(m, n))
-b_jax = jax.random.normal(k2, shape=(m,))
+:sync: jax
 
-# Forward pass
+```python
+import jax.numpy as jnp
+
+# Create arrays
+key = jax.random.PRNGKey(0)
+A_jax = jax.random.normal(key, (m, n))
+b_jax = jax.random.normal(key, (m,))
+
+# Forward
 (solution,) = layer(A_jax, b_jax)
 
-# Compute gradients
+# Gradients via jax.grad
 def loss_fn(A, b):
     (sol,) = layer(A, b)
     return sol.sum()
 
-gradA, gradb = jax.grad(loss_fn, argnums=[0, 1])(A_jax, b_jax)
+dA, db = jax.grad(loss_fn, argnums=[0, 1])(A_jax, b_jax)
 
 print(f"Solution: {solution}")
-print(f"Gradient w.r.t. A: {gradA}")
-print(f"Gradient w.r.t. b: {gradb}")
+print(f"dL/dA: {dA}")
+print(f"dL/db: {db}")
 ```
 :::
 
 :::{tab-item} MLX
+:sync: mlx
+
 ```python
-# Create parameter arrays
+# Create arrays
 A_mx = mx.random.normal((m, n))
 b_mx = mx.random.normal((m,))
 
-# Forward pass
+# Forward
 (solution,) = layer(A_mx, b_mx)
 
-# Compute gradients
+# Gradients via mx.grad
 def loss_fn(A, b):
     (sol,) = layer(A, b)
-    return sol.sum()
+    return mx.sum(sol)
 
 grad_fn = mx.grad(loss_fn, argnums=[0, 1])
-gradA, gradb = grad_fn(A_mx, b_mx)
+dA, db = grad_fn(A_mx, b_mx)
 
 print(f"Solution: {solution}")
-print(f"Gradient w.r.t. A: {gradA}")
-print(f"Gradient w.r.t. b: {gradb}")
+print(f"dL/dA: {dA}")
+print(f"dL/db: {db}")
 ```
 :::
 
 ::::
 
-## Complete Example: Least Squares
+---
 
-Here's a complete example solving a constrained least squares problem:
+## Complete Example
+
+Here's everything together — a training loop that learns matrix `A`:
 
 ```python
 import cvxpy as cp
 import torch
 from cvxpylayers.torch import CvxpyLayer
 
-# Problem: minimize ||Ax - b||^2 subject to x >= 0
+# 1. Define problem
 n, m = 5, 10
 x = cp.Variable(n)
 A = cp.Parameter((m, n))
@@ -174,20 +232,19 @@ problem = cp.Problem(
     cp.Minimize(cp.sum_squares(A @ x - b)),
     [x >= 0]
 )
-assert problem.is_dpp()
 
-# Create layer
+# 2. Create layer
 layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
 
-# Training loop example
+# 3. Training setup
 A_true = torch.randn(m, n)
-x_true = torch.abs(torch.randn(n))  # Ground truth (non-negative)
+x_true = torch.abs(torch.randn(n))
 b_true = A_true @ x_true
 
-# Learnable parameters
 A_learn = torch.randn(m, n, requires_grad=True)
 optimizer = torch.optim.Adam([A_learn], lr=0.1)
 
+# 4. Training loop
 for i in range(100):
     optimizer.zero_grad()
     (x_pred,) = layer(A_learn, b_true)
@@ -195,13 +252,43 @@ for i in range(100):
     loss.backward()
     optimizer.step()
 
-    if i % 20 == 0:
-        print(f"Iteration {i}: loss = {loss.item():.4f}")
+    if i % 25 == 0:
+        print(f"Step {i:3d} | Loss: {loss.item():.4f}")
 ```
+
+---
 
 ## Next Steps
 
-- {doc}`guide/basic-usage` - Constructor options and parameter handling
-- {doc}`guide/batching` - Batched execution for efficiency
-- {doc}`guide/geometric-programs` - Log-log convex programs
-- {doc}`examples/index` - Application examples
+::::{grid} 1 1 2 2
+:gutter: 3
+
+:::{grid-item-card} Basic Usage
+:link: guide/basic-usage
+:link-type: doc
+
+Constructor options, parameter handling, error handling.
+:::
+
+:::{grid-item-card} Batching
+:link: guide/batching
+:link-type: doc
+
+Solve multiple problems in parallel for 10-100x speedup.
+:::
+
+:::{grid-item-card} Solvers
+:link: guide/solvers
+:link-type: doc
+
+Choose the right solver: SCS, ECOS, Clarabel, CuClarabel.
+:::
+
+:::{grid-item-card} Examples
+:link: examples/index
+:link-type: doc
+
+Real-world applications: control, finance, ML, robotics.
+:::
+
+::::

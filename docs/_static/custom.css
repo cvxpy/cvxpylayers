@@ -49,6 +49,15 @@ h2 {
     margin-bottom: 1rem !important;
 }
 
+/* Border accent classes */
+.sd-border-primary {
+    border-left: 4px solid var(--color-brand-primary) !important;
+}
+
+.sd-border-secondary {
+    border-left: 4px solid var(--color-foreground-muted) !important;
+}
+
 /* Feature cards */
 .sd-card-feature {
     border-left: 3px solid var(--color-brand-primary) !important;

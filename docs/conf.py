@@ -88,11 +88,12 @@ source_suffix = {
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "CVXPYlayers"
-html_favicon = None
+html_favicon = "_static/favicon.svg"
 html_logo = None
 
 # Furo theme options
 html_theme_options = {
+    "announcement": "<b>v1.0 Released!</b> GPU acceleration with CuClarabel + MLX support for Apple Silicon",
     "source_repository": "https://github.com/cvxpy/cvxpylayers",
     "source_branch": "master",
     "source_directory": "docs/",
@@ -141,10 +142,8 @@ pygments_dark_style = "monokai"
 html_css_files = ["custom.css"]
 
 # -- Options for autodoc -----------------------------------------------------
-# Mock imports for modules that might not be installed
-# Note: Due to complex type annotations in cvxpylayers, autodoc may fail to
-# import the actual modules. The API documentation includes manual examples instead.
-autodoc_mock_imports = ["torch", "jax", "jaxlib", "mlx", "diffcp", "cvxpy", "scipy", "numpy"]
+# Only mock MLX (Apple Silicon only, not available on Intel)
+autodoc_mock_imports = ["mlx"]
 
 # Suppress specific warnings
 suppress_warnings = ["autodoc.import_object"]
