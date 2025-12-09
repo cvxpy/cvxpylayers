@@ -44,26 +44,70 @@ if torch is not None:
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
-            data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
-            return *data.torch_solve(solver_args), data
+            solver_ctx = cl_ctx.solver_ctx
+
+            # Convert torch to jax
+            quad_obj_values = jnp.array(P_eval) if P_eval is not None else None
+            lin_obj_values = jnp.array(q_eval)
+            con_values = jnp.array(A_eval)
+
+            # Detect batch size
+            if con_values.ndim == 1:
+                originally_unbatched = True
+                batch_size = 1
+                con_values = jnp.expand_dims(con_values, axis=1)
+                lin_obj_values = jnp.expand_dims(lin_obj_values, axis=1)
+                quad_obj_values = jnp.expand_dims(quad_obj_values, axis=1) if quad_obj_values is not None else None
+            else:
+                originally_unbatched = False
+                batch_size = con_values.shape[1]
+
+            if solver_args is None:
+                solver_args = {}
+
+            initial_primal = solver_args.get("initial_primal_solution", None)
+            initial_dual = solver_args.get("initial_dual_solution", None)
+
+            def solve_single_batch(quad_obj_vals_i, lin_obj_vals_i, con_vals_i):
+                return _build_and_solve_qp(
+                    quad_obj_vals_i,
+                    lin_obj_vals_i,
+                    con_vals_i,
+                    solver_ctx,
+                    initial_primal,
+                    initial_dual,
+                )
+
+            solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
+
+            def batched_solver(quad_vals, lin_vals, con_vals):
+                return solve_batched(quad_vals, lin_vals, con_vals)
+
+            (primal, dual), vjp_fun = jax.vjp(
+                batched_solver,
+                quad_obj_values,
+                lin_obj_values,
+                con_values,
+            )
+
+            primal_torch = torch.utils.dlpack.from_dlpack(primal)
+            dual_torch = torch.utils.dlpack.from_dlpack(dual)
+
+            return primal_torch, dual_torch, vjp_fun, None
 
         @staticmethod
         def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
-            _, _, backwards, data = outputs
-            ctx.backwards = backwards
-            ctx.data = data
+            pass
 
         @staticmethod
         @torch.autograd.function.once_differentiable
         def backward(
-            ctx: Any, primal: torch.Tensor, dual: torch.Tensor, backwards: Any, data: Any
+            ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _vjp: Any, _: Any
         ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
-            (
-                dP,
-                dq,
-                dA,
-            ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
-            return dP, dq, dA, None, None
+            raise NotImplementedError(
+                "Backward pass is not implemented for MPAX solver. "
+                "Use solver='DIFFCP' for differentiable optimization layers."
+            )
 
 
 def _parse_objective_structure(
@@ -264,18 +308,6 @@ class MPAX_ctx:
             originally_unbatched=originally_unbatched,
         )
 
-    def torch_to_data(
-        self,
-        quad_obj_values,
-        lin_obj_values,
-        con_values,
-    ) -> "MPAX_data":
-        return self.jax_to_data(
-            jnp.array(quad_obj_values),
-            jnp.array(lin_obj_values),
-            jnp.array(con_values),
-        )
-
     def mlx_to_data(
         self,
         quad_obj_values,
@@ -463,23 +495,6 @@ class MPAX_data:
 
         return primal, dual, vjp_fun
 
-    def torch_solve(self, solver_args=None):
-        if torch is None:
-            raise ImportError(
-                "PyTorch interface requires 'torch' package. Install with: pip install torch"
-            )
-
-        primal, dual, vjp_fun = self.jax_solve(solver_args)
-        # Convert JAX arrays to PyTorch tensors
-        # jax_solve returns shapes: (batch_size, n) and (batch_size, m)
-        primal_torch = torch.utils.dlpack.from_dlpack(primal)
-        dual_torch = torch.utils.dlpack.from_dlpack(dual)
-        return (
-            primal_torch,
-            dual_torch,
-            vjp_fun,
-        )
-
     def mlx_solve(self, solver_args=None):
         if mx is None:
             raise ImportError(
@@ -500,26 +515,6 @@ class MPAX_data:
         raise NotImplementedError(
             "Backward pass is not implemented for MPAX solver. "
             "Use solver='DIFFCP' for differentiable optimization layers."
-        )
-
-    def torch_derivative(self, primal, dual, adj_batch):
-        if torch is None:
-            raise ImportError(
-                "PyTorch interface requires 'torch' package. Install with: pip install torch"
-            )
-
-        # Squeeze batch dimension (MPAX doesn't support batching, always has batch_size=1)
-        primal_unbatched = primal.squeeze(0) if primal.dim() > 1 else primal
-        dual_unbatched = dual.squeeze(0) if dual.dim() > 1 else dual
-
-        quad, lin, con = self.jax_derivative(
-            jnp.array(primal_unbatched), jnp.array(dual_unbatched), adj_batch
-        )
-        # Use DLpack for JAX to PyTorch conversion to avoid read-only flag errors
-        return (
-            torch.utils.dlpack.from_dlpack(quad),
-            torch.utils.dlpack.from_dlpack(lin),
-            torch.utils.dlpack.from_dlpack(con),
         )
 
     def mlx_derivative(self, primal, dual, adj_batch):

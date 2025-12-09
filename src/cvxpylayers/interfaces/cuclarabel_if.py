@@ -50,26 +50,64 @@ if torch is not None:
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
-            data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
-            return *data.torch_solve(solver_args), data
+            # Convert torch to jax and use jax_to_data path
+            solver_ctx = cl_ctx.solver_ctx
+            data = solver_ctx.jax_to_data(
+                quad_obj_values=(
+                    jax.dlpack.from_dlpack(P_eval.detach())
+                    if P_eval is not None
+                    else None
+                ),
+                lin_obj_values=jax.dlpack.from_dlpack(q_eval.detach()),
+                con_values=jax.dlpack.from_dlpack(A_eval.detach()),
+            )
+
+            if solver_args is None:
+                solver_args = {}
+
+            xs, ys, vjps = _solve_gpu(
+                data.data_matrices, qcp_struc=data.qcp_structure, julia_ctx=data.julia_ctx
+            )
+
+            primal = torch.stack([torch.from_dlpack(x) for x in xs])
+            dual = torch.stack([torch.from_dlpack(y) for y in ys])
+
+            return primal, dual, vjps, data
 
         @staticmethod
         def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
-            _, _, backwards, data = outputs
-            ctx.backwards = backwards
+            _, _, vjps, data = outputs
+            ctx.vjps = vjps
             ctx.data = data
 
         @staticmethod
         @torch.autograd.function.once_differentiable
         def backward(
-            ctx: Any, primal: torch.Tensor, dual: torch.Tensor, backwards: Any, data: Any
+            ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _vjps: Any, _data: Any
         ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
-            (
-                dP,
-                dq,
-                dA,
-            ) = ctx.data.torch_derivative(primal, dual, ctx.backwards)
-            return dP, dq, dA, None, None
+            data = ctx.data
+
+            dP_batch, dq_batch, dA_batch = _compute_gradients(
+                dprimal=jax.dlpack.from_dlpack(dprimal.detach()),
+                ddual=jax.dlpack.from_dlpack(ddual.detach()),
+                P_csr_to_csc_perm=data.P_csr_to_csc_perm,
+                A_csr_to_csc_perm=data.A_csr_to_csc_perm,
+                b_idxs=data.b_idxs,
+                vjps=ctx.vjps,
+            )
+
+            # Stack into shape (num_entries, batch_size)
+            dP_stacked = torch.stack([torch.from_dlpack(g) for g in dP_batch]).T
+            dq_stacked = torch.stack([torch.from_dlpack(g) for g in dq_batch]).T
+            dA_stacked = torch.stack([torch.from_dlpack(g) for g in dA_batch]).T
+
+            # Squeeze batch dimension only if input was originally unbatched
+            if data.originally_unbatched:
+                dP_stacked = dP_stacked.squeeze(1)
+                dq_stacked = dq_stacked.squeeze(1)
+                dA_stacked = dA_stacked.squeeze(1)
+
+            return dP_stacked, dq_stacked, dA_stacked, None, None
 
 
 @dataclass
@@ -320,21 +358,6 @@ class CUCLARABEL_ctx:
             originally_unbatched=originally_unbatched,
         )
 
-    def torch_to_data(
-        self,
-        quad_obj_values: Float[torch.Tensor, "_ *batch"] | None,
-        lin_obj_values: Float[torch.Tensor, "_ *batch"],
-        con_values: Float[torch.Tensor, "_ *batch"],
-    ) -> CUCLARABEL_data:
-        return self.jax_to_data(
-            quad_obj_values=(
-                jax.dlpack.from_dlpack(quad_obj_values.detach())
-                if quad_obj_values is not None
-                else None
-            ),
-            lin_obj_values=jax.dlpack.from_dlpack(lin_obj_values.detach()),
-            con_values=jax.dlpack.from_dlpack(con_values.detach()),
-        )
 
 
 def _solve_gpu(
@@ -484,55 +507,6 @@ class CUCLARABEL_data:
             dA_stacked,
         )
 
-    def torch_solve(
-        self, solver_args: dict[str, Any] | None = None
-    ) -> tuple["torch.Tensor", "torch.Tensor", Any]:
-        import torch
-
-        if solver_args is None:
-            solver_args = {}
-
-        xs, ys, vjps = _solve_gpu(
-            self.data_matrices, qcp_struc=self.qcp_structure, julia_ctx=self.julia_ctx
-        )
-
-        primal = torch.stack([torch.from_dlpack(x) for x in xs])
-        dual = torch.stack([torch.from_dlpack(y) for y in ys])
-        return primal, dual, vjps
-
-    def torch_derivative(
-        self,
-        dprimal: Float[torch.Tensor, "batch_size n"],
-        ddual: Float[torch.Tensor, "batch_size m"],
-        vjps: list[DeviceQCP],
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
-        import torch
-
-        dP_batch, dq_batch, dA_batch = _compute_gradients(
-            dprimal=jax.dlpack.from_dlpack(dprimal.detach()),
-            ddual=jax.dlpack.from_dlpack(ddual.detach()),
-            P_csr_to_csc_perm=self.P_csr_to_csc_perm,
-            A_csr_to_csc_perm=self.A_csr_to_csc_perm,
-            b_idxs=self.b_idxs,
-            vjps=vjps,
-        )
-
-        # Stack into shape (num_entries, batch_size)
-        dP_stacked = torch.stack([torch.from_dlpack(g) for g in dP_batch]).T
-        dq_stacked = torch.stack([torch.from_dlpack(g) for g in dq_batch]).T
-        dA_stacked = torch.stack([torch.from_dlpack(g) for g in dA_batch]).T
-
-        # Squeeze batch dimension only if input was originally unbatched
-        if self.originally_unbatched:
-            dP_stacked = dP_stacked.squeeze(1)
-            dq_stacked = dq_stacked.squeeze(1)
-            dA_stacked = dA_stacked.squeeze(1)
-
-        return (
-            dP_stacked,
-            dq_stacked,
-            dA_stacked,
-        )
 
 
 class Julia_CTX:
