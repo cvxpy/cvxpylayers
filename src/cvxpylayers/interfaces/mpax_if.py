@@ -511,11 +511,17 @@ class MPAX_data:
 
         return primal, dual, vjp_fun
 
-    def jax_derivative(self, primal, dual, fun):
-        raise NotImplementedError(
-            "Backward pass is not implemented for MPAX solver. "
-            "Use solver='DIFFCP' for differentiable optimization layers."
-        )
+    def jax_derivative(self, dprimal, ddual, vjp_fun):
+        # vjp_fun takes output cotangents (dprimal, ddual) and returns
+        # input cotangents (d_quad_obj, d_lin_obj, d_con)
+        dQ, dq, dA = vjp_fun((dprimal, ddual))
+
+        if self.originally_unbatched:
+            dq = jnp.squeeze(dq, 1)
+            dA = jnp.squeeze(dA, 1)
+            dQ = jnp.squeeze(dQ, 1) if dQ is not None else None
+
+        return dQ, dq, dA
 
     def mlx_derivative(self, primal, dual, adj_batch):
 
