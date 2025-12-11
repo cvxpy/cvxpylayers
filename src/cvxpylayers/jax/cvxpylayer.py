@@ -111,7 +111,7 @@ def _recover_results(
     Returns:
         Tuple of recovered variable values
     """
-    # Extract each variable using its slice from the solution vectors
+    # Extract each variable using its slice and reshape (uses default reshape with order="F")
     results = tuple(var.recover(primal, dual) for var in ctx.var_recover)
 
     # Apply exp transformation to recover from log-space for GP

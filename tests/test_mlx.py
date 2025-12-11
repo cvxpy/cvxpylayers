@@ -451,10 +451,10 @@ def test_batched_gp():
     # Forward pass
     x_batch, y_batch, z_batch = layer(a_batch, b_batch, c_batch)
 
-    # Check shapes - batched results are (batch_size, 1) for scalar variables
-    assert x_batch.shape == (batch_size, 1)
-    assert y_batch.shape == (batch_size, 1)
-    assert z_batch.shape == (batch_size, 1)
+    # Check shapes - batched results are (batch_size,) for scalar variables
+    assert x_batch.shape == (batch_size,)
+    assert y_batch.shape == (batch_size,)
+    assert z_batch.shape == (batch_size,)
 
     # Verify each batch element by solving individually
     for i in range(batch_size):
@@ -464,13 +464,13 @@ def test_batched_gp():
         problem.solve(cp.CLARABEL, gp=True)
 
         assert np.allclose(
-            np.array(x.value), np.array(x_batch[i, 0]), atol=1e-4, rtol=1e-4
+            np.array(x.value), np.array(x_batch[i]), atol=1e-4, rtol=1e-4
         ), f"Mismatch in batch {i} for x"
         assert np.allclose(
-            np.array(y.value), np.array(y_batch[i, 0]), atol=1e-4, rtol=1e-4
+            np.array(y.value), np.array(y_batch[i]), atol=1e-4, rtol=1e-4
         ), f"Mismatch in batch {i} for y"
         assert np.allclose(
-            np.array(z.value), np.array(z_batch[i, 0]), atol=1e-4, rtol=1e-4
+            np.array(z.value), np.array(z_batch[i]), atol=1e-4, rtol=1e-4
         ), f"Mismatch in batch {i} for z"
 
     # Test gradients on batched problem
