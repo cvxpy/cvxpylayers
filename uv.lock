@@ -438,7 +438,6 @@ wheels = [
 
 [[package]]
 name = "cvxpylayers"
-version = "1.0.0a0"
 source = { editable = "." }
 dependencies = [
     { name = "cvxpy" },
@@ -516,7 +515,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["torch", "mlx", "metal", "jax", "all"]
+provides-extras = ["all", "jax", "metal", "mlx", "torch"]
 
 [package.metadata.requires-dev]
 dev = [
