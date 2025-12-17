@@ -179,7 +179,7 @@ def _initialize_solver(options:
     else:
         raise ValueError("Invalid MPAX algorithm")
 
-    solver = alg(warm_start=warm_start, **options)
+    solver = alg(warm_start=warm_start, unroll=True, **options)
     return jax.jit(solver.optimize), warm_start
 
 
