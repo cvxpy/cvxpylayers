@@ -553,3 +553,84 @@ def test_gp_without_param_values():
         order=1,
         modes=["rev"],
     )
+
+
+def test_jax_jit_forward():
+    """Test that jax.jit works with CvxpyLayer forward pass using MPAX solver."""
+    pytest.importorskip("mpax")
+
+    key = random.PRNGKey(0)
+
+    m, n = 10, 5
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+    x = cp.Variable(n)
+    obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
+    prob = cp.Problem(cp.Minimize(obj))
+    layer = CvxpyLayer(prob, [A, b], [x], solver="MPAX")
+
+    key, k1, k2 = random.split(key, num=3)
+    A_jax = random.normal(k1, shape=(m, n))
+    b_jax = random.normal(k2, shape=(m,))
+
+    # Non-jitted solve
+    (solution_no_jit,) = layer(A_jax, b_jax)
+
+    # Jitted forward pass
+    @jax.jit
+    def solve_jitted(A_val, b_val):
+        (sol,) = layer(A_val, b_val)
+        return sol
+
+    solution_jit = solve_jitted(A_jax, b_jax)
+
+    # Solutions should match
+    assert np.allclose(solution_no_jit, solution_jit, atol=1e-5)
+
+
+@pytest.mark.xfail(
+    reason="MPAX uses jax.lax.while_loop which JAX cannot differentiate through in reverse mode",
+    raises=ValueError,
+)
+def test_jax_jit_backward():
+    """Test that jax.jit works with CvxpyLayer gradient computation using MPAX solver.
+
+    Currently expected to fail because MPAX uses jax.lax.while_loop with dynamic
+    termination for iterative solving, and JAX cannot differentiate through
+    while_loop in reverse mode. Proper fix requires implicit differentiation
+    through KKT conditions.
+    """
+    pytest.importorskip("mpax")
+
+    key = random.PRNGKey(0)
+
+    m, n = 10, 5
+    A = cp.Parameter((m, n))
+    b = cp.Parameter(m)
+    x = cp.Variable(n)
+    obj = cp.sum_squares(A @ x - b) + cp.sum_squares(x)
+    prob = cp.Problem(cp.Minimize(obj))
+    layer = CvxpyLayer(prob, [A, b], [x], solver="MPAX")
+
+    key, k1, k2 = random.split(key, num=3)
+    A_jax = random.normal(k1, shape=(m, n))
+    b_jax = random.normal(k2, shape=(m,))
+
+    # Non-jitted gradient
+    def sum_sol(A_val, b_val):
+        (sol,) = layer(A_val, b_val)
+        return jnp.sum(sol)
+
+    grad_no_jit = jax.grad(sum_sol, argnums=(0, 1))(A_jax, b_jax)
+
+    # Jitted gradient
+    @jax.jit
+    def sum_sol_jitted(A_val, b_val):
+        (sol,) = layer(A_val, b_val)
+        return jnp.sum(sol)
+
+    grad_jit = jax.grad(sum_sol_jitted, argnums=(0, 1))(A_jax, b_jax)
+
+    # Gradients should match
+    assert np.allclose(grad_no_jit[0], grad_jit[0], atol=1e-5)
+    assert np.allclose(grad_no_jit[1], grad_jit[1], atol=1e-5)
