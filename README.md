@@ -192,8 +192,8 @@ sum_of_solution.backward()
 
 ## Solvers
 
-CVXPYlayers supports multiple solvers including [Clarabel](https://github.com/oxfordcontrol/Clarabel.rs),
-[SCS](https://github.com/cvxgrp/scs), and [ECOS](https://github.com/embotech/ecos).
+CVXPYlayers supports multiple solvers including [Clarabel](https://github.com/oxfordcontrol/Clarabel.rs)
+and [SCS](https://github.com/cvxgrp/scs).
 For GPU acceleration, use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/).
 
 ### Passing arguments to the solvers
@@ -203,8 +203,7 @@ For example, to increase the tolerance of SCS to `1e-8` one would write:
 ```
 layer(*parameters, solver_args={"eps": 1e-8})
 ```
-If SCS is not converging, we highly recommend switching to ECOS (if possible),
-and if not, using the following arguments to `SCS`:
+If SCS is not converging, we highly recommend using the following arguments to `SCS`:
 ```
 solver_args={"eps": 1e-8, "max_iters": 10000, "acceleration_lookback": 0}
 ```
