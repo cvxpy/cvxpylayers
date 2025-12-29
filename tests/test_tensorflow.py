@@ -111,7 +111,7 @@ def test_least_squares():
     with tf.GradientTape() as tape:
         x_lstsq = tf.linalg.solve(
             tf.transpose(A_tf) @ A_tf + tf.eye(n, dtype=tf.float64),
-            tf.expand_dims(tf.transpose(A_tf) @ b_tf, 1),
+            tf.expand_dims(tf.linalg.matvec(tf.transpose(A_tf), b_tf), 1),
         )
         loss_lstsq = tf.reduce_sum(x_lstsq)
 
@@ -299,7 +299,7 @@ def test_broadcasting():
     with tf.GradientTape() as tape:
         x_lstsq = tf.linalg.solve(
             tf.transpose(A_tf) @ A_tf + tf.eye(n, dtype=tf.float64),
-            tf.expand_dims(tf.transpose(A_tf) @ b_tf_0, 1),
+            tf.expand_dims(tf.linalg.matvec(tf.transpose(A_tf), b_tf_0), 1),
         )
         loss_lstsq = tf.reduce_sum(x_lstsq)
 

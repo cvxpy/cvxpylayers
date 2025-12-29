@@ -310,18 +310,21 @@ class CvxpyLayer:
         # Get the dtype from input parameters
         param_dtype = params[0].dtype
 
+        # TensorFlow sparse_dense_matmul requires 2D tensors, so expand if unbatched
+        p_stack_2d = p_stack if batch else tf.expand_dims(p_stack, axis=1)
+
         # Evaluate parametrized matrices using sparse-dense matrix multiplication
         if self.P is not None:
             P_sparse = tf.cast(self.P, param_dtype)
-            P_eval = tf.sparse.sparse_dense_matmul(P_sparse, p_stack)
+            P_eval = tf.sparse.sparse_dense_matmul(P_sparse, p_stack_2d)
         else:
             P_eval = None
 
         q_sparse = tf.cast(self.q, param_dtype)
-        q_eval = tf.sparse.sparse_dense_matmul(q_sparse, p_stack)
+        q_eval = tf.sparse.sparse_dense_matmul(q_sparse, p_stack_2d)
 
         A_sparse = tf.cast(self.A, param_dtype)
-        A_eval = tf.sparse.sparse_dense_matmul(A_sparse, p_stack)
+        A_eval = tf.sparse.sparse_dense_matmul(A_sparse, p_stack_2d)
 
         # Store data and adjoint in closure for backward pass
         # This avoids TensorFlow trying to trace through DIFFCP's Python-based solver
