@@ -94,185 +94,111 @@ class VariableRecovery:
         )
 
 
-def _detect_array_framework(arr: T) -> str:
-    """Detect the array framework (torch, jax, or numpy).
-
-    Args:
-        arr: Input array/tensor
-
-    Returns:
-        String: 'torch', 'jax', or 'numpy'
-    """
-    try:
-        import torch
-
-        if isinstance(arr, torch.Tensor):
-            return "torch"
-    except ImportError:
-        pass
-
-    try:
-        import jax
-
-        if isinstance(arr, jax.Array):
-            return "jax"
-    except ImportError:
-        pass
-
-    return "numpy"
-
-
-def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
-    """Unpack symmetric primal variable from vectorized form.
-
-    cvxpylayers receives symmetric variables in upper triangular row-major order:
-    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
+def _svec_to_symmetric(
+    svec: T,
+    n: int,
+    batch: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    scale: np.ndarray | None = None,
+) -> T:
+    """Convert vectorized form to full symmetric matrix.
 
     Args:
         svec: Vectorized form, shape (*batch, n*(n+1)/2)
         n: Matrix dimension
         batch: Batch dimensions
+        rows: Row indices for unpacking
+        cols: Column indices for unpacking
+        scale: Optional scaling factors for each element (for svec format with sqrt(2) scaling)
 
     Returns:
         Full symmetric matrix, shape (*batch, n, n)
     """
-    # Build index arrays for vectorized unpacking
-    # Upper triangular row-major: (0,0), (0,1), ..., (0,n-1), (1,1), (1,2), ...
+    # Detect framework and dispatch
+    type_name = type(svec).__module__.split(".")[0]
+
+    if type_name == "torch":
+        import torch
+
+        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)  # type: ignore[union-attr]
+        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)  # type: ignore[union-attr]
+        if scale is not None:
+            scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
+            data = svec * scale_t  # type: ignore[operator]
+        else:
+            data = svec
+
+        out_shape = batch + (n, n)
+        if batch:
+            batch_size = int(np.prod(batch))
+            data_flat = data.reshape(batch_size, -1)  # type: ignore[union-attr]
+            result = torch.zeros(batch_size, n, n, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
+            result[:, rows_t, cols_t] = data_flat
+            result[:, cols_t, rows_t] = data_flat
+            return result.reshape(out_shape)  # type: ignore[return-value]
+        else:
+            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
+            result[rows_t, cols_t] = data
+            result[cols_t, rows_t] = data
+            return result  # type: ignore[return-value]
+
+    elif type_name == "jax" or type_name == "jaxlib":
+        import jax.numpy as jnp
+
+        rows_arr = jnp.array(rows)
+        cols_arr = jnp.array(cols)
+        data = svec * jnp.array(scale) if scale is not None else svec  # type: ignore[operator]
+        out_shape = batch + (n, n)
+        result = jnp.zeros(out_shape, dtype=svec.dtype)  # type: ignore[union-attr]
+        result = result.at[..., rows_arr, cols_arr].set(data)
+        result = result.at[..., cols_arr, rows_arr].set(data)
+        return result  # type: ignore[return-value]
+
+    else:
+        # Numpy path
+        svec_np = np.asarray(svec)
+        data = svec_np * scale if scale is not None else svec_np
+        out_shape = batch + (n, n)
+        result = np.zeros(out_shape, dtype=svec_np.dtype)
+        result[..., rows, cols] = data
+        result[..., cols, rows] = data
+        return result  # type: ignore[return-value]
+
+
+def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
+    """Unpack symmetric primal variable from vectorized form.
+
+    CVXPY stores symmetric variables in upper triangular row-major order:
+    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
+    """
+    # Upper triangular row-major indices
     rows, cols = [], []
     for i in range(n):
         for j in range(i, n):
             rows.append(i)
             cols.append(j)
-
-    framework = _detect_array_framework(svec)
-
-    if framework == "torch":
-        import torch
-
-        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
-        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
-
-        # Create output tensor
-        out_shape = batch + (n, n)
-        # Use svec values to build result (need to maintain gradient connection)
-        # Create index for assignment: flatten batch dims, then scatter
-        batch_size = 1
-        for b in batch:
-            batch_size *= b
-        if batch:
-            # Reshape to (batch_size, k) where k = n*(n+1)/2
-            svec_flat = svec.reshape(batch_size, -1)
-            result = torch.zeros(batch_size, n, n, dtype=svec.dtype, device=svec.device)
-            # Fill upper and lower triangles
-            result[:, rows_t, cols_t] = svec_flat
-            result[:, cols_t, rows_t] = svec_flat
-            result = result.reshape(out_shape)
-        else:
-            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)
-            result[rows_t, cols_t] = svec
-            result[cols_t, rows_t] = svec
-        return result
-    elif framework == "jax":
-        import jax.numpy as jnp
-
-        rows_arr = jnp.array(rows)
-        cols_arr = jnp.array(cols)
-        out_shape = batch + (n, n)
-        result = jnp.zeros(out_shape, dtype=svec.dtype)
-        result = result.at[..., rows_arr, cols_arr].set(svec)
-        result = result.at[..., cols_arr, rows_arr].set(svec)
-        return result
-    else:
-        # Pure numpy path
-        rows_np = np.array(rows)
-        cols_np = np.array(cols)
-        svec_np = np.asarray(svec)
-        out_shape = batch + (n, n)
-        result = np.zeros(out_shape, dtype=svec_np.dtype)
-        result[..., rows_np, cols_np] = svec_np
-        result[..., cols_np, rows_np] = svec_np
-        return result
+    return _svec_to_symmetric(svec, n, batch, np.array(rows), np.array(cols))
 
 
 def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
-    """Unpack scaled vectorized form to full symmetric matrix.
+    """Unpack scaled vectorized (svec) form to full symmetric matrix.
 
     The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
-    with off-diagonal elements scaled by sqrt(2). This function unpacks to the full matrix.
-
-    Args:
-        svec: Scaled vectorized form, shape (*batch, n*(n+1)/2)
-        n: Matrix dimension
-        batch: Batch dimensions
-
-    Returns:
-        Full symmetric matrix, shape (*batch, n, n)
+    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
+    ordering: (0,0), (1,0), (1,1), (2,0), ...
     """
-    # Build index arrays for vectorized unpacking
-    # svec uses column-major lower triangular ordering: (0,0), (1,0), (1,1), (2,0), ...
-    rows, cols, is_diag = [], [], []
+    # Lower triangular column-major indices with sqrt(2) scaling for off-diagonals
+    rows, cols = [], []
     for j in range(n):
         for i in range(j, n):
             rows.append(i)
             cols.append(j)
-            is_diag.append(i == j)
 
-    sqrt2 = np.sqrt(2.0)
-    scale = np.array([1.0 if d else 1.0 / sqrt2 for d in is_diag])
-
-    framework = _detect_array_framework(svec)
-
-    if framework == "torch":
-        import torch
-
-        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
-        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
-        scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
-
-        # Scale off-diagonal elements
-        scaled_svec = svec * scale_t
-
-        # Create output tensor
-        out_shape = batch + (n, n)
-        batch_size = 1
-        for b in batch:
-            batch_size *= b
-        if batch:
-            # Reshape to (batch_size, k) where k = n*(n+1)/2
-            scaled_flat = scaled_svec.reshape(batch_size, -1)
-            result = torch.zeros(batch_size, n, n, dtype=svec.dtype, device=svec.device)
-            # Fill lower and upper triangles
-            result[:, rows_t, cols_t] = scaled_flat
-            result[:, cols_t, rows_t] = scaled_flat
-            result = result.reshape(out_shape)
-        else:
-            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)
-            result[rows_t, cols_t] = scaled_svec
-            result[cols_t, rows_t] = scaled_svec
-        return result
-    elif framework == "jax":
-        import jax.numpy as jnp
-
-        rows_arr = jnp.array(rows)
-        cols_arr = jnp.array(cols)
-        scale_arr = jnp.array(scale)
-        scaled_svec = svec * scale_arr
-        out_shape = batch + (n, n)
-        result = jnp.zeros(out_shape, dtype=svec.dtype)
-        result = result.at[..., rows_arr, cols_arr].set(scaled_svec)
-        result = result.at[..., cols_arr, rows_arr].set(scaled_svec)
-        return result
-    else:
-        # Pure numpy path
-        rows_np = np.array(rows)
-        cols_np = np.array(cols)
-        svec_np = np.asarray(svec)
-        scaled_svec = svec_np * scale
-        out_shape = batch + (n, n)
-        result = np.zeros(out_shape, dtype=svec_np.dtype)
-        result[..., rows_np, cols_np] = scaled_svec
-        result[..., cols_np, rows_np] = scaled_svec
-        return result
+    rows_arr = np.array(rows)
+    cols_arr = np.array(cols)
+    scale = np.where(rows_arr == cols_arr, 1.0, 1.0 / np.sqrt(2.0))
+    return _svec_to_symmetric(svec, n, batch, rows_arr, cols_arr, scale)
 
 
 @dataclass
@@ -348,21 +274,68 @@ class LayersContext:
 
 
 def _find_parent_constraint(var: cp.Variable, problem: cp.Problem) -> cp.Constraint | None:
-    """Find the constraint whose dual_variables contains this variable.
-
-    Args:
-        var: A CVXPY Variable that may be a constraint's dual variable
-        problem: The CVXPY Problem to search
-
-    Returns:
-        The parent constraint if var is a dual variable, None otherwise
-    """
+    """Find the constraint whose dual_variables contains this variable."""
     for con in problem.constraints:
-        # Compare by ID to avoid triggering CVXPY constraint comparison
-        for dv in con.dual_variables:
-            if var.id == dv.id:
-                return con
+        if any(var.id == dv.id for dv in con.dual_variables):
+            return con
     return None
+
+
+def _dual_var_offset(var: cp.Variable, constraint: cp.Constraint) -> int:
+    """Get the offset of a dual variable within its parent constraint's dual vector."""
+    offset = 0
+    for dv in constraint.dual_variables:
+        if dv.id == var.id:
+            return offset
+        offset += dv.size
+    raise ValueError(f"Variable {var} not found in constraint {constraint}")
+
+
+def _build_primal_recovery(var: cp.Variable, param_prob: ParamConeProg) -> VariableRecovery:
+    """Build recovery info for a primal variable."""
+    start = param_prob.var_id_to_col[var.id]
+    is_sym = hasattr(var, "is_symmetric") and var.is_symmetric() and len(var.shape) >= 2
+
+    if is_sym:
+        n = var.shape[0]
+        svec_size = n * (n + 1) // 2
+        return VariableRecovery(
+            primal=slice(start, start + svec_size),
+            dual=None,
+            shape=var.shape,
+            is_symmetric=True,
+        )
+    return VariableRecovery(
+        primal=slice(start, start + var.size),
+        dual=None,
+        shape=var.shape,
+    )
+
+
+def _build_dual_recovery(
+    var: cp.Variable,
+    parent_con: cp.Constraint,
+    constr_id_to_slice: dict[int, slice],
+) -> VariableRecovery:
+    """Build recovery info for a dual variable."""
+    constr_slice = constr_id_to_slice[parent_con.id]
+    offset = _dual_var_offset(var, parent_con)
+    dual_start = constr_slice.start + offset
+
+    is_psd = isinstance(parent_con, cvxpy.constraints.PSD)
+    # PSD duals are stored in svec format: n*(n+1)//2 elements
+    if is_psd:
+        n = var.shape[0]
+        dual_size = n * (n + 1) // 2
+    else:
+        dual_size = var.size
+
+    return VariableRecovery(
+        primal=None,
+        dual=slice(dual_start, dual_start + dual_size),
+        shape=var.shape,
+        is_psd_dual=is_psd,
+    )
 
 
 def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
@@ -560,56 +533,18 @@ def parse_args(
 
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
 
-    # Build constraint ID to dual slice mapping for dual variable recovery
-    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
-
     # Build variable recovery info for each requested variable
-    # Variables can be either primal (from problem.variables()) or dual
-    # (from constraint.dual_variables)
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
     primal_vars = set(problem.variables())
+
     var_recover = []
     for v in variables:
         if v in primal_vars:
-            # Primal variable: recover from primal solution
-            start = param_prob.var_id_to_col[v.id]
-            # Check if variable is symmetric (uses svec format in solver)
-            # A symmetric variable must be at least 2D with shape (n, n)
-            is_sym = hasattr(v, "is_symmetric") and v.is_symmetric() and len(v.shape) >= 2
-            if is_sym:
-                # Symmetric variables use svec format: n*(n+1)//2 elements
-                n = v.shape[0]
-                svec_size = n * (n + 1) // 2
-                var_recover.append(
-                    VariableRecovery(
-                        primal=slice(start, start + svec_size),
-                        dual=None,
-                        shape=v.shape,
-                        is_symmetric=True,
-                    )
-                )
-            else:
-                var_recover.append(
-                    VariableRecovery(
-                        primal=slice(start, start + v.size),
-                        dual=None,
-                        shape=v.shape,
-                    )
-                )
+            var_recover.append(_build_primal_recovery(v, param_prob))
         else:
-            # Dual variable: find parent constraint and recover from dual solution
             parent_con = _find_parent_constraint(v, problem)
             assert parent_con is not None  # Already validated
-            dual_slice = constr_id_to_slice[parent_con.id]
-            # Check if this is a PSD constraint (requires svec unpacking)
-            is_psd = isinstance(parent_con, cvxpy.constraints.PSD)
-            var_recover.append(
-                VariableRecovery(
-                    primal=None,
-                    dual=dual_slice,
-                    shape=v.shape,
-                    is_psd_dual=is_psd,
-                )
-            )
+            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice))
 
     return LayersContext(
         parameters,

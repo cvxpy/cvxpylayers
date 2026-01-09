@@ -93,4 +93,4 @@ con = A @ x == b
 dual = con.dual_variables[0]  # First (usually only) dual variable
 ```
 
-Most constraints have a single dual variable. SOC and exponential cone constraints have multiple.
+Most constraints have a single dual variable. Some conic constraints created explicitly (like `cp.SOC(t, x)` or `cp.PowCone3D(...)`) may have multiple dual variables that you can access by index.
