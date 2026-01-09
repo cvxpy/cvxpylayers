@@ -5,130 +5,11 @@ import scipy.sparse
 import torch
 
 import cvxpylayers.utils.parse_args as pa
-
-
-def _apply_gp_log_transform(
-    params: tuple[torch.Tensor, ...],
-    ctx: pa.LayersContext,
-) -> tuple[torch.Tensor, ...]:
-    """Apply log transformation to geometric program (GP) parameters.
-
-    Geometric programs are solved in log-space after conversion to DCP.
-    This function applies log transformation to the appropriate parameters.
-
-    Args:
-        params: Tuple of parameter tensors in original GP space
-        ctx: Layer context containing GP parameter mapping info
-
-    Returns:
-        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
-    """
-    if not ctx.gp or not ctx.gp_param_to_log_param:
-        return params
-
-    params_transformed = []
-    for i, param in enumerate(params):
-        cvxpy_param = ctx.parameters[i]
-        if cvxpy_param in ctx.gp_param_to_log_param:
-            # This parameter needs log transformation for GP
-            params_transformed.append(torch.log(param))
-        else:
-            params_transformed.append(param)
-    return tuple(params_transformed)
-
-
-def _flatten_and_batch_params(
-    params: tuple[torch.Tensor, ...],
-    ctx: pa.LayersContext,
-    batch: tuple,
-) -> torch.Tensor:
-    """Flatten and batch parameters into a single stacked tensor.
-
-    Converts a tuple of parameter tensors (potentially with mixed batched/unbatched)
-    into a single concatenated tensor suitable for matrix multiplication with the
-    parametrized problem matrices.
-
-    Args:
-        params: Tuple of parameter tensors
-        ctx: Layer context with batch info and ordering
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Concatenated parameter tensor with shape (num_params, batch_size) or (num_params,)
-    """
-    flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
-
-    for i, param in enumerate(params):
-        # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:
-            # Unbatched parameter - expand to match batch size
-            param_expanded = param.unsqueeze(0).expand(batch + param.shape)
-            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
-                param_expanded,
-                batch + (-1,),
-            )
-        else:
-            # Already batched or no batch dimension needed
-            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
-                param,
-                batch + (-1,),
-            )
-
-    # Add constant 1.0 column for offset terms in canonical form
-    flattened_params[-1] = torch.ones(
-        batch + (1,),
-        dtype=params[0].dtype,
-        device=params[0].device,
-    )
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-
-    p_stack = torch.cat(cast(list[torch.Tensor], flattened_params), -1)
-    # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
-    if batch:
-        p_stack = p_stack.T
-    return p_stack
-
-
-def _recover_results(
-    primal: torch.Tensor,
-    dual: torch.Tensor,
-    ctx: pa.LayersContext,
-    batch: tuple,
-) -> tuple[torch.Tensor, ...]:
-    """Recover variable values from primal/dual solutions.
-
-    Extracts the requested variables from the solver's primal and dual
-    solutions, applies inverse GP transformation if needed, and removes
-    batch dimension for unbatched inputs.
-
-    Args:
-        primal: Primal solution from solver
-        dual: Dual solution from solver
-        ctx: Layer context with variable recovery info
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Tuple of recovered variable values
-    """
-    # Extract each variable using its slice and reshape
-    results = tuple(
-        var.recover(primal, dual, reshape_fortran)
-        for var in ctx.var_recover
-    )
-
-    # Apply exp transformation to recover primal variables from log-space for GP
-    # (dual variables stay in original space - no transformation needed)
-    if ctx.gp:
-        results = tuple(
-            torch.exp(r) if var.primal is not None else r
-            for r, var in zip(results, ctx.var_recover)
-        )
-
-    # Squeeze batch dimension for unbatched inputs
-    if not batch:
-        results = tuple(r.squeeze(0) for r in results)
-
-    return results
+from cvxpylayers.utils.parse_args import (
+    apply_gp_log_transform,
+    flatten_and_batch_params,
+    recover_results,
+)
 
 
 class CvxpyLayer(torch.nn.Module):
@@ -254,18 +135,18 @@ class CvxpyLayer(torch.nn.Module):
         batch = self.ctx.validate_params(list(params))
 
         # Apply log transformation to GP parameters
-        params = _apply_gp_log_transform(params, self.ctx)
+        params = apply_gp_log_transform(params, self.ctx)
 
         # Flatten and batch parameters
-        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
+        p_stack = flatten_and_batch_params(params, self.ctx, batch)
 
         # Get dtype from input parameters to ensure type matching
         param_dtype = p_stack.dtype
 
         # Evaluate parametrized matrices (convert sparse matrices to match input dtype)
         P_eval = (self.P.to(dtype=param_dtype) @ p_stack) if self.P is not None else None
-        q_eval = self.q.to(dtype=param_dtype) @ p_stack
-        A_eval = self.A.to(dtype=param_dtype) @ p_stack
+        q_eval = self.q.to(dtype=param_dtype) @ p_stack  # type: ignore[operator]
+        A_eval = self.A.to(dtype=param_dtype) @ p_stack  # type: ignore[operator]
 
         # Get the solver-specific _CvxpyLayer class
         from cvxpylayers.interfaces import get_torch_cvxpylayer
@@ -282,13 +163,7 @@ class CvxpyLayer(torch.nn.Module):
         )
 
         # Recover results and apply GP inverse transform if needed
-        return _recover_results(primal, dual, self.ctx, batch)
-
-
-def reshape_fortran(x: torch.Tensor, shape: tuple) -> torch.Tensor:
-    if len(x.shape) > 0:
-        x = x.permute(*reversed(range(len(x.shape))))
-    return x.reshape(*reversed(shape)).permute(*reversed(range(len(shape))))
+        return recover_results(primal, dual, self.ctx, batch)
 
 
 def scipy_csr_to_torch_csr(

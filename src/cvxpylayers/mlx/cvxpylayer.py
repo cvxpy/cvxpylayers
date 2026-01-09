@@ -1,146 +1,16 @@
 from typing import Any, cast
 
 import cvxpy as cp
+import mlx.core as mx
 import numpy as np
 import scipy.sparse
-import mlx.core as mx
 
 import cvxpylayers.utils.parse_args as pa
-
-
-def _apply_gp_log_transform(
-    params: tuple[mx.array, ...],
-    ctx: pa.LayersContext,
-) -> tuple[mx.array, ...]:
-    """Apply log transformation to geometric program (GP) parameters.
-
-    Geometric programs are solved in log-space after conversion to DCP.
-    This function applies log transformation to the appropriate parameters.
-
-    Args:
-        params: Tuple of parameter arrays in original GP space
-        ctx: Layer context containing GP parameter mapping info
-
-    Returns:
-        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
-    """
-    if not ctx.gp or not ctx.gp_param_to_log_param:
-        return params
-
-    params_transformed = []
-    for i, param in enumerate(params):
-        cvxpy_param = ctx.parameters[i]
-        if cvxpy_param in ctx.gp_param_to_log_param:
-            # This parameter needs log transformation for GP
-            params_transformed.append(mx.log(param))
-        else:
-            params_transformed.append(param)
-    return tuple(params_transformed)
-
-
-def _flatten_and_batch_params(
-    params: tuple[mx.array, ...],
-    ctx: pa.LayersContext,
-    batch: tuple[int, ...],
-) -> mx.array:
-    """Flatten and batch parameters into a single stacked array.
-
-    Converts a tuple of parameter arrays (potentially with mixed batched/unbatched)
-    into a single concatenated array suitable for matrix multiplication with the
-    parametrized problem matrices.
-
-    Args:
-        params: Tuple of parameter arrays
-        ctx: Layer context with batch info and ordering
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Concatenated parameter array with shape (num_params, batch_size) or (num_params,)
-    """
-    flattened_params: list[mx.array | None] = [None] * (len(params) + 1)
-
-    for i, param in enumerate(params):
-        # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:
-            # Unbatched parameter - expand to match batch size
-            param_expanded = mx.expand_dims(param, axis=0)
-            param_expanded = mx.broadcast_to(param_expanded, batch + param.shape)
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param_expanded,
-                batch + (-1,),
-            )
-        else:
-            # Already batched or no batch dimension needed
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param,
-                batch + (-1,),
-            )
-
-    # Add constant 1.0 column for offset terms in canonical form
-    flattened_params[-1] = mx.ones(batch + (1,), dtype=params[0].dtype)
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-
-    p_stack = mx.concatenate(cast(list[mx.array], flattened_params), axis=-1)
-    # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
-    if batch:
-        p_stack = mx.transpose(p_stack)
-    return p_stack
-
-
-def _recover_results(
-    primal: mx.array,
-    dual: mx.array,
-    ctx: pa.LayersContext,
-    batch: tuple[int, ...],
-) -> tuple[mx.array, ...]:
-    """Recover variable values from primal/dual solutions.
-
-    Extracts the requested variables from the solver's primal and dual
-    solutions, applies inverse GP transformation if needed, and removes
-    batch dimension for unbatched inputs.
-
-    Args:
-        primal: Primal solution from solver
-        dual: Dual solution from solver
-        ctx: Layer context with variable recovery info
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Tuple of recovered variable values
-    """
-    # Extract each variable using its slice and reshape
-    results = tuple(
-        var.recover(primal, dual, _reshape_fortran)
-        for var in ctx.var_recover
-    )
-
-    # Apply exp transformation to recover primal variables from log-space for GP
-    # (dual variables stay in original space - no transformation needed)
-    if ctx.gp:
-        results = tuple(
-            mx.exp(r) if var.primal is not None else r
-            for r, var in zip(results, ctx.var_recover)
-        )
-
-    # Squeeze batch dimension for unbatched inputs
-    if not batch:
-        results = tuple(mx.squeeze(r, axis=0) for r in results)
-
-    return results
-
-
-def _reshape_fortran(x: mx.array, shape: tuple[int, ...]) -> mx.array:
-    """Reshape array using Fortran (column-major) order.
-
-    MLX doesn't support order='F' in reshape, so we emulate it by
-    transposing before and after the reshape.
-    """
-    if len(x.shape) > 0:
-        x = mx.transpose(x, axes=tuple(reversed(range(len(x.shape)))))
-    reshaped = mx.reshape(x, tuple(reversed(shape)))
-    if len(shape) > 0:
-        reshaped = mx.transpose(reshaped, axes=tuple(reversed(range(len(shape)))))
-    return reshaped
+from cvxpylayers.utils.parse_args import (
+    apply_gp_log_transform,
+    flatten_and_batch_params,
+    recover_results,
+)
 
 
 def _scipy_csr_to_dense(
@@ -284,16 +154,18 @@ class CvxpyLayer:
         batch = self.ctx.validate_params(list(params))
 
         # Apply log transformation to GP parameters
-        params = _apply_gp_log_transform(params, self.ctx)
+        params = apply_gp_log_transform(params, self.ctx)
 
         # Flatten and batch parameters
-        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
+        p_stack = flatten_and_batch_params(params, self.ctx, batch)
 
         # Get dtype from input parameters to ensure type matching
         param_dtype = params[0].dtype
 
         # Evaluate parametrized matrices (convert dense numpy to MLX)
-        P_eval = mx.array(self._P_np, dtype=param_dtype) @ p_stack if self._P_np is not None else None
+        P_eval = (
+            mx.array(self._P_np, dtype=param_dtype) @ p_stack if self._P_np is not None else None
+        )
         q_eval = mx.array(self._q_np, dtype=param_dtype) @ p_stack
         A_eval = mx.array(self._A_np, dtype=param_dtype) @ p_stack
 
@@ -301,7 +173,7 @@ class CvxpyLayer:
         primal, dual = self._solve_with_vjp(P_eval, q_eval, A_eval, solver_args)
 
         # Recover results and apply GP inverse transform if needed
-        return _recover_results(primal, dual, self.ctx, batch)
+        return recover_results(primal, dual, self.ctx, batch)
 
     def forward(
         self,
@@ -350,7 +222,11 @@ class CvxpyLayer:
                 cot_list = [cotangents]
 
             dprimal = cot_list[0] if cot_list else mx.zeros_like(outputs[0])
-            ddual = cot_list[1] if len(cot_list) >= 2 and cot_list[1] is not None else mx.zeros(outputs[1].shape, dtype=outputs[1].dtype)
+            ddual = (
+                cot_list[1]
+                if len(cot_list) >= 2 and cot_list[1] is not None
+                else mx.zeros(outputs[1].shape, dtype=outputs[1].dtype)
+            )
 
             data = data_container["data"]
             adj_batch = data_container["adj_batch"]
@@ -364,5 +240,5 @@ class CvxpyLayer:
 
             return (grad_P, dq, dA)
 
-        primal, dual = solve_layer(P_arg, q_eval, A_eval)
+        primal, dual = solve_layer(P_arg, q_eval, A_eval)  # type: ignore[misc]
         return primal, dual
