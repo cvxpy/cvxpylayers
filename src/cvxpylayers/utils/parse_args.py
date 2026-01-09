@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import cvxpy as cp
+import cvxpy.constraints
+import numpy as np
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 
@@ -61,6 +63,8 @@ class VariableRecovery:
     primal: slice | None
     dual: slice | None
     shape: tuple[int, ...]
+    is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
+    is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
 
     def recover(self, primal_sol: T, dual_sol: T, reshape_fn=_default_reshape) -> T:
         """Extract and reshape variable from primal or dual solution.
@@ -73,13 +77,154 @@ class VariableRecovery:
         """
         batch = tuple(primal_sol.shape[:-1])
         if self.primal is not None:
-            return reshape_fn(primal_sol[..., self.primal], batch + self.shape)  # type: ignore[index]
+            data = primal_sol[..., self.primal]
+            if self.is_symmetric:
+                # Unpack symmetric primal variable from svec format
+                return _unpack_primal_svec(data, self.shape[0], batch)
+            return reshape_fn(data, batch + self.shape)  # type: ignore[index]
         if self.dual is not None:
-            return reshape_fn(dual_sol[..., self.dual], batch + self.shape)  # type: ignore[index]
+            data = dual_sol[..., self.dual]
+            if self.is_psd_dual:
+                # Unpack scaled vectorized form (svec) to full symmetric matrix
+                return _unpack_svec(data, self.shape[0], batch)
+            return reshape_fn(data, batch + self.shape)  # type: ignore[index]
         raise RuntimeError(
             "Invalid VariableRecovery: both primal and dual slices are None. "
             "At least one must be set to recover variable values."
         )
+
+
+def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
+    """Unpack symmetric primal variable from vectorized form.
+
+    cvxpylayers receives symmetric variables in upper triangular row-major order:
+    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
+
+    Args:
+        svec: Vectorized form, shape (*batch, n*(n+1)/2)
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix, shape (*batch, n, n)
+    """
+    # Build index arrays for vectorized unpacking
+    # Upper triangular row-major: (0,0), (0,1), ..., (0,n-1), (1,1), (1,2), ...
+    rows, cols = [], []
+    for i in range(n):
+        for j in range(i, n):
+            rows.append(i)
+            cols.append(j)
+
+    # Handle torch tensors (maintaining gradient flow)
+    if hasattr(svec, "numpy"):
+        import torch
+
+        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
+        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
+
+        # Create output tensor
+        out_shape = batch + (n, n)
+        # Use svec values to build result (need to maintain gradient connection)
+        # Create index for assignment: flatten batch dims, then scatter
+        batch_size = 1
+        for b in batch:
+            batch_size *= b
+        if batch:
+            # Reshape to (batch_size, k) where k = n*(n+1)/2
+            svec_flat = svec.reshape(batch_size, -1)
+            result = torch.zeros(
+                batch_size, n, n, dtype=svec.dtype, device=svec.device
+            )
+            # Fill upper and lower triangles
+            result[:, rows_t, cols_t] = svec_flat
+            result[:, cols_t, rows_t] = svec_flat
+            result = result.reshape(out_shape)
+        else:
+            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)
+            result[rows_t, cols_t] = svec
+            result[cols_t, rows_t] = svec
+        return result
+    else:
+        # JAX/numpy path
+        rows_np = np.array(rows)
+        cols_np = np.array(cols)
+        svec_np = np.asarray(svec)
+        out_shape = batch + (n, n)
+        result = np.zeros(out_shape, dtype=svec_np.dtype)
+        result[..., rows_np, cols_np] = svec_np
+        result[..., cols_np, rows_np] = svec_np
+        return result
+
+
+def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
+    """Unpack scaled vectorized form to full symmetric matrix.
+
+    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
+    with off-diagonal elements scaled by sqrt(2). This function unpacks to the full matrix.
+
+    Args:
+        svec: Scaled vectorized form, shape (*batch, n*(n+1)/2)
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix, shape (*batch, n, n)
+    """
+    # Build index arrays for vectorized unpacking
+    # svec uses column-major lower triangular ordering: (0,0), (1,0), (1,1), (2,0), ...
+    rows, cols, is_diag = [], [], []
+    for j in range(n):
+        for i in range(j, n):
+            rows.append(i)
+            cols.append(j)
+            is_diag.append(i == j)
+
+    sqrt2 = np.sqrt(2.0)
+    scale = np.array([1.0 if d else 1.0 / sqrt2 for d in is_diag])
+
+    # Handle torch tensors (maintaining gradient flow)
+    if hasattr(svec, "numpy"):
+        import torch
+
+        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
+        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
+        scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
+
+        # Scale off-diagonal elements
+        scaled_svec = svec * scale_t
+
+        # Create output tensor
+        out_shape = batch + (n, n)
+        batch_size = 1
+        for b in batch:
+            batch_size *= b
+        if batch:
+            # Reshape to (batch_size, k) where k = n*(n+1)/2
+            scaled_flat = scaled_svec.reshape(batch_size, -1)
+            result = torch.zeros(
+                batch_size, n, n, dtype=svec.dtype, device=svec.device
+            )
+            # Fill lower and upper triangles
+            result[:, rows_t, cols_t] = scaled_flat
+            result[:, cols_t, rows_t] = scaled_flat
+            result = result.reshape(out_shape)
+        else:
+            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)
+            result[rows_t, cols_t] = scaled_svec
+            result[cols_t, rows_t] = scaled_svec
+        return result
+    else:
+        # JAX/numpy path
+        rows_np = np.array(rows)
+        cols_np = np.array(cols)
+        svec_np = np.asarray(svec)
+        scaled_svec = svec_np * scale
+        out_shape = batch + (n, n)
+        result = np.zeros(out_shape, dtype=svec_np.dtype)
+        result[..., rows_np, cols_np] = scaled_svec
+        result[..., cols_np, rows_np] = scaled_svec
+        return result
 
 
 @dataclass
@@ -154,6 +299,66 @@ class LayersContext:
         return ()
 
 
+def _find_parent_constraint(
+    var: cp.Variable, problem: cp.Problem
+) -> cp.Constraint | None:
+    """Find the constraint whose dual_variables contains this variable.
+
+    Args:
+        var: A CVXPY Variable that may be a constraint's dual variable
+        problem: The CVXPY Problem to search
+
+    Returns:
+        The parent constraint if var is a dual variable, None otherwise
+    """
+    for con in problem.constraints:
+        # Compare by ID to avoid triggering CVXPY constraint comparison
+        for dv in con.dual_variables:
+            if var.id == dv.id:
+                return con
+    return None
+
+
+def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
+    """Build mapping from constraint ID to slice in dual solution vector.
+
+    The dual solution vector is ordered by cone type:
+    Zero (equalities) -> NonNeg (inequalities) -> SOC -> ExpCone -> PSD -> PowCone3D
+
+    Args:
+        param_prob: CVXPY's parametrized cone program
+
+    Returns:
+        Dictionary mapping constraint ID to slice in dual solution vector
+    """
+    constr_id_to_slice: dict[int, slice] = {}
+    cur_idx = 0
+
+    # Process each cone type in canonical order
+    cone_types = [
+        cvxpy.constraints.Zero,
+        cvxpy.constraints.NonNeg,
+        cvxpy.constraints.SOC,
+        cvxpy.constraints.ExpCone,
+        cvxpy.constraints.PSD,
+        cvxpy.constraints.PowCone3D,
+    ]
+
+    for cone_type in cone_types:
+        for c in param_prob.constr_map.get(cone_type, []):
+            # PSD constraints use scaled vectorization (svec) in the dual
+            # For an n x n PSD constraint, svec size is n*(n+1)//2
+            if cone_type is cvxpy.constraints.PSD:
+                n = c.shape[0]  # Matrix dimension
+                cone_size = n * (n + 1) // 2
+            else:
+                cone_size = c.size
+            constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
+            cur_idx += cone_size
+
+    return constr_id_to_slice
+
+
 def _validate_problem(
     problem: cp.Problem,
     variables: list[cp.Variable],
@@ -164,7 +369,7 @@ def _validate_problem(
 
     Args:
         problem: CVXPY problem to validate
-        variables: List of CVXPY variables to track
+        variables: List of CVXPY variables to track (can include constraint dual variables)
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
 
@@ -182,12 +387,21 @@ def _validate_problem(
     # Validate parameters match problem definition
     if not set(problem.parameters()) == set(parameters):
         raise ValueError("The layer's parameters must exactly match problem.parameters")
-    if not set(variables).issubset(set(problem.variables())):
-        raise ValueError("Argument variables must be a subset of problem.variables")
     if not isinstance(parameters, list) and not isinstance(parameters, tuple):
         raise ValueError("The layer's parameters must be provided as a list or tuple")
     if not isinstance(variables, list) and not isinstance(variables, tuple):
         raise ValueError("The layer's variables must be provided as a list or tuple")
+
+    # Validate variables: each must be either a primal variable or a constraint dual variable
+    primal_vars = set(problem.variables())
+    for v in variables:
+        if v in primal_vars:
+            continue  # Valid primal variable
+        parent_con = _find_parent_constraint(v, problem)
+        if parent_con is None:
+            raise ValueError(
+                f"Variable {v} must be a subset of problem.variables or a constraint dual variable"
+            )
 
 
 def _build_user_order_mapping(
@@ -300,6 +514,60 @@ def parse_args(
 
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
 
+    # Build constraint ID to dual slice mapping for dual variable recovery
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
+
+    # Build variable recovery info for each requested variable
+    # Variables can be either primal (from problem.variables()) or dual (from constraint.dual_variables)
+    primal_vars = set(problem.variables())
+    var_recover = []
+    for v in variables:
+        if v in primal_vars:
+            # Primal variable: recover from primal solution
+            start = param_prob.var_id_to_col[v.id]
+            # Check if variable is symmetric (uses svec format in solver)
+            # A symmetric variable must be at least 2D with shape (n, n)
+            is_sym = (
+                hasattr(v, "is_symmetric")
+                and v.is_symmetric()
+                and len(v.shape) >= 2
+            )
+            if is_sym:
+                # Symmetric variables use svec format: n*(n+1)//2 elements
+                n = v.shape[0]
+                svec_size = n * (n + 1) // 2
+                var_recover.append(
+                    VariableRecovery(
+                        primal=slice(start, start + svec_size),
+                        dual=None,
+                        shape=v.shape,
+                        is_symmetric=True,
+                    )
+                )
+            else:
+                var_recover.append(
+                    VariableRecovery(
+                        primal=slice(start, start + v.size),
+                        dual=None,
+                        shape=v.shape,
+                    )
+                )
+        else:
+            # Dual variable: find parent constraint and recover from dual solution
+            parent_con = _find_parent_constraint(v, problem)
+            assert parent_con is not None  # Already validated
+            dual_slice = constr_id_to_slice[parent_con.id]
+            # Check if this is a PSD constraint (requires svec unpacking)
+            is_psd = isinstance(parent_con, cvxpy.constraints.PSD)
+            var_recover.append(
+                VariableRecovery(
+                    primal=None,
+                    dual=dual_slice,
+                    shape=v.shape,
+                    is_psd_dual=is_psd,
+                )
+            )
+
     return LayersContext(
         parameters,
         param_prob.reduced_P,
@@ -308,14 +576,7 @@ def parse_args(
         cone_dims,
         solver_ctx,
         solver,
-        var_recover=[
-            VariableRecovery(
-                slice(start := param_prob.var_id_to_col[v.id], start + v.size),
-                None,
-                v.shape,
-            )
-            for v in variables
-        ],
+        var_recover=var_recover,
         user_order_to_col_order=user_order_to_col_order,
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,

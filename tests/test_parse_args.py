@@ -56,7 +56,8 @@ class TestVariableRecovery:
         )
 
         result = var_recovery.recover(primal_sol, dual_sol)
-        expected = np.array([[0.5], [3.5]])
+        # shape=(2,) with slice(1, 3) extracts 2 elements per batch
+        expected = np.array([[0.5, 1.5], [3.5, 4.5]])
         np.testing.assert_array_equal(result, expected)
 
     def test_recover_neither_raises_error(self):
