@@ -519,3 +519,108 @@ def test_vector_equality_dual():
 
     np.testing.assert_allclose(x_opt.detach().numpy(), x.value, rtol=1e-3, atol=1e-4)
     np.testing.assert_allclose(eq_dual.detach().numpy(), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+
+
+def test_gp_inequality_constraint_dual():
+    """Test dual variable for inequality constraint in geometric program."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True)
+    b = cp.Parameter(pos=True)
+
+    # GP constraint: a * (x*y + x*z + y*z) <= b
+    ineq_con = a * (x * y + x * z + y * z) <= b
+    prob = cp.Problem(cp.Minimize(1 / (x * y * z)), [ineq_con])
+    assert prob.is_dgp(dpp=True)
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[a, b],
+        variables=[x, y, z, ineq_con.dual_variables[0]],
+        gp=True,
+    )
+
+    a_t = torch.tensor(2.0, requires_grad=True)
+    b_t = torch.tensor(1.0, requires_grad=True)
+
+    x_opt, y_opt, z_opt, ineq_dual = layer(a_t, b_t)
+
+    # Verify with CVXPY
+    a.value = a_t.detach().numpy().item()
+    b.value = b_t.detach().numpy().item()
+    prob.solve(solver=cp.CLARABEL, gp=True)
+
+    np.testing.assert_allclose(x_opt.detach().numpy(), x.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(y_opt.detach().numpy(), y.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(z_opt.detach().numpy(), z.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(
+        ineq_dual.detach().numpy(), ineq_con.dual_value, rtol=1e-3, atol=1e-4
+    )
+
+
+def test_gp_multiple_constraint_duals():
+    """Test multiple dual variables in geometric program."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True)
+    b = cp.Parameter(pos=True)
+
+    # Two inequality constraints - both active at optimal
+    ineq_con1 = a * (x * y) <= b
+    ineq_con2 = x + y <= 2  # Linear constraint
+
+    prob = cp.Problem(cp.Minimize(1 / (x * y)), [ineq_con1, ineq_con2])
+    assert prob.is_dgp(dpp=True)
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[a, b],
+        variables=[x, y, ineq_con1.dual_variables[0], ineq_con2.dual_variables[0]],
+        gp=True,
+    )
+
+    a_t = torch.tensor(2.0, requires_grad=True)
+    b_t = torch.tensor(1.0, requires_grad=True)
+
+    x_opt, y_opt, dual1, dual2 = layer(a_t, b_t)
+
+    # Verify with CVXPY
+    a.value = a_t.detach().numpy().item()
+    b.value = b_t.detach().numpy().item()
+    prob.solve(solver=cp.CLARABEL, gp=True)
+
+    np.testing.assert_allclose(x_opt.detach().numpy(), x.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(y_opt.detach().numpy(), y.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(dual1.detach().numpy(), ineq_con1.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(dual2.detach().numpy(), ineq_con2.dual_value, rtol=1e-3, atol=1e-4)
+
+
+def test_gp_dual_gradcheck():
+    """Rigorous gradient check for GP dual variables."""
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True)
+    b = cp.Parameter(pos=True)
+
+    ineq_con = a * (x * y) <= b
+    prob = cp.Problem(cp.Minimize(1 / (x * y)), [ineq_con])
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[a, b],
+        variables=[x, y, ineq_con.dual_variables[0]],
+        gp=True,
+    )
+
+    def f(a_t, b_t):
+        x_opt, y_opt, dual = layer(a_t, b_t)
+        return dual.sum()
+
+    a_t = torch.tensor(2.0, requires_grad=True)
+    b_t = torch.tensor(1.0, requires_grad=True)
+
+    torch.autograd.gradcheck(f, (a_t, b_t), atol=1e-4, rtol=1e-3)

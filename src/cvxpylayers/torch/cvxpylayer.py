@@ -116,9 +116,13 @@ def _recover_results(
         for var in ctx.var_recover
     )
 
-    # Apply exp transformation to recover from log-space for GP
+    # Apply exp transformation to recover primal variables from log-space for GP
+    # (dual variables stay in original space - no transformation needed)
     if ctx.gp:
-        results = tuple(torch.exp(r) for r in results)
+        results = tuple(
+            torch.exp(r) if var.primal is not None else r
+            for r, var in zip(results, ctx.var_recover)
+        )
 
     # Squeeze batch dimension for unbatched inputs
     if not batch:

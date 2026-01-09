@@ -228,29 +228,24 @@ def test_lml():
     torch.autograd.gradcheck(lml, (x_th,), atol=1e-3)
 
 
-@pytest.mark.skip
 def test_sdp():
-    _ = set_seed(243)
-
+    """Test SDP with symmetric parameters."""
     n = 3
-    p = 3
-    C = cp.Parameter((n, n))
-    A = [cp.Parameter((n, n)) for _ in range(p)]
-    b = [cp.Parameter((1, 1)) for _ in range(p)]
-
-    C_th = torch.randn(n, n).requires_grad_()
-    A_th, b_th = [], []
-    for _ in range(p):
-        A_th.append(torch.randn(n, n).requires_grad_())
-        b_th.append(torch.randn(1, 1).requires_grad_())
-
     X = cp.Variable((n, n), symmetric=True)
-    constraints = [X >> 0]
-    constraints += [cp.trace(A[i] @ X) == b[i] for i in range(p)]
-    prob = cp.Problem(cp.Minimize(cp.trace(C @ X) + cp.sum_squares(X)), constraints)
-    layer = CvxpyLayer(prob, [C] + A + b, [X])
+    C = cp.Parameter((n, n), symmetric=True)
 
-    torch.autograd.gradcheck(layer, [C_th] + A_th + b_th)
+    psd_con = X >> 0
+    trace_con = cp.trace(X) == 1
+    prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
+
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+
+    # Use a well-conditioned symmetric matrix
+    C_t = torch.tensor(
+        [[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], requires_grad=True
+    )
+
+    torch.autograd.gradcheck(layer, (C_t,), atol=1e-4, rtol=1e-3)
 
 
 def test_not_enough_parameters():

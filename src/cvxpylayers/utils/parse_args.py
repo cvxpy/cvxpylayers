@@ -117,9 +117,13 @@ def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
             cols.append(j)
 
     # Handle torch tensors (maintaining gradient flow)
-    if hasattr(svec, "numpy"):
+    try:
         import torch
+        is_torch = isinstance(svec, torch.Tensor)
+    except ImportError:
+        is_torch = False
 
+    if is_torch:
         rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
         cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
 
@@ -146,15 +150,32 @@ def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
             result[cols_t, rows_t] = svec
         return result
     else:
-        # JAX/numpy path
-        rows_np = np.array(rows)
-        cols_np = np.array(cols)
-        svec_np = np.asarray(svec)
-        out_shape = batch + (n, n)
-        result = np.zeros(out_shape, dtype=svec_np.dtype)
-        result[..., rows_np, cols_np] = svec_np
-        result[..., cols_np, rows_np] = svec_np
-        return result
+        # JAX/numpy path - detect JAX arrays
+        try:
+            import jax
+            import jax.numpy as jnp
+            is_jax = isinstance(svec, jax.Array)
+        except ImportError:
+            is_jax = False
+
+        if is_jax:
+            rows_arr = jnp.array(rows)
+            cols_arr = jnp.array(cols)
+            out_shape = batch + (n, n)
+            result = jnp.zeros(out_shape, dtype=svec.dtype)
+            result = result.at[..., rows_arr, cols_arr].set(svec)
+            result = result.at[..., cols_arr, rows_arr].set(svec)
+            return result
+        else:
+            # Pure numpy path
+            rows_np = np.array(rows)
+            cols_np = np.array(cols)
+            svec_np = np.asarray(svec)
+            out_shape = batch + (n, n)
+            result = np.zeros(out_shape, dtype=svec_np.dtype)
+            result[..., rows_np, cols_np] = svec_np
+            result[..., cols_np, rows_np] = svec_np
+            return result
 
 
 def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
@@ -184,9 +205,13 @@ def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
     scale = np.array([1.0 if d else 1.0 / sqrt2 for d in is_diag])
 
     # Handle torch tensors (maintaining gradient flow)
-    if hasattr(svec, "numpy"):
+    try:
         import torch
+        is_torch = isinstance(svec, torch.Tensor)
+    except ImportError:
+        is_torch = False
 
+    if is_torch:
         rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
         cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
         scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
@@ -215,16 +240,35 @@ def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
             result[cols_t, rows_t] = scaled_svec
         return result
     else:
-        # JAX/numpy path
-        rows_np = np.array(rows)
-        cols_np = np.array(cols)
-        svec_np = np.asarray(svec)
-        scaled_svec = svec_np * scale
-        out_shape = batch + (n, n)
-        result = np.zeros(out_shape, dtype=svec_np.dtype)
-        result[..., rows_np, cols_np] = scaled_svec
-        result[..., cols_np, rows_np] = scaled_svec
-        return result
+        # JAX/numpy path - detect JAX arrays
+        try:
+            import jax
+            import jax.numpy as jnp
+            is_jax = isinstance(svec, jax.Array)
+        except ImportError:
+            is_jax = False
+
+        if is_jax:
+            rows_arr = jnp.array(rows)
+            cols_arr = jnp.array(cols)
+            scale_arr = jnp.array(scale)
+            scaled_svec = svec * scale_arr
+            out_shape = batch + (n, n)
+            result = jnp.zeros(out_shape, dtype=svec.dtype)
+            result = result.at[..., rows_arr, cols_arr].set(scaled_svec)
+            result = result.at[..., cols_arr, rows_arr].set(scaled_svec)
+            return result
+        else:
+            # Pure numpy path
+            rows_np = np.array(rows)
+            cols_np = np.array(cols)
+            svec_np = np.asarray(svec)
+            scaled_svec = svec_np * scale
+            out_shape = batch + (n, n)
+            result = np.zeros(out_shape, dtype=svec_np.dtype)
+            result[..., rows_np, cols_np] = scaled_svec
+            result[..., cols_np, rows_np] = scaled_svec
+            return result
 
 
 @dataclass
