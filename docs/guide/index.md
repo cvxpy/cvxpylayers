@@ -9,6 +9,7 @@ This guide covers the core concepts and features of CVXPYlayers.
 
 basic-usage
 batching
+dual-variables
 geometric-programs
 solvers
 ```

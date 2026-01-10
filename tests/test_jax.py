@@ -192,31 +192,22 @@ def test_lml():
     check_grads(lml, (x_th,), order=1, modes=["rev"])
 
 
-@pytest.mark.skip
 def test_sdp():
-    key = random.PRNGKey(0)
-
+    """Test SDP with symmetric parameters."""
     n = 3
-    p = 3
-    C = cp.Parameter((n, n))
-    A = [cp.Parameter((n, n)) for _ in range(p)]
-    b = [cp.Parameter((1, 1)) for _ in range(p)]
-
-    key, k1 = random.split(key, num=2)
-    C_jax = random.normal(k1, shape=(n, n))
-    A_jax, b_jax = [], []
-    for _ in range(p):
-        key, k1, k2 = random.split(key, num=3)
-        A_jax.append(random.normal(k1, shape=(n, n)))
-        b_jax.append(random.normal(k2, shape=(1, 1)))
-
     X = cp.Variable((n, n), symmetric=True)
-    constraints = [X >> 0]
-    constraints += [cp.trace(A[i] @ X) == b[i] for i in range(p)]
-    prob = cp.Problem(cp.Minimize(cp.trace(C @ X) + cp.sum_squares(X)), constraints)
-    layer = CvxpyLayer(prob, [C] + A + b, [X])
+    C = cp.Parameter((n, n), symmetric=True)
 
-    check_grads(layer, [C_jax] + A_jax + b_jax, order=1, modes=["rev"])
+    psd_con = X >> 0
+    trace_con = cp.trace(X) == 1
+    prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
+
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+
+    # Use a well-conditioned symmetric matrix
+    C_jax = jnp.array([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]])
+
+    check_grads(layer, (C_jax,), order=1, modes=["rev"], atol=1e-4, rtol=1e-3)
 
 
 def test_not_enough_parameters():
