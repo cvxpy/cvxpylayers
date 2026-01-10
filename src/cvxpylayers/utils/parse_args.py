@@ -1,9 +1,8 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
-import numpy as np
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 
@@ -11,8 +10,6 @@ import cvxpylayers.interfaces
 
 if TYPE_CHECKING:
     import torch
-
-T = TypeVar("T")
 
 
 class SolverData(Protocol):
@@ -53,492 +50,21 @@ class SolverContext(Protocol):
         ...
 
 
-# Default reshape function for numpy/jax arrays
-def _default_reshape(array, shape):
-    return array.reshape(shape, order="F")
-
-
-def reshape_fortran(array: T, shape: tuple) -> T:
-    """Reshape array using Fortran (column-major) order.
-
-    Works with torch, jax, mlx, and numpy arrays. JAX uses native order='F',
-    while torch and mlx use permutation-based approach.
-
-    Args:
-        array: Input tensor/array to reshape
-        shape: Target shape tuple
-
-    Returns:
-        Reshaped array in Fortran order
-    """
-    type_name = type(array).__module__.split(".")[0]
-
-    if type_name in ("jax", "jaxlib"):
-        import jax.numpy as jnp
-
-        return jnp.reshape(array, shape, order="F")  # type: ignore[return-value]
-
-    # Torch and MLX use permutation approach
-    if len(array.shape) == 0:  # type: ignore[union-attr]
-        if type_name == "torch":
-            return array.reshape(shape)  # type: ignore[return-value,union-attr]
-        elif type_name == "mlx":
-            import mlx.core as mx
-
-            return mx.reshape(array, shape)  # type: ignore[return-value]
-        else:
-            return np.reshape(array, shape, order="F")  # type: ignore[return-value]
-
-    if type_name == "torch":
-        x = array.permute(*reversed(range(len(array.shape))))  # type: ignore[union-attr]
-        return x.reshape(*reversed(shape)).permute(*reversed(range(len(shape))))  # type: ignore[return-value]
-
-    elif type_name == "mlx":
-        import mlx.core as mx
-
-        x = mx.transpose(array, axes=tuple(reversed(range(len(array.shape)))))  # type: ignore[arg-type]
-        reshaped = mx.reshape(x, tuple(reversed(shape)))
-        if len(shape) > 0:
-            reshaped = mx.transpose(reshaped, axes=tuple(reversed(range(len(shape)))))
-        return reshaped  # type: ignore[return-value]
-
-    else:
-        # Numpy fallback
-        return np.reshape(array, shape, order="F")  # type: ignore[return-value]
-
-
-def apply_gp_log_transform(
-    params: tuple[T, ...],
-    ctx: "LayersContext",
-) -> tuple[T, ...]:
-    """Apply log transformation to geometric program (GP) parameters.
-
-    Geometric programs are solved in log-space after conversion to DCP.
-    This function applies log transformation to the appropriate parameters.
-    Works with torch, jax, mlx, and numpy arrays.
-
-    Args:
-        params: Tuple of parameter tensors/arrays in original GP space
-        ctx: Layer context containing GP parameter mapping info
-
-    Returns:
-        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
-    """
-    if not ctx.gp or not ctx.gp_param_to_log_param:
-        return params
-
-    type_name = type(params[0]).__module__.split(".")[0]
-
-    # Get appropriate log function
-    if type_name == "torch":
-        import torch
-
-        log_fn = torch.log
-    elif type_name in ("jax", "jaxlib"):
-        import jax.numpy as jnp
-
-        log_fn = jnp.log
-    elif type_name == "mlx":
-        import mlx.core as mx
-
-        log_fn = mx.log
-    else:
-        log_fn = np.log
-
-    params_transformed = []
-    for i, param in enumerate(params):
-        cvxpy_param = ctx.parameters[i]
-        if cvxpy_param in ctx.gp_param_to_log_param:
-            params_transformed.append(log_fn(param))  # type: ignore[arg-type]
-        else:
-            params_transformed.append(param)
-    return tuple(params_transformed)
-
-
-def flatten_and_batch_params(
-    params: tuple[T, ...],
-    ctx: "LayersContext",
-    batch: tuple,
-) -> T:
-    """Flatten and batch parameters into a single stacked tensor.
-
-    Converts a tuple of parameter tensors (potentially with mixed batched/unbatched)
-    into a single concatenated tensor suitable for matrix multiplication with the
-    parametrized problem matrices. Works with torch, jax, mlx arrays.
-
-    Args:
-        params: Tuple of parameter tensors/arrays
-        ctx: Layer context with batch info and ordering
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Concatenated parameter tensor with shape (num_params, batch_size) or (num_params,)
-    """
-    type_name = type(params[0]).__module__.split(".")[0]
-
-    # Get framework-specific operations
-    if type_name == "torch":
-        import torch
-
-        def expand_broadcast(p: T, batch_shape: tuple) -> T:
-            return p.unsqueeze(0).expand(batch_shape + p.shape)  # type: ignore[union-attr,return-value]
-
-        def ones_fn(shape: tuple, dtype, device) -> T:
-            return torch.ones(shape, dtype=dtype, device=device)  # type: ignore[return-value]
-
-        def cat_fn(tensors: list) -> T:
-            return torch.cat(tensors, -1)  # type: ignore[return-value]
-
-        def transpose_fn(t: T) -> T:
-            return t.T  # type: ignore[union-attr,return-value]
-
-        def get_device(p: T):  # type: ignore[misc]
-            return p.device  # type: ignore[union-attr]
-
-    elif type_name in ("jax", "jaxlib"):
-        import jax.numpy as jnp
-
-        def expand_broadcast(p: T, batch_shape: tuple) -> T:
-            return jnp.broadcast_to(jnp.expand_dims(p, 0), batch_shape + p.shape)  # type: ignore[return-value,union-attr]
-
-        def ones_fn(shape: tuple, dtype, device) -> T:
-            return jnp.ones(shape, dtype=dtype)  # type: ignore[return-value]
-
-        def cat_fn(tensors: list) -> T:
-            return jnp.concatenate(tensors, -1)  # type: ignore[return-value]
-
-        def transpose_fn(t: T) -> T:
-            return t.T  # type: ignore[union-attr,return-value]
-
-        def get_device(p: T):  # type: ignore[misc]
-            return None
-
-    elif type_name == "mlx":
-        import mlx.core as mx
-
-        def expand_broadcast(p: T, batch_shape: tuple) -> T:
-            return mx.broadcast_to(mx.expand_dims(p, axis=0), batch_shape + p.shape)  # type: ignore[return-value,union-attr]
-
-        def ones_fn(shape: tuple, dtype, device) -> T:
-            return mx.ones(shape, dtype=dtype)  # type: ignore[return-value]
-
-        def cat_fn(tensors: list) -> T:
-            return mx.concatenate(tensors, axis=-1)  # type: ignore[return-value]
-
-        def transpose_fn(t: T) -> T:
-            return mx.transpose(t)  # type: ignore[return-value]
-
-        def get_device(p: T):  # type: ignore[misc]
-            return None
-
-    else:
-        # Numpy fallback (used by JAX's check_grads for numerical differentiation)
-        def expand_broadcast(p: T, batch_shape: tuple) -> T:
-            return np.broadcast_to(np.expand_dims(p, 0), batch_shape + p.shape)  # type: ignore[return-value,union-attr]
-
-        def ones_fn(shape: tuple, dtype, device) -> T:
-            return np.ones(shape, dtype=dtype)  # type: ignore[return-value]
-
-        def cat_fn(tensors: list) -> T:
-            return np.concatenate(tensors, -1)  # type: ignore[return-value]
-
-        def transpose_fn(t: T) -> T:
-            return t.T  # type: ignore[union-attr,return-value]
-
-        def get_device(p: T):  # type: ignore[misc]
-            return None
-
-    flattened_params: list[T | None] = [None] * (len(params) + 1)
-
-    for i, param in enumerate(params):
-        # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
-            # Unbatched parameter - expand to match batch size
-            param_expanded = expand_broadcast(param, batch)
-            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
-                param_expanded,
-                batch + (-1,),
-            )
-        else:
-            # Already batched or no batch dimension needed
-            flattened_params[ctx.user_order_to_col_order[i]] = reshape_fortran(
-                param,
-                batch + (-1,),
-            )
-
-    # Add constant 1.0 column for offset terms in canonical form
-    flattened_params[-1] = ones_fn(
-        batch + (1,),
-        params[0].dtype,  # type: ignore[union-attr]
-        get_device(params[0]),
-    )
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-
-    p_stack = cat_fn([p for p in flattened_params if p is not None])
-    # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
-    if batch:
-        p_stack = transpose_fn(p_stack)
-    return p_stack
-
-
-def recover_results(
-    primal: T,
-    dual: T,
-    ctx: "LayersContext",
-    batch: tuple,
-) -> tuple[T, ...]:
-    """Recover variable values from primal/dual solutions.
-
-    Extracts the requested variables from the solver's primal and dual
-    solutions, applies inverse GP transformation if needed, and removes
-    batch dimension for unbatched inputs. Works with torch, jax, mlx arrays.
-
-    Args:
-        primal: Primal solution from solver
-        dual: Dual solution from solver
-        ctx: Layer context with variable recovery info
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Tuple of recovered variable values
-    """
-    type_name = type(primal).__module__.split(".")[0]
-
-    # Get framework-specific operations
-    if type_name == "torch":
-        import torch
-
-        exp_fn = torch.exp
-
-        def squeeze_fn(t: T) -> T:
-            return t.squeeze(0)  # type: ignore[union-attr,return-value]
-
-        rf = reshape_fortran
-
-    elif type_name in ("jax", "jaxlib"):
-        import jax.numpy as jnp
-
-        exp_fn = jnp.exp
-
-        def squeeze_fn(t: T) -> T:
-            return jnp.squeeze(t, 0)  # type: ignore[return-value]
-
-        rf = None  # JAX uses default reshape with order="F"
-
-    elif type_name == "mlx":
-        import mlx.core as mx
-
-        exp_fn = mx.exp
-
-        def squeeze_fn(t: T) -> T:
-            return mx.squeeze(t, axis=0)  # type: ignore[return-value]
-
-        rf = reshape_fortran
-
-    else:
-        # Numpy fallback (used by JAX's check_grads for numerical differentiation)
-        exp_fn = np.exp
-
-        def squeeze_fn(t: T) -> T:
-            return np.squeeze(t, 0)  # type: ignore[return-value]
-
-        rf = None  # Numpy uses default reshape with order="F"
-
-    # Extract each variable using its slice and reshape
-    if rf is not None:
-        results = tuple(var.recover(primal, dual, rf) for var in ctx.var_recover)
-    else:
-        results = tuple(var.recover(primal, dual) for var in ctx.var_recover)
-
-    # Apply exp transformation to recover primal variables from log-space for GP
-    # (dual variables stay in original space - no transformation needed)
-    if ctx.gp:
-        results = tuple(
-            exp_fn(r) if var.primal is not None else r  # type: ignore[arg-type]
-            for r, var in zip(results, ctx.var_recover)
-        )
-
-    # Squeeze batch dimension for unbatched inputs
-    if not batch:
-        results = tuple(squeeze_fn(r) for r in results)  # type: ignore[arg-type]
-
-    return results  # type: ignore[return-value]
-
-
 @dataclass
 class VariableRecovery:
+    """Information for recovering a variable from primal/dual solutions."""
+
     primal: slice | None
     dual: slice | None
     shape: tuple[int, ...]
     is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
     is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
 
-    def recover(self, primal_sol: T, dual_sol: T, reshape_fn=_default_reshape) -> T:
-        """Extract and reshape variable from primal or dual solution.
-
-        Args:
-            primal_sol: Primal solution array
-            dual_sol: Dual solution array
-            reshape_fn: Function to reshape array with Fortran order semantics.
-                        Defaults to numpy-style reshape with order="F".
-        """
-        batch = tuple(primal_sol.shape[:-1])  # type: ignore[attr-defined]
-        if self.primal is not None:
-            data = primal_sol[..., self.primal]  # type: ignore[index]
-            if self.is_symmetric:
-                # Unpack symmetric primal variable from svec format
-                return _unpack_primal_svec(data, self.shape[0], batch)
-            return reshape_fn(data, batch + self.shape)  # type: ignore[index]
-        if self.dual is not None:
-            data = dual_sol[..., self.dual]  # type: ignore[index]
-            if self.is_psd_dual:
-                # Unpack scaled vectorized form (svec) to full symmetric matrix
-                return _unpack_svec(data, self.shape[0], batch)
-            return reshape_fn(data, batch + self.shape)  # type: ignore[index]
-        raise RuntimeError(
-            "Invalid VariableRecovery: both primal and dual slices are None. "
-            "At least one must be set to recover variable values."
-        )
-
-
-def _svec_to_symmetric(
-    svec: T,
-    n: int,
-    batch: tuple,
-    rows: np.ndarray,
-    cols: np.ndarray,
-    scale: np.ndarray | None = None,
-) -> T:
-    """Convert vectorized form to full symmetric matrix.
-
-    Args:
-        svec: Vectorized form, shape (*batch, n*(n+1)/2)
-        n: Matrix dimension
-        batch: Batch dimensions
-        rows: Row indices for unpacking
-        cols: Column indices for unpacking
-        scale: Optional scaling factors for each element (for svec format with sqrt(2) scaling)
-
-    Returns:
-        Full symmetric matrix, shape (*batch, n, n)
-    """
-    # Detect framework and dispatch
-    type_name = type(svec).__module__.split(".")[0]
-
-    if type_name == "torch":
-        import torch
-
-        rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)  # type: ignore[union-attr]
-        cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)  # type: ignore[union-attr]
-        if scale is not None:
-            scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
-            data = svec * scale_t  # type: ignore[operator]
-        else:
-            data = svec
-
-        out_shape = batch + (n, n)
-        if batch:
-            batch_size = int(np.prod(batch))
-            data_flat = data.reshape(batch_size, -1)  # type: ignore[union-attr]
-            result = torch.zeros(batch_size, n, n, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
-            result[:, rows_t, cols_t] = data_flat
-            result[:, cols_t, rows_t] = data_flat
-            return result.reshape(out_shape)  # type: ignore[return-value]
-        else:
-            result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)  # type: ignore[union-attr]
-            result[rows_t, cols_t] = data  # type: ignore[index]
-            result[cols_t, rows_t] = data  # type: ignore[index]
-            return result  # type: ignore[return-value]
-
-    elif type_name == "jax" or type_name == "jaxlib":
-        import jax.numpy as jnp
-
-        rows_arr = jnp.array(rows)
-        cols_arr = jnp.array(cols)
-        data = svec * jnp.array(scale) if scale is not None else svec  # type: ignore[operator]
-        out_shape = batch + (n, n)
-        result = jnp.zeros(out_shape, dtype=svec.dtype)  # type: ignore[union-attr]
-        result = result.at[..., rows_arr, cols_arr].set(data)
-        result = result.at[..., cols_arr, rows_arr].set(data)
-        return result  # type: ignore[return-value]
-
-    elif type_name == "mlx":
-        import mlx.core as mx
-
-        # MLX doesn't support advanced indexing like torch/jax, use scatter approach
-        if scale is not None:
-            scale_mx = mx.array(scale, dtype=svec.dtype)  # type: ignore[union-attr]
-            data = svec * scale_mx  # type: ignore[operator]
-        else:
-            data = svec
-
-        out_shape = batch + (n, n)
-        if batch:
-            batch_size = int(np.prod(batch))
-            data_flat = mx.reshape(data, (batch_size, -1))  # type: ignore[arg-type]
-            # Build result by iterating (MLX lacks advanced indexing)
-            results = []
-            for b in range(batch_size):
-                data_b = data_flat[b]
-                # Use numpy for indexing, then convert
-                result_np = np.zeros((n, n), dtype=np.float64)
-                data_np = np.array(data_b)
-                result_np[rows, cols] = data_np
-                result_np[cols, rows] = data_np
-                results.append(mx.array(result_np, dtype=svec.dtype))  # type: ignore[union-attr]
-            result = mx.stack(results, axis=0)
-            return mx.reshape(result, out_shape)  # type: ignore[return-value]
-        else:
-            # Unbatched: simple approach via numpy
-            data_np = np.array(data)
-            result_np = np.zeros((n, n), dtype=np.float64)
-            result_np[rows, cols] = data_np
-            result_np[cols, rows] = data_np
-            return mx.array(result_np, dtype=svec.dtype)  # type: ignore[return-value,union-attr]
-
-    else:
-        # Numpy path
-        svec_np = np.asarray(svec)
-        data = svec_np * scale if scale is not None else svec_np
-        out_shape = batch + (n, n)
-        result = np.zeros(out_shape, dtype=svec_np.dtype)
-        result[..., rows, cols] = data
-        result[..., cols, rows] = data
-        return result  # type: ignore[return-value]
-
-
-def _unpack_primal_svec(svec: T, n: int, batch: tuple) -> T:
-    """Unpack symmetric primal variable from vectorized form.
-
-    CVXPY stores symmetric variables in upper triangular row-major order:
-    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
-    """
-    # Vectorized: upper triangular row-major indices
-    rows, cols = np.triu_indices(n)
-    return _svec_to_symmetric(svec, n, batch, rows, cols)
-
-
-def _unpack_svec(svec: T, n: int, batch: tuple) -> T:
-    """Unpack scaled vectorized (svec) form to full symmetric matrix.
-
-    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
-    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
-    ordering: (0,0), (1,0), (1,1), (2,0), ...
-    """
-    # Vectorized: lower triangular column-major indices
-    # np.tril_indices returns row-major order, need to reorder to column-major
-    rows_rm, cols_rm = np.tril_indices(n)
-    # Sort by column first, then by row for column-major order
-    sort_idx = np.lexsort((rows_rm, cols_rm))
-    rows = rows_rm[sort_idx]
-    cols = cols_rm[sort_idx]
-    # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
-    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
-    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
-
 
 @dataclass
 class LayersContext:
+    """Context holding canonicalized problem data and solver information."""
+
     parameters: list[cp.Parameter]
     reduced_P: scipy.sparse.csr_array
     q: scipy.sparse.csr_array | None
@@ -816,6 +342,25 @@ def parse_args(
     canon_backend: str | None = None,
     solver_args: dict[str, Any] | None = None,
 ) -> LayersContext:
+    """Parse and canonicalize a CVXPY problem for use in differentiable layers.
+
+    This function validates the problem, extracts the parametrized cone program
+    representation, and creates a context object containing all information needed
+    for forward/backward passes.
+
+    Args:
+        problem: CVXPY problem to canonicalize
+        variables: List of variables to return from forward pass
+        parameters: List of parameters that will be provided at runtime
+        solver: Solver backend to use (DIFFCP, MOREAU, CUCLARABEL, MPAX)
+        gp: Whether this is a geometric program
+        verbose: Whether to print solver output
+        canon_backend: Backend for canonicalization
+        solver_args: Default solver arguments
+
+    Returns:
+        LayersContext containing canonicalized problem data
+    """
     # Validate problem is DPP (disciplined parametrized programming)
     _validate_problem(problem, variables, parameters, gp)
 

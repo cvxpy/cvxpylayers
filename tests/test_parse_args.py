@@ -1,73 +1,10 @@
 """Unit tests for parse_args.py module."""
 
 import cvxpy as cp
-import numpy as np
 import pytest
 import torch
 
 from cvxpylayers.utils.parse_args import LayersContext, VariableRecovery, parse_args
-
-
-class TestVariableRecovery:
-    """Test VariableRecovery.recover() method."""
-
-    def test_recover_primal_unbatched(self):
-        """Test primal recovery without batch dimension."""
-        var_recovery = VariableRecovery(primal=slice(0, 3), dual=None, shape=(3,))
-        primal_sol = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        dual_sol = np.array([0.0, 0.0])
-
-        result = var_recovery.recover(primal_sol, dual_sol)
-        np.testing.assert_array_equal(result, np.array([1.0, 2.0, 3.0]))
-
-    def test_recover_primal_batched(self):
-        """Test primal recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=slice(1, 4), dual=None, shape=(3,))
-        primal_sol = np.array(
-            [
-                [0.0, 1.0, 2.0, 3.0, 4.0],
-                [5.0, 6.0, 7.0, 8.0, 9.0],
-            ],
-        )
-        dual_sol = np.array([[0.0], [0.0]])
-
-        result = var_recovery.recover(primal_sol, dual_sol)
-        expected = np.array([[1.0, 2.0, 3.0], [6.0, 7.0, 8.0]])
-        np.testing.assert_array_equal(result, expected)
-
-    def test_recover_dual_unbatched(self):
-        """Test dual recovery without batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(0, 2), shape=(2,))
-        primal_sol = np.array([1.0, 2.0, 3.0])
-        dual_sol = np.array([0.5, 1.5, 2.5])
-
-        result = var_recovery.recover(primal_sol, dual_sol)
-        np.testing.assert_array_equal(result, np.array([0.5, 1.5]))
-
-    def test_recover_dual_batched(self):
-        """Test dual recovery with batch dimension."""
-        var_recovery = VariableRecovery(primal=None, dual=slice(1, 3), shape=(2,))
-        primal_sol = np.array([[1.0], [2.0]])
-        dual_sol = np.array(
-            [
-                [0.0, 0.5, 1.5, 2.5],
-                [3.0, 3.5, 4.5, 5.5],
-            ],
-        )
-
-        result = var_recovery.recover(primal_sol, dual_sol)
-        # shape=(2,) with slice(1, 3) extracts 2 elements per batch
-        expected = np.array([[0.5, 1.5], [3.5, 4.5]])
-        np.testing.assert_array_equal(result, expected)
-
-    def test_recover_neither_raises_error(self):
-        """Test that RuntimeError is raised when both primal and dual are None."""
-        var_recovery = VariableRecovery(primal=None, dual=None, shape=(1,))
-        primal_sol = np.array([1.0, 2.0])
-        dual_sol = np.array([0.5, 1.5])
-
-        with pytest.raises(RuntimeError):
-            var_recovery.recover(primal_sol, dual_sol)
 
 
 class TestLayersContextValidateParams:

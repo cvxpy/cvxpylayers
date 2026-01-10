@@ -1,15 +1,148 @@
 from typing import Any, cast
 
 import cvxpy as cp
+import numpy as np
 import scipy.sparse
 import torch
 
 import cvxpylayers.utils.parse_args as pa
-from cvxpylayers.utils.parse_args import (
-    apply_gp_log_transform,
-    flatten_and_batch_params,
-    recover_results,
-)
+
+
+def _reshape_fortran(array: torch.Tensor, shape: tuple) -> torch.Tensor:
+    """Reshape array using Fortran (column-major) order."""
+    if len(array.shape) == 0:
+        return array.reshape(shape)
+    x = array.permute(*reversed(range(len(array.shape))))
+    return x.reshape(*reversed(shape)).permute(*reversed(range(len(shape))))
+
+
+def _apply_gp_log_transform(
+    params: tuple[torch.Tensor, ...],
+    ctx: pa.LayersContext,
+) -> tuple[torch.Tensor, ...]:
+    """Apply log transformation to geometric program (GP) parameters."""
+    if not ctx.gp or not ctx.gp_param_to_log_param:
+        return params
+    return tuple(
+        torch.log(p) if ctx.parameters[i] in ctx.gp_param_to_log_param else p
+        for i, p in enumerate(params)
+    )
+
+
+def _flatten_and_batch_params(
+    params: tuple[torch.Tensor, ...],
+    ctx: pa.LayersContext,
+    batch: tuple,
+) -> torch.Tensor:
+    """Flatten and batch parameters into a single stacked tensor."""
+    flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
+
+    for i, param in enumerate(params):
+        if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
+            # Unbatched parameter - expand to match batch size
+            param_expanded = param.unsqueeze(0).expand(batch + param.shape)
+            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
+                param_expanded, batch + (-1,)
+            )
+        else:
+            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
+                param, batch + (-1,)
+            )
+
+    # Add constant 1.0 column for offset terms
+    flattened_params[-1] = torch.ones(batch + (1,), dtype=params[0].dtype, device=params[0].device)
+
+    p_stack = torch.cat([p for p in flattened_params if p is not None], -1)
+    if batch:
+        p_stack = p_stack.T
+    return p_stack
+
+
+def _svec_to_symmetric(
+    svec: torch.Tensor,
+    n: int,
+    batch: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    scale: np.ndarray | None = None,
+) -> torch.Tensor:
+    """Convert vectorized form to full symmetric matrix."""
+    rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
+    cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
+    if scale is not None:
+        scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
+        data = svec * scale_t
+    else:
+        data = svec
+
+    out_shape = batch + (n, n)
+    if batch:
+        batch_size = int(np.prod(batch))
+        data_flat = data.reshape(batch_size, -1)
+        result = torch.zeros(batch_size, n, n, dtype=svec.dtype, device=svec.device)
+        result[:, rows_t, cols_t] = data_flat
+        result[:, cols_t, rows_t] = data_flat
+        return result.reshape(out_shape)
+    else:
+        result = torch.zeros(n, n, dtype=svec.dtype, device=svec.device)
+        result[rows_t, cols_t] = data
+        result[cols_t, rows_t] = data
+        return result
+
+
+def _unpack_primal_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
+    """Unpack symmetric primal variable from vectorized form (upper tri row-major)."""
+    rows, cols = np.triu_indices(n)
+    return _svec_to_symmetric(svec, n, batch, rows, cols)
+
+
+def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
+    """Unpack scaled vectorized (svec) form to full symmetric matrix."""
+    rows_rm, cols_rm = np.tril_indices(n)
+    sort_idx = np.lexsort((rows_rm, cols_rm))
+    rows = rows_rm[sort_idx]
+    cols = cols_rm[sort_idx]
+    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
+    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
+
+
+def _recover_results(
+    primal: torch.Tensor,
+    dual: torch.Tensor,
+    ctx: pa.LayersContext,
+    batch: tuple,
+) -> tuple[torch.Tensor, ...]:
+    """Recover variable values from primal/dual solutions."""
+    results = []
+    for var in ctx.var_recover:
+        batch_shape = tuple(primal.shape[:-1])
+        if var.primal is not None:
+            data = primal[..., var.primal]
+            if var.is_symmetric:
+                results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        elif var.dual is not None:
+            data = dual[..., var.dual]
+            if var.is_psd_dual:
+                results.append(_unpack_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        else:
+            raise RuntimeError("Invalid VariableRecovery")
+
+    # Apply exp transformation for GP primal variables
+    if ctx.gp:
+        results = [
+            torch.exp(r) if var.primal is not None else r
+            for r, var in zip(results, ctx.var_recover)
+        ]
+
+    # Squeeze batch dimension for unbatched inputs
+    if not batch:
+        results = [r.squeeze(0) for r in results]
+
+    return tuple(results)
 
 
 class CvxpyLayer(torch.nn.Module):
@@ -135,10 +268,10 @@ class CvxpyLayer(torch.nn.Module):
         batch = self.ctx.validate_params(list(params))
 
         # Apply log transformation to GP parameters
-        params = apply_gp_log_transform(params, self.ctx)
+        params = _apply_gp_log_transform(params, self.ctx)
 
         # Flatten and batch parameters
-        p_stack = flatten_and_batch_params(params, self.ctx, batch)
+        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
 
         # Get dtype from input parameters to ensure type matching
         param_dtype = p_stack.dtype
@@ -163,7 +296,7 @@ class CvxpyLayer(torch.nn.Module):
         )
 
         # Recover results and apply GP inverse transform if needed
-        return recover_results(primal, dual, self.ctx, batch)
+        return _recover_results(primal, dual, self.ctx, batch)
 
 
 def scipy_csr_to_torch_csr(
