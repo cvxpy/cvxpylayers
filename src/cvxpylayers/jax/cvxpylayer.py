@@ -4,9 +4,23 @@ import cvxpy as cp
 import jax
 import jax.experimental.sparse
 import jax.numpy as jnp
+import numpy as np
 import scipy.sparse
 
 import cvxpylayers.utils.parse_args as pa
+
+
+def _reshape_fortran(array: jnp.ndarray, shape: tuple) -> jnp.ndarray:
+    """Reshape array using Fortran (column-major) order.
+
+    Args:
+        array: Input array to reshape
+        shape: Target shape tuple
+
+    Returns:
+        Reshaped array in Fortran order
+    """
+    return jnp.reshape(array, shape, order="F")
 
 
 def _apply_gp_log_transform(
@@ -62,32 +76,102 @@ def _flatten_and_batch_params(
 
     for i, param in enumerate(params):
         # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:
+        if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
             # Unbatched parameter - expand to match batch size
-            param_expanded = jnp.expand_dims(param, 0)
-            param_expanded = jnp.broadcast_to(param_expanded, batch + param.shape)
-            flattened_params[ctx.user_order_to_col_order[i]] = jnp.reshape(
+            param_expanded = jnp.broadcast_to(jnp.expand_dims(param, 0), batch + param.shape)
+            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param_expanded,
                 batch + (-1,),
-                order="F",
             )
         else:
             # Already batched or no batch dimension needed
-            flattened_params[ctx.user_order_to_col_order[i]] = jnp.reshape(
+            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param,
                 batch + (-1,),
-                order="F",
             )
 
     # Add constant 1.0 column for offset terms in canonical form
     flattened_params[-1] = jnp.ones(batch + (1,), dtype=params[0].dtype)
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
 
+    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
     p_stack = jnp.concatenate(cast(list[jnp.ndarray], flattened_params), -1)
     # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
     if batch:
         p_stack = p_stack.T
     return p_stack
+
+
+def _svec_to_symmetric(
+    svec: jnp.ndarray,
+    n: int,
+    batch: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    scale: np.ndarray | None = None,
+) -> jnp.ndarray:
+    """Convert vectorized form to full symmetric matrix.
+
+    Args:
+        svec: Vectorized form, shape (*batch, n*(n+1)/2)
+        n: Matrix dimension
+        batch: Batch dimensions
+        rows: Row indices for unpacking
+        cols: Column indices for unpacking
+        scale: Optional scaling factors (for svec format with sqrt(2) scaling)
+
+    Returns:
+        Full symmetric matrix, shape (*batch, n, n)
+    """
+    rows_arr = jnp.array(rows)
+    cols_arr = jnp.array(cols)
+    data = svec * jnp.array(scale) if scale is not None else svec
+    out_shape = batch + (n, n)
+    result = jnp.zeros(out_shape, dtype=svec.dtype)
+    result = result.at[..., rows_arr, cols_arr].set(data)
+    result = result.at[..., cols_arr, rows_arr].set(data)
+    return result
+
+
+def _unpack_primal_svec(svec: jnp.ndarray, n: int, batch: tuple) -> jnp.ndarray:
+    """Unpack symmetric primal variable from vectorized form.
+
+    CVXPY stores symmetric variables in upper triangular row-major order:
+    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
+
+    Args:
+        svec: Vectorized symmetric variable
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix
+    """
+    rows, cols = np.triu_indices(n)
+    return _svec_to_symmetric(svec, n, batch, rows, cols)
+
+
+def _unpack_svec(svec: jnp.ndarray, n: int, batch: tuple) -> jnp.ndarray:
+    """Unpack scaled vectorized (svec) form to full symmetric matrix.
+
+    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
+    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
+    ordering: (0,0), (1,0), (1,1), (2,0), ...
+
+    Args:
+        svec: Scaled vectorized form
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix with scaling removed
+    """
+    rows_rm, cols_rm = np.tril_indices(n)
+    sort_idx = np.lexsort((rows_rm, cols_rm))
+    rows = rows_rm[sort_idx]
+    cols = cols_rm[sort_idx]
+    # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
+    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
+    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
 
 
 def _recover_results(
@@ -99,8 +183,8 @@ def _recover_results(
     """Recover variable values from primal/dual solutions.
 
     Extracts the requested variables from the solver's primal and dual
-    solutions, applies inverse GP transformation if needed, and removes
-    batch dimension for unbatched inputs.
+    solutions, unpacks symmetric matrices if needed, applies inverse GP
+    transformation, and removes batch dimension for unbatched inputs.
 
     Args:
         primal: Primal solution from solver
@@ -111,18 +195,41 @@ def _recover_results(
     Returns:
         Tuple of recovered variable values
     """
-    # Extract each variable using its slice and reshape (uses default reshape with order="F")
-    results = tuple(var.recover(primal, dual) for var in ctx.var_recover)
+    results = []
+    for var in ctx.var_recover:
+        batch_shape = tuple(primal.shape[:-1])
+        if var.primal is not None:
+            data = primal[..., var.primal]
+            if var.is_symmetric:
+                # Unpack symmetric primal variable from vectorized form
+                results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        elif var.dual is not None:
+            data = dual[..., var.dual]
+            if var.is_psd_dual:
+                # Unpack PSD constraint dual from scaled vectorized form
+                results.append(_unpack_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        else:
+            raise RuntimeError(
+                "Invalid VariableRecovery: both primal and dual slices are None. "
+                "At least one must be set to recover variable values."
+            )
 
-    # Apply exp transformation to recover from log-space for GP
+    # Apply exp transformation to recover primal variables from log-space for GP
+    # (dual variables stay in original space - no transformation needed)
     if ctx.gp:
-        results = tuple(jnp.exp(r) for r in results)
+        results = [
+            jnp.exp(r) if var.primal is not None else r for r, var in zip(results, ctx.var_recover)
+        ]
 
     # Squeeze batch dimension for unbatched inputs
     if not batch:
-        results = tuple(jnp.squeeze(r, 0) for r in results)
+        results = [jnp.squeeze(r, 0) for r in results]
 
-    return results
+    return tuple(results)
 
 
 class CvxpyLayer:
@@ -260,7 +367,7 @@ class CvxpyLayer:
 
         # Store data and adjoint in closure for backward pass
         # This avoids JAX trying to trace through DIFFCP's Python-based solver
-        data_container = {}
+        data_container: dict[str, Any] = {}
 
         @jax.custom_vjp
         def solve_problem(P_eval, q_eval, A_eval):
@@ -313,4 +420,3 @@ def scipy_csr_to_jax_bcsr(
     )
 
     return jax_bcsr
-

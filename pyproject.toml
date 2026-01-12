@@ -159,6 +159,11 @@ ignore = [
     "E721",   # Do not compare types, use isinstance() (same as cvxpy)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# E402: imports after pytest.importorskip is a common pattern for optional deps
+# PT006: tuple style for parametrize is a matter of preference
+"tests/*.py" = ["E402", "PT006"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["cvxpylayers"]
 

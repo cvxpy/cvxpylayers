@@ -157,6 +157,30 @@ dlayer = jax.grad(lambda A, b: sum(layer(A, b)[0]), argnums=[0, 1])
 gradA, gradb = dlayer(A_jax, b_jax)
 ```
 
+### Dual variables
+CVXPYlayers can return constraint dual variables (Lagrange multipliers) alongside the primal solution:
+
+```python
+import cvxpy as cp
+import torch
+from cvxpylayers.torch import CvxpyLayer
+
+x = cp.Variable(2)
+c = cp.Parameter(2)
+b = cp.Parameter()
+
+eq_con = cp.sum(x) == b
+prob = cp.Problem(cp.Minimize(c @ x), [eq_con, x >= 0])
+
+# Request both primal and dual variables
+layer = CvxpyLayer(prob, parameters=[c, b], variables=[x, eq_con.dual_variables[0]])
+
+c_tch = torch.tensor([1.0, 2.0], requires_grad=True)
+b_tch = torch.tensor(1.0, requires_grad=True)
+
+x_star, eq_dual = layer(c_tch, b_tch)
+```
+
 ### Log-log convex programs
 CVXPYlayers can also differentiate through log-log convex programs (LLCPs), which generalize geometric programs. Use the keyword argument `gp=True` when constructing a `CvxpyLayer` for an LLCP. Below is a simple usage example
 

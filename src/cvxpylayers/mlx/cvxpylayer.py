@@ -1,11 +1,46 @@
 from typing import Any, cast
 
 import cvxpy as cp
+import mlx.core as mx
 import numpy as np
 import scipy.sparse
-import mlx.core as mx
 
 import cvxpylayers.utils.parse_args as pa
+
+
+def _scipy_csr_to_dense(
+    scipy_csr: scipy.sparse.csr_array | scipy.sparse.csr_matrix | None,
+) -> np.ndarray | None:
+    """Convert scipy sparse CSR matrix to dense numpy array.
+
+    MLX does not currently support sparse linear algebra, so we convert
+    to dense matrices for computation.
+    """
+    if scipy_csr is None:
+        return None
+    scipy_csr = cast(scipy.sparse.csr_matrix, scipy_csr)
+    return np.asarray(scipy_csr.toarray())
+
+
+def _reshape_fortran(array: mx.array, shape: tuple) -> mx.array:
+    """Reshape array using Fortran (column-major) order.
+
+    MLX doesn't support order='F' directly, so we use transpose.
+
+    Args:
+        array: Input array to reshape
+        shape: Target shape tuple
+
+    Returns:
+        Reshaped array in Fortran order
+    """
+    if len(array.shape) == 0:
+        return mx.reshape(array, shape)
+    x = mx.transpose(array, axes=tuple(reversed(range(len(array.shape)))))
+    reshaped = mx.reshape(x, tuple(reversed(shape)))
+    if len(shape) > 0:
+        reshaped = mx.transpose(reshaped, axes=tuple(reversed(range(len(shape)))))
+    return reshaped
 
 
 def _apply_gp_log_transform(
@@ -41,7 +76,7 @@ def _apply_gp_log_transform(
 def _flatten_and_batch_params(
     params: tuple[mx.array, ...],
     ctx: pa.LayersContext,
-    batch: tuple[int, ...],
+    batch: tuple,
 ) -> mx.array:
     """Flatten and batch parameters into a single stacked array.
 
@@ -61,10 +96,9 @@ def _flatten_and_batch_params(
 
     for i, param in enumerate(params):
         # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:
+        if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
             # Unbatched parameter - expand to match batch size
-            param_expanded = mx.expand_dims(param, axis=0)
-            param_expanded = mx.broadcast_to(param_expanded, batch + param.shape)
+            param_expanded = mx.broadcast_to(mx.expand_dims(param, axis=0), batch + param.shape)
             flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param_expanded,
                 batch + (-1,),
@@ -78,8 +112,8 @@ def _flatten_and_batch_params(
 
     # Add constant 1.0 column for offset terms in canonical form
     flattened_params[-1] = mx.ones(batch + (1,), dtype=params[0].dtype)
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
 
+    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
     p_stack = mx.concatenate(cast(list[mx.array], flattened_params), axis=-1)
     # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
     if batch:
@@ -87,17 +121,114 @@ def _flatten_and_batch_params(
     return p_stack
 
 
+def _svec_to_symmetric(
+    svec: mx.array,
+    n: int,
+    batch: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    scale: np.ndarray | None = None,
+) -> mx.array:
+    """Convert vectorized form to full symmetric matrix.
+
+    MLX doesn't support advanced indexing like torch/jax, so we use numpy
+    for the indexing operations and convert back to MLX.
+
+    Args:
+        svec: Vectorized form, shape (*batch, n*(n+1)/2)
+        n: Matrix dimension
+        batch: Batch dimensions
+        rows: Row indices for unpacking
+        cols: Column indices for unpacking
+        scale: Optional scaling factors (for svec format with sqrt(2) scaling)
+
+    Returns:
+        Full symmetric matrix, shape (*batch, n, n)
+    """
+    if scale is not None:
+        scale_mx = mx.array(scale, dtype=svec.dtype)
+        data = svec * scale_mx
+    else:
+        data = svec
+
+    out_shape = batch + (n, n)
+    if batch:
+        batch_size = int(np.prod(batch))
+        data_flat = mx.reshape(data, (batch_size, -1))
+        # Build result by iterating (MLX lacks advanced indexing)
+        results = []
+        for b in range(batch_size):
+            data_b = data_flat[b]
+            # Use numpy for indexing, then convert
+            result_np = np.zeros((n, n), dtype=np.float64)
+            data_np = np.array(data_b)
+            result_np[rows, cols] = data_np
+            result_np[cols, rows] = data_np
+            results.append(mx.array(result_np, dtype=svec.dtype))
+        result = mx.stack(results, axis=0)
+        return mx.reshape(result, out_shape)
+    else:
+        # Unbatched: simple approach via numpy
+        data_np = np.array(data)
+        result_np = np.zeros((n, n), dtype=np.float64)
+        result_np[rows, cols] = data_np
+        result_np[cols, rows] = data_np
+        return mx.array(result_np, dtype=svec.dtype)
+
+
+def _unpack_primal_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
+    """Unpack symmetric primal variable from vectorized form.
+
+    CVXPY stores symmetric variables in upper triangular row-major order:
+    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
+
+    Args:
+        svec: Vectorized symmetric variable
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix
+    """
+    rows, cols = np.triu_indices(n)
+    return _svec_to_symmetric(svec, n, batch, rows, cols)
+
+
+def _unpack_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
+    """Unpack scaled vectorized (svec) form to full symmetric matrix.
+
+    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
+    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
+    ordering: (0,0), (1,0), (1,1), (2,0), ...
+
+    Args:
+        svec: Scaled vectorized form
+        n: Matrix dimension
+        batch: Batch dimensions
+
+    Returns:
+        Full symmetric matrix with scaling removed
+    """
+    rows_rm, cols_rm = np.tril_indices(n)
+    sort_idx = np.lexsort((rows_rm, cols_rm))
+    rows = rows_rm[sort_idx]
+    cols = cols_rm[sort_idx]
+    # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
+    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
+    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
+
+
 def _recover_results(
     primal: mx.array,
     dual: mx.array,
     ctx: pa.LayersContext,
-    batch: tuple[int, ...],
+    batch: tuple,
 ) -> tuple[mx.array, ...]:
     """Recover variable values from primal/dual solutions.
 
     Extracts the requested variables from the solver's primal and dual
-    solutions, applies inverse GP transformation if needed, and removes
-    batch dimension for unbatched inputs.
+    solutions, unpacks symmetric matrices if needed, applies inverse GP
+    transformation, and removes batch dimension for unbatched inputs.
 
     Args:
         primal: Primal solution from solver
@@ -108,49 +239,41 @@ def _recover_results(
     Returns:
         Tuple of recovered variable values
     """
-    # Extract each variable using its slice and reshape
-    results = tuple(
-        var.recover(primal, dual, _reshape_fortran)
-        for var in ctx.var_recover
-    )
+    results = []
+    for var in ctx.var_recover:
+        batch_shape = tuple(primal.shape[:-1])
+        if var.primal is not None:
+            data = primal[..., var.primal]
+            if var.is_symmetric:
+                # Unpack symmetric primal variable from vectorized form
+                results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        elif var.dual is not None:
+            data = dual[..., var.dual]
+            if var.is_psd_dual:
+                # Unpack PSD constraint dual from scaled vectorized form
+                results.append(_unpack_svec(data, var.shape[0], batch_shape))
+            else:
+                results.append(_reshape_fortran(data, batch_shape + var.shape))
+        else:
+            raise RuntimeError(
+                "Invalid VariableRecovery: both primal and dual slices are None. "
+                "At least one must be set to recover variable values."
+            )
 
-    # Apply exp transformation to recover from log-space for GP
+    # Apply exp transformation to recover primal variables from log-space for GP
+    # (dual variables stay in original space - no transformation needed)
     if ctx.gp:
-        results = tuple(mx.exp(r) for r in results)
+        results = [
+            mx.exp(r) if var.primal is not None else r for r, var in zip(results, ctx.var_recover)
+        ]
 
     # Squeeze batch dimension for unbatched inputs
     if not batch:
-        results = tuple(mx.squeeze(r, axis=0) for r in results)
+        results = [mx.squeeze(r, axis=0) for r in results]
 
-    return results
-
-
-def _reshape_fortran(x: mx.array, shape: tuple[int, ...]) -> mx.array:
-    """Reshape array using Fortran (column-major) order.
-
-    MLX doesn't support order='F' in reshape, so we emulate it by
-    transposing before and after the reshape.
-    """
-    if len(x.shape) > 0:
-        x = mx.transpose(x, axes=tuple(reversed(range(len(x.shape)))))
-    reshaped = mx.reshape(x, tuple(reversed(shape)))
-    if len(shape) > 0:
-        reshaped = mx.transpose(reshaped, axes=tuple(reversed(range(len(shape)))))
-    return reshaped
-
-
-def _scipy_csr_to_dense(
-    scipy_csr: scipy.sparse.csr_array | scipy.sparse.csr_matrix | None,
-) -> np.ndarray | None:
-    """Convert scipy sparse CSR matrix to dense numpy array.
-
-    MLX does not currently support sparse linear algebra, so we convert
-    to dense matrices for computation.
-    """
-    if scipy_csr is None:
-        return None
-    scipy_csr = cast(scipy.sparse.csr_matrix, scipy_csr)
-    return np.asarray(scipy_csr.toarray())
+    return tuple(results)
 
 
 class CvxpyLayer:
@@ -289,7 +412,9 @@ class CvxpyLayer:
         param_dtype = params[0].dtype
 
         # Evaluate parametrized matrices (convert dense numpy to MLX)
-        P_eval = mx.array(self._P_np, dtype=param_dtype) @ p_stack if self._P_np is not None else None
+        P_eval = (
+            mx.array(self._P_np, dtype=param_dtype) @ p_stack if self._P_np is not None else None
+        )
         q_eval = mx.array(self._q_np, dtype=param_dtype) @ p_stack
         A_eval = mx.array(self._A_np, dtype=param_dtype) @ p_stack
 
@@ -346,7 +471,11 @@ class CvxpyLayer:
                 cot_list = [cotangents]
 
             dprimal = cot_list[0] if cot_list else mx.zeros_like(outputs[0])
-            ddual = cot_list[1] if len(cot_list) >= 2 and cot_list[1] is not None else mx.zeros(outputs[1].shape, dtype=outputs[1].dtype)
+            ddual = (
+                cot_list[1]
+                if len(cot_list) >= 2 and cot_list[1] is not None
+                else mx.zeros(outputs[1].shape, dtype=outputs[1].dtype)
+            )
 
             data = data_container["data"]
             adj_batch = data_container["adj_batch"]
@@ -360,5 +489,5 @@ class CvxpyLayer:
 
             return (grad_P, dq, dA)
 
-        primal, dual = solve_layer(P_arg, q_eval, A_eval)
+        primal, dual = solve_layer(P_arg, q_eval, A_eval)  # type: ignore[misc]
         return primal, dual

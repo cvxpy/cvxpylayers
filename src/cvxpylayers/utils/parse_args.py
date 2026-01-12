@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
 import cvxpy as cp
+import cvxpy.constraints
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 
@@ -9,8 +10,6 @@ import cvxpylayers.interfaces
 
 if TYPE_CHECKING:
     import torch
-
-T = TypeVar("T")
 
 
 class SolverData(Protocol):
@@ -51,39 +50,21 @@ class SolverContext(Protocol):
         ...
 
 
-# Default reshape function for numpy/jax arrays
-def _default_reshape(array, shape):
-    return array.reshape(shape, order="F")
-
-
 @dataclass
 class VariableRecovery:
+    """Information for recovering a variable from primal/dual solutions."""
+
     primal: slice | None
     dual: slice | None
     shape: tuple[int, ...]
-
-    def recover(self, primal_sol: T, dual_sol: T, reshape_fn=_default_reshape) -> T:
-        """Extract and reshape variable from primal or dual solution.
-
-        Args:
-            primal_sol: Primal solution array
-            dual_sol: Dual solution array
-            reshape_fn: Function to reshape array with Fortran order semantics.
-                        Defaults to numpy-style reshape with order="F".
-        """
-        batch = tuple(primal_sol.shape[:-1])
-        if self.primal is not None:
-            return reshape_fn(primal_sol[..., self.primal], batch + self.shape)  # type: ignore[index]
-        if self.dual is not None:
-            return reshape_fn(dual_sol[..., self.dual], batch + self.shape)  # type: ignore[index]
-        raise RuntimeError(
-            "Invalid VariableRecovery: both primal and dual slices are None. "
-            "At least one must be set to recover variable values."
-        )
+    is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
+    is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
 
 
 @dataclass
 class LayersContext:
+    """Context holding canonicalized problem data and solver information."""
+
     parameters: list[cp.Parameter]
     reduced_P: scipy.sparse.csr_array
     q: scipy.sparse.csr_array | None
@@ -154,19 +135,134 @@ class LayersContext:
         return ()
 
 
+def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
+    """Build mapping from dual variable ID to parent constraint.
+
+    Args:
+        problem: CVXPY problem
+
+    Returns:
+        Dictionary mapping dual variable ID to its parent constraint
+    """
+    dual_var_to_constraint: dict[int, cp.Constraint] = {}
+    for con in problem.constraints:
+        for dv in con.dual_variables:
+            dual_var_to_constraint[dv.id] = con
+    return dual_var_to_constraint
+
+
+def _dual_var_offset(var: cp.Variable, constraint: cp.Constraint) -> int:
+    """Get the offset of a dual variable within its parent constraint's dual vector."""
+    offset = 0
+    for dv in constraint.dual_variables:
+        if dv.id == var.id:
+            return offset
+        offset += dv.size
+    raise ValueError(f"Variable {var} not found in constraint {constraint}")
+
+
+def _build_primal_recovery(var: cp.Variable, param_prob: ParamConeProg) -> VariableRecovery:
+    """Build recovery info for a primal variable."""
+    start = param_prob.var_id_to_col[var.id]
+    is_sym = hasattr(var, "is_symmetric") and var.is_symmetric() and len(var.shape) >= 2
+
+    if is_sym:
+        n = var.shape[0]  # type: ignore[index]
+        svec_size = n * (n + 1) // 2
+        return VariableRecovery(
+            primal=slice(start, start + svec_size),
+            dual=None,
+            shape=var.shape,
+            is_symmetric=True,
+        )
+    return VariableRecovery(
+        primal=slice(start, start + var.size),
+        dual=None,
+        shape=var.shape,
+    )
+
+
+def _build_dual_recovery(
+    var: cp.Variable,
+    parent_con: cp.Constraint,
+    constr_id_to_slice: dict[int, slice],
+) -> VariableRecovery:
+    """Build recovery info for a dual variable."""
+    constr_slice = constr_id_to_slice[parent_con.id]
+    offset = _dual_var_offset(var, parent_con)
+    dual_start = constr_slice.start + offset
+
+    is_psd = isinstance(parent_con, cvxpy.constraints.PSD)
+    # PSD duals are stored in svec format: n*(n+1)//2 elements
+    if is_psd:
+        n = var.shape[0]
+        dual_size = n * (n + 1) // 2
+    else:
+        dual_size = var.size
+
+    return VariableRecovery(
+        primal=None,
+        dual=slice(dual_start, dual_start + dual_size),
+        shape=var.shape,
+        is_psd_dual=is_psd,
+    )
+
+
+def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
+    """Build mapping from constraint ID to slice in dual solution vector.
+
+    The dual solution vector is ordered by cone type:
+    Zero (equalities) -> NonNeg (inequalities) -> SOC -> ExpCone -> PSD -> PowCone3D
+
+    Args:
+        param_prob: CVXPY's parametrized cone program
+
+    Returns:
+        Dictionary mapping constraint ID to slice in dual solution vector
+    """
+    constr_id_to_slice: dict[int, slice] = {}
+    cur_idx = 0
+
+    # Process each cone type in canonical order
+    cone_types = [
+        cvxpy.constraints.Zero,
+        cvxpy.constraints.NonNeg,
+        cvxpy.constraints.SOC,
+        cvxpy.constraints.ExpCone,
+        cvxpy.constraints.PSD,
+        cvxpy.constraints.PowCone3D,
+    ]
+
+    for cone_type in cone_types:
+        for c in param_prob.constr_map.get(cone_type, []):
+            # PSD constraints use scaled vectorization (svec) in the dual
+            # For an n x n PSD constraint, svec size is n*(n+1)//2
+            if cone_type is cvxpy.constraints.PSD:
+                n = c.shape[0]  # Matrix dimension
+                cone_size = n * (n + 1) // 2
+            else:
+                cone_size = c.size
+            constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
+            cur_idx += cone_size
+
+    return constr_id_to_slice
+
+
 def _validate_problem(
     problem: cp.Problem,
     variables: list[cp.Variable],
     parameters: list[cp.Parameter],
     gp: bool,
+    dual_var_to_constraint: dict[int, cp.Constraint],
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
     Args:
         problem: CVXPY problem to validate
-        variables: List of CVXPY variables to track
+        variables: List of CVXPY variables to track (can include constraint dual variables)
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
+        dual_var_to_constraint: Mapping from dual variable ID to parent constraint
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
@@ -182,12 +278,20 @@ def _validate_problem(
     # Validate parameters match problem definition
     if not set(problem.parameters()) == set(parameters):
         raise ValueError("The layer's parameters must exactly match problem.parameters")
-    if not set(variables).issubset(set(problem.variables())):
-        raise ValueError("Argument variables must be a subset of problem.variables")
     if not isinstance(parameters, list) and not isinstance(parameters, tuple):
         raise ValueError("The layer's parameters must be provided as a list or tuple")
     if not isinstance(variables, list) and not isinstance(variables, tuple):
         raise ValueError("The layer's variables must be provided as a list or tuple")
+
+    # Validate variables: each must be either a primal variable or a constraint dual variable
+    primal_vars = set(problem.variables())
+    for v in variables:
+        if v in primal_vars:
+            continue  # Valid primal variable
+        if v.id not in dual_var_to_constraint:
+            raise ValueError(
+                f"Variable {v} must be a subset of problem.variables or a constraint dual variable"
+            )
 
 
 def _build_user_order_mapping(
@@ -247,8 +351,30 @@ def parse_args(
     canon_backend: str | None = None,
     solver_args: dict[str, Any] | None = None,
 ) -> LayersContext:
+    """Parse and canonicalize a CVXPY problem for use in differentiable layers.
+
+    This function validates the problem, extracts the parametrized cone program
+    representation, and creates a context object containing all information needed
+    for forward/backward passes.
+
+    Args:
+        problem: CVXPY problem to canonicalize
+        variables: List of variables to return from forward pass
+        parameters: List of parameters that will be provided at runtime
+        solver: Solver backend to use (DIFFCP, MOREAU, CUCLARABEL, MPAX)
+        gp: Whether this is a geometric program
+        verbose: Whether to print solver output
+        canon_backend: Backend for canonicalization
+        solver_args: Default solver arguments
+
+    Returns:
+        LayersContext containing canonicalized problem data
+    """
+    # Build dual variable map for O(1) constraint lookup
+    dual_var_to_constraint = _build_dual_var_map(problem)
+
     # Validate problem is DPP (disciplined parametrized programming)
-    _validate_problem(problem, variables, parameters, gp)
+    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
 
     if solver is None:
         solver = "DIFFCP"
@@ -257,7 +383,7 @@ def parse_args(
     gp_param_to_log_param = None
     if gp:
         # Apply native CVXPY DGP→DCP reduction
-        dgp2dcp = cp.reductions.Dgp2Dcp(problem)
+        dgp2dcp = cp.reductions.Dgp2Dcp(problem)  # type: ignore[attr-defined]
         dcp_problem, _ = dgp2dcp.apply(problem)
 
         # Extract parameter mapping from the reduction
@@ -300,22 +426,27 @@ def parse_args(
 
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
 
+    # Build variable recovery info for each requested variable
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
+    primal_vars = set(problem.variables())
+
+    var_recover = []
+    for v in variables:
+        if v in primal_vars:
+            var_recover.append(_build_primal_recovery(v, param_prob))
+        else:
+            parent_con = dual_var_to_constraint[v.id]
+            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice))
+
     return LayersContext(
         parameters,
         param_prob.reduced_P,
         q,
         param_prob.reduced_A,
         cone_dims,
-        solver_ctx,
+        solver_ctx,  # type: ignore[arg-type]
         solver,
-        var_recover=[
-            VariableRecovery(
-                slice(start := param_prob.var_id_to_col[v.id], start + v.size),
-                None,
-                v.shape,
-            )
-            for v in variables
-        ],
+        var_recover=var_recover,
         user_order_to_col_order=user_order_to_col_order,
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,

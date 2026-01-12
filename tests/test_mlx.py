@@ -1,6 +1,3 @@
-import os
-import sys
-
 import cvxpy as cp
 import diffcp
 import numpy as np
@@ -22,9 +19,7 @@ def _compare(a, b, atol=1e-4, rtol=1e-4):
     """Compare apple mlx and torch results."""
     a_np = to_numpy(a)
     b_np = b.detach().numpy() if isinstance(b, torch.Tensor) else np.asarray(b)
-    assert np.allclose(
-        a_np, b_np, atol=atol, rtol=rtol
-    ), f"Mismatch:\nmlx={a_np}\ntorch={b_np}"
+    assert np.allclose(a_np, b_np, atol=atol, rtol=rtol), f"Mismatch:\nmlx={a_np}\ntorch={b_np}"
 
 
 def set_seed(x: int) -> np.random.Generator:
@@ -131,8 +126,7 @@ def test_logistic_regression():
 
     X_np = rng.standard_normal((N, n))
     a_true = rng.standard_normal((n, 1))
-    y_np = np.round(sigmoid(X_np.dot(a_true) + rng.standard_normal(
-                                                        (N, 1)) * 0.5))
+    y_np = np.round(sigmoid(X_np.dot(a_true) + rng.standard_normal((N, 1)) * 0.5))
 
     X_mx = mx.array(X_np, dtype=mx.float32)
     lam_mx = mx.array([0.1], dtype=mx.float32)
@@ -193,8 +187,7 @@ def test_not_enough_parameters():
     lam2 = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError,
-                       match="must exactly match problem.parameters"):
+    with pytest.raises(ValueError, match="must exactly match problem.parameters"):
         layer = CvxpyLayer(prob, [lam], [x])  # noqa: F841
 
 
@@ -214,6 +207,19 @@ def test_not_enough_parameters_at_call_time():
         layer(lam_mx)
 
 
+def test_none_parameter_at_call_time():
+    """Test that passing None as a parameter raises an appropriate error."""
+    x = cp.Variable(1)
+    lam = cp.Parameter(1, nonneg=True)
+    lam2 = cp.Parameter(1, nonneg=True)
+    objective = lam * cp.norm(x, 1) + lam2 * cp.sum_squares(x)
+    prob = cp.Problem(cp.Minimize(objective))
+    layer = CvxpyLayer(prob, [lam, lam2], [x])
+    lam_mx = mx.ones(1, dtype=mx.float32)
+    with pytest.raises(AttributeError):
+        layer(lam_mx, None)
+
+
 def test_too_many_variables():
     """Test error when too many variables are requested."""
     x = cp.Variable(1)
@@ -221,8 +227,7 @@ def test_too_many_variables():
     lam = cp.Parameter(1, nonneg=True)
     objective = lam * cp.norm(x, 1)
     prob = cp.Problem(cp.Minimize(objective))
-    with pytest.raises(ValueError,
-                       match="must be a subset of problem.variables"):
+    with pytest.raises(ValueError, match="must be a subset of problem.variables"):
         layer = CvxpyLayer(prob, [lam], [x, y])  # noqa: F841
 
 
@@ -321,13 +326,13 @@ def test_broadcasting():
     x_single = lstsq(A_mx, b_mx_0)
 
     #  Forward match check: both batched outputs should equal the single one
-    assert np.allclose(
-        to_numpy(x_batched[0]), to_numpy(x_single), atol=1e-5
-    ), "Broadcasted cvxpy layer 0 mismatched least-squares output"
+    assert np.allclose(to_numpy(x_batched[0]), to_numpy(x_single), atol=1e-5), (
+        "Broadcasted cvxpy layer 0 mismatched least-squares output"
+    )
 
-    assert np.allclose(
-        to_numpy(x_batched[1]), to_numpy(x_single), atol=1e-5
-    ), "Broadcasted cvxpy layer 1 mismatched least-squares output"
+    assert np.allclose(to_numpy(x_batched[1]), to_numpy(x_single), atol=1e-5), (
+        "Broadcasted cvxpy layer 1 mismatched least-squares output"
+    )
 
 
 def test_shared_parameter():
@@ -397,8 +402,7 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c],
-                       variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
     a_mx = mx.array(2.0, dtype=mx.float32)
     b_mx = mx.array(1.0, dtype=mx.float32)
     c_mx = mx.array(0.5, dtype=mx.float32)
@@ -438,8 +442,7 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c],
-                       variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
 
     # Batched parameters - test with batch size 4
     # For scalar parameters, batching means 1D arrays
@@ -463,15 +466,15 @@ def test_batched_gp():
         c.value = float(np.array(c_batch[i]))
         problem.solve(cp.CLARABEL, gp=True)
 
-        assert np.allclose(
-            np.array(x.value), np.array(x_batch[i]), atol=1e-4, rtol=1e-4
-        ), f"Mismatch in batch {i} for x"
-        assert np.allclose(
-            np.array(y.value), np.array(y_batch[i]), atol=1e-4, rtol=1e-4
-        ), f"Mismatch in batch {i} for y"
-        assert np.allclose(
-            np.array(z.value), np.array(z_batch[i]), atol=1e-4, rtol=1e-4
-        ), f"Mismatch in batch {i} for z"
+        assert np.allclose(np.array(x.value), np.array(x_batch[i]), atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for x"
+        )
+        assert np.allclose(np.array(y.value), np.array(y_batch[i]), atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for y"
+        )
+        assert np.allclose(np.array(z.value), np.array(z_batch[i]), atol=1e-4, rtol=1e-4), (
+            f"Mismatch in batch {i} for z"
+        )
 
     # Test gradients on batched problem
     def f_batch(a, b, c):
@@ -504,8 +507,7 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c],
-                       variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
 
     # Now use the layer with actual parameter values
     a_mx = mx.array(2.0, dtype=mx.float32)
@@ -557,16 +559,13 @@ def test_batch_size_one_preserves_batch_dimension():
     cvxpylayer = CvxpyLayer(problem, parameters=[b], variables=[x])
 
     # Create explicitly batched input with batch_size=1
-    b_batched = mx.array(rng.standard_normal((1, n)),
-                         dtype=mx.float32)  # Shape: (1, n)
+    b_batched = mx.array(rng.standard_normal((1, n)), dtype=mx.float32)  # Shape: (1, n)
 
     # Solve
     (x_batched,) = cvxpylayer(b_batched)
 
     # Solution should be batched
-    assert x_batched.shape == (1, n), (
-        f"Expected shape (1, {n}), got {x_batched.shape}"
-                                       )
+    assert x_batched.shape == (1, n), f"Expected shape (1, {n}), got {x_batched.shape}"
 
     # Compute gradient
     def loss_fn(b):
@@ -609,8 +608,7 @@ def test_solver_args_actually_used():
     (x_restricted,) = layer(A_mx, b_mx, solver_args={"max_iters": 1})
 
     # Solve with proper iterations (should converge to optimal)
-    (x_optimal,) = layer(A_mx, b_mx,
-                         solver_args={"max_iters": 10000, "eps": 1e-10})
+    (x_optimal,) = layer(A_mx, b_mx, solver_args={"max_iters": 10000, "eps": 1e-10})
 
     # The solutions should differ if solver_args were actually used
     # With only 1 iteration, the solution should be far from optimal
@@ -627,13 +625,10 @@ def test_solver_args_actually_used():
     x_restricted_np = np.array(x_restricted)
     x_optimal_np = np.array(x_optimal)
 
-    obj_restricted = np.sum(
-        (A_np @ x_restricted_np - b_np) ** 2) + 0.01 * np.sum(
+    obj_restricted = np.sum((A_np @ x_restricted_np - b_np) ** 2) + 0.01 * np.sum(
         x_restricted_np**2
     )
-    obj_optimal = np.sum((A_np @ x_optimal_np - b_np) ** 2) + 0.01 * np.sum(
-        x_optimal_np**2
-    )
+    obj_optimal = np.sum((A_np @ x_optimal_np - b_np) ** 2) + 0.01 * np.sum(x_optimal_np**2)
 
     assert obj_optimal < obj_restricted, (
         f"Optimal objective ({obj_optimal}) should be less"
@@ -676,12 +671,10 @@ def test_relu(n):
     """Test ReLU projection comparing MLX with PyTorch."""
     x_param = cp.Parameter(n)
     y_var = cp.Variable(n)
-    prob = cp.Problem(
-        cp.Minimize(cp.sum_squares(y_var - x_param)), [y_var >= 0])
+    prob = cp.Problem(cp.Minimize(cp.sum_squares(y_var - x_param)), [y_var >= 0])
 
     # Torch CVXPY layer
-    torch_layer = TorchCvxpyLayer(
-        prob, parameters=[x_param], variables=[y_var])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var])
     mlx_layer = CvxpyLayer(prob, parameters=[x_param], variables=[y_var])
 
     # Input
@@ -707,13 +700,10 @@ def test_sigmoid(n):
     """Test sigmoid projection comparing MLX with PyTorch."""
     x_param = cp.Parameter(n)
     y_var = cp.Variable(n)
-    obj = cp.Minimize(
-        -x_param.T @ y_var - cp.sum(cp.entr(y_var) + cp.entr(1.0 - y_var))
-    )
+    obj = cp.Minimize(-x_param.T @ y_var - cp.sum(cp.entr(y_var) + cp.entr(1.0 - y_var)))
     prob = cp.Problem(obj)
 
-    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param],
-                                  variables=[y_var])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var])
     mlx_layer = CvxpyLayer(prob, parameters=[x_param], variables=[y_var])
 
     x_np = np.linspace(-5, 5, n).astype(np.float32)
@@ -824,9 +814,7 @@ def test_multiple_variables_vs_torch(n):
     y = cp.Variable(n)
     c = cp.Parameter(n)
 
-    problem = cp.Problem(
-        cp.Minimize(cp.sum_squares(x) + cp.sum_squares(y)), [x + y == c]
-    )
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x) + cp.sum_squares(y)), [x + y == c])
 
     mlx_layer = CvxpyLayer(problem, parameters=[c], variables=[x, y])
     torch_layer = TorchCvxpyLayer(problem, parameters=[c], variables=[x, y])
@@ -881,12 +869,8 @@ def test_batched_solver(batch_size, n, m):
     # Gradient comparison
     y_torch.sum().backward()
 
-    grad_loss_A = mx.grad(
-        lambda A_: mx.sum(
-            mlx_layer(A_, b_batch_mx)[0]))(A_batch_mx)
-    grad_loss_b = mx.grad(
-        lambda b_: mx.sum(
-            mlx_layer(A_batch_mx, b_)[0]))(b_batch_mx)
+    grad_loss_A = mx.grad(lambda A_: mx.sum(mlx_layer(A_, b_batch_mx)[0]))(A_batch_mx)
+    grad_loss_b = mx.grad(lambda b_: mx.sum(mlx_layer(A_batch_mx, b_)[0]))(b_batch_mx)
 
     _compare(grad_loss_A, A_batch_torch.grad)
     _compare(grad_loss_b, b_batch_torch.grad)
@@ -908,10 +892,8 @@ def test_ellipsoid_projection(n):
     prob = cp.Problem(obj, cons)
 
     # MLX and Torch layers
-    mlx_layer = CvxpyLayer(prob, parameters=[_A, _z, _x],
-                           variables=[_y, _t])
-    torch_layer = TorchCvxpyLayer(prob, parameters=[_A, _z, _x],
-                                  variables=[_y, _t])
+    mlx_layer = CvxpyLayer(prob, parameters=[_A, _z, _x], variables=[_y, _t])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[_A, _z, _x], variables=[_y, _t])
 
     # Random input
     torch.manual_seed(0)
