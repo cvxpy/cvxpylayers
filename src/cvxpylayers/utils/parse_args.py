@@ -253,7 +253,8 @@ def _validate_problem(
     variables: list[cp.Variable],
     parameters: list[cp.Parameter],
     gp: bool,
-) -> dict[int, cp.Constraint]:
+    dual_var_to_constraint: dict[int, cp.Constraint],
+) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
     Args:
@@ -261,9 +262,7 @@ def _validate_problem(
         variables: List of CVXPY variables to track (can include constraint dual variables)
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
-
-    Returns:
-        Dictionary mapping dual variable ID to parent constraint
+        dual_var_to_constraint: Mapping from dual variable ID to parent constraint
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
@@ -284,9 +283,6 @@ def _validate_problem(
     if not isinstance(variables, list) and not isinstance(variables, tuple):
         raise ValueError("The layer's variables must be provided as a list or tuple")
 
-    # Build dual variable map for O(1) constraint lookup
-    dual_var_to_constraint = _build_dual_var_map(problem)
-
     # Validate variables: each must be either a primal variable or a constraint dual variable
     primal_vars = set(problem.variables())
     for v in variables:
@@ -296,8 +292,6 @@ def _validate_problem(
             raise ValueError(
                 f"Variable {v} must be a subset of problem.variables or a constraint dual variable"
             )
-
-    return dual_var_to_constraint
 
 
 def _build_user_order_mapping(
@@ -376,8 +370,11 @@ def parse_args(
     Returns:
         LayersContext containing canonicalized problem data
     """
+    # Build dual variable map for O(1) constraint lookup
+    dual_var_to_constraint = _build_dual_var_map(problem)
+
     # Validate problem is DPP (disciplined parametrized programming)
-    dual_var_to_constraint = _validate_problem(problem, variables, parameters, gp)
+    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
 
     if solver is None:
         solver = "DIFFCP"
