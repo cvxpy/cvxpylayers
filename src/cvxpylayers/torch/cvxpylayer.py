@@ -380,13 +380,18 @@ class CvxpyLayer(torch.nn.Module):
         # Flatten and batch parameters
         p_stack = _flatten_and_batch_params(params, self.ctx, batch)
 
-        # Get dtype from input parameters to ensure type matching
+        # Get dtype and device from input parameters to ensure type/device matching
         param_dtype = p_stack.dtype
+        param_device = p_stack.device
 
-        # Evaluate parametrized matrices (convert sparse matrices to match input dtype)
-        P_eval = (self.P.to(dtype=param_dtype) @ p_stack) if self.P is not None else None
-        q_eval = self.q.to(dtype=param_dtype) @ p_stack  # type: ignore[operator]
-        A_eval = self.A.to(dtype=param_dtype) @ p_stack  # type: ignore[operator]
+        # Evaluate parametrized matrices (convert sparse matrices to match input dtype and device)
+        P_eval = (
+            (self.P.to(dtype=param_dtype, device=param_device) @ p_stack)
+            if self.P is not None
+            else None
+        )
+        q_eval = self.q.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
+        A_eval = self.A.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
 
         # Get the solver-specific _CvxpyLayer class
         from cvxpylayers.interfaces import get_torch_cvxpylayer
