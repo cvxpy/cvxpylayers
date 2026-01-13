@@ -115,22 +115,25 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
             "Moreau solver requires 'moreau' package. Install with: pip install moreau"
         )
 
-    cones = moreau.Cones()
+    # Second-order cones: moreau now uses num_so_cones (count) instead of soc_dims (list)
+    # Each SOC in moreau is assumed to be dimension 3
+    soc_dims = dims.get("q", [])
+    if soc_dims:
+        # Verify all SOCs are dimension 3 (moreau's assumption)
+        for i, dim in enumerate(soc_dims):
+            if dim != 3:
+                raise ValueError(
+                    f"Moreau only supports 3D second-order cones, but SOC {i} has dimension {dim}. "
+                    "Consider using a different solver for problems with non-3D SOCs."
+                )
 
-    # Zero cone (equality constraints)
-    cones.num_zero_cones = dims.get("z", 0)
-
-    # Nonnegative cone (inequality constraints)
-    cones.num_nonneg_cones = dims.get("l", 0)
-
-    # Second-order cones - preserve actual SOC dimensions
-    cones.soc_dims = list(dims.get("q", []))
-
-    # Exponential cones
-    cones.num_exp_cones = dims.get("ep", 0)
-
-    # Power cones
-    cones.power_alphas = list(dims.get("p", []))
+    cones = moreau.Cones(
+        num_zero_cones=dims.get("z", 0),
+        num_nonneg_cones=dims.get("l", 0),
+        num_so_cones=len(soc_dims),
+        num_exp_cones=dims.get("ep", 0),
+        power_alphas=list(dims.get("p", [])),
+    )
 
     return cones
 
@@ -336,7 +339,7 @@ class MOREAU_ctx:
         b_raw = con_values[b_start:, :]  # (m, batch) but may need reordering
         # Create full b tensor and fill in at correct indices
         b = torch.zeros((self.A_shape[0], batch_size), dtype=torch.float64, device=device)
-        b[b_idx_tensor, :] = b_raw
+        b[b_idx_tensor, :] = b_raw.to(dtype=torch.float64)
 
         # Extract q (linear cost)
         q = lin_obj_values[:-1, :]  # (n, batch), exclude constant term
