@@ -218,6 +218,7 @@ class MOREAU_ctx:
         self._cones = None
         self._torch_solver_cuda = None  # CUDA solver (moreau.torch.Solver) with lazy init
         self._torch_solver_cpu = None  # CPU solver (moreau.torch.Solver) with lazy init
+        self._jax_solver = None  # JAX solver (moreau.jax.Solver) with lazy init
 
         # Detect if P and A are constant (don't depend on any parameters)
         # Matrices are parametrized: each column corresponds to a parameter, last column is constant
@@ -330,6 +331,30 @@ class MOREAU_ctx:
             if self._torch_solver_cpu is None:
                 self._torch_solver_cpu = self._create_torch_solver("cpu")
             return self._torch_solver_cpu
+
+    def _create_jax_solver(self):
+        """Create a moreau.jax.Solver. Called lazily on first use."""
+        if moreau_jax is None:
+            raise ImportError("Moreau JAX interface requires 'moreau' package with JAX support.")
+
+        settings = self._get_settings(enable_grad=True)
+        solver = moreau_jax.Solver(
+            n=self.P_shape[0],
+            m=self.A_shape[0],
+            P_row_offsets=self.P_row_offsets,
+            P_col_indices=self.P_col_indices,
+            A_row_offsets=self.A_row_offsets,
+            A_col_indices=self.A_col_indices,
+            cones=self.cones,
+            settings=settings,
+        )
+        return solver
+
+    def get_jax_solver(self):
+        """Get moreau.jax.Solver (lazy init)."""
+        if self._jax_solver is None:
+            self._jax_solver = self._create_jax_solver()
+        return self._jax_solver
 
     def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "MOREAU_data":
         """Prepare data for torch solve.
@@ -478,15 +503,8 @@ class MOREAU_ctx:
             upper=upper,
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
-            # Structure for solver creation
-            P_col_indices=self.P_col_indices,
-            P_row_offsets=self.P_row_offsets,
-            A_col_indices=self.A_col_indices,
-            A_row_offsets=self.A_row_offsets,
-            cones=self.cones,
-            options=self.options,
-            n=self.P_shape[0],
-            m=self.A_shape[0],
+            # Cached solver (created once, reused across calls)
+            solver=self.get_jax_solver(),
             # Indices for gradient mapping
             P_idx=self.P_idx,
             A_idx=self.A_idx,
@@ -671,15 +689,8 @@ class MOREAU_data_jax:
     batch_size: int
     originally_unbatched: bool
 
-    # Structure for solver creation
-    P_col_indices: np.ndarray
-    P_row_offsets: np.ndarray
-    A_col_indices: np.ndarray
-    A_row_offsets: np.ndarray
-    cones: Any  # moreau.Cones
-    options: dict
-    n: int
-    m: int
+    # Cached solver (created once, reused across calls)
+    solver: Any  # moreau.jax.Solver
 
     # Indices for gradient mapping
     P_idx: np.ndarray | None
@@ -695,29 +706,9 @@ class MOREAU_data_jax:
         """Solve using moreau.jax.Solver with native custom_vjp gradients."""
         if jnp is None:
             raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
-        if moreau_jax is None:
-            raise ImportError("Moreau JAX interface requires 'moreau' package with JAX support.")
 
-        # Create settings
-        settings = moreau.Settings(enable_grad=True)
-        for key, value in self.options.items():
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-
-        # Create JAX solver (stateless, so we create fresh each time)
-        solver = moreau_jax.Solver(
-            n=self.n,
-            m=self.m,
-            P_row_offsets=self.P_row_offsets,
-            P_col_indices=self.P_col_indices,
-            A_row_offsets=self.A_row_offsets,
-            A_col_indices=self.A_col_indices,
-            cones=self.cones,
-            settings=settings,
-        )
-
-        # Solve - moreau.jax.Solver returns JaxSolution with x, z, s, etc.
-        solution = solver.solve(
+        # Solve using cached solver - moreau.jax.Solver returns JaxSolution with x, z, s, etc.
+        solution = self.solver.solve(
             self.P_values, self.A_values, self.q, self.b, self.lower, self.upper
         )
 
@@ -726,7 +717,7 @@ class MOREAU_data_jax:
 
         # Store info needed for gradient mapping
         backwards_info = {
-            "solver": solver,
+            "solver": self.solver,
             "P_values": self.P_values,
             "A_values": self.A_values,
             "q": self.q,
