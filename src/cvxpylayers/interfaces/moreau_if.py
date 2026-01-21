@@ -339,8 +339,9 @@ class MOREAU_ctx:
 
         # If P and A are constant, do setup once now (like PyTorch)
         if self.PA_is_constant:
-            P_values = jnp.array(self._P_const_values, dtype=jnp.float64)
-            A_values = jnp.array(self._A_const_values, dtype=jnp.float64)
+            # Add batch dimension (1, nnz) to match solve() input format
+            P_values = jnp.expand_dims(jnp.array(self._P_const_values, dtype=jnp.float64), 0)
+            A_values = jnp.expand_dims(jnp.array(self._A_const_values, dtype=jnp.float64), 0)
             solver.setup(P_values, A_values)
 
         return solver
@@ -696,8 +697,13 @@ class MOREAU_data_jax:
         # Solve with q and b only
         solution = self.solver.solve(self.q, self.b)
 
-        primal = solution.x  # (batch, n)
-        dual = solution.z  # (batch, m)
+        primal = solution.x
+        dual = solution.z
+
+        # Moreau auto-squeezes batch_size=1, but cvxpylayers needs consistent (batch, dim) shape
+        if primal.ndim == 1:
+            primal = jnp.expand_dims(primal, 0)
+            dual = jnp.expand_dims(dual, 0)
 
         # Store info needed for gradient mapping
         backwards_info = {
