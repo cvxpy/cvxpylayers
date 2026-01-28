@@ -411,9 +411,6 @@ def test_jax_interface_forward_pass():
     assert obj_error < 1e-3, f"Objective error: |JAX-Moreau - CVXPY| = {obj_error:.6e}"
 
 
-@pytest.mark.xfail(
-    reason="moreau.jax batch handling bug: returns (1, n) instead of (batch, n)"
-)
 def test_jax_interface_batched():
     """Test JAX interface with Moreau solver for batched inputs."""
     from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer

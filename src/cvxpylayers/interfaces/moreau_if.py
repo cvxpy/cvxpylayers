@@ -10,6 +10,11 @@ where K is a product of cones.
 Uses Moreau's native PyTorch and JAX solvers with built-in automatic differentiation:
 - PyTorch: moreau.torch.Solver with two-step API (setup + solve) and autograd support
 - JAX: moreau.jax.Solver with custom_vjp for gradients
+
+Limitations:
+- Only 3D second-order cones are supported (Moreau assumes all SOCs have dimension 3).
+- SOC dual variables are not supported; requesting them raises ValueError.
+- Not thread-safe: solver instances are lazily initialized and cached on MOREAU_ctx.
 """
 
 from dataclasses import dataclass
@@ -20,22 +25,19 @@ from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
 from cvxpylayers.utils.solver_utils import convert_csc_structure_to_csr_structure
 
-# Moreau unified package (provides both NumPy and PyTorch interfaces)
+# Optional dependencies — each may be absent independently
 try:
     import moreau
     import moreau.jax as moreau_jax
     import moreau.torch as moreau_torch
 except ImportError:
-    moreau = None  # type: ignore[assignment]
-    moreau_torch = None  # type: ignore[assignment]
-    moreau_jax = None  # type: ignore[assignment]
+    moreau = moreau_torch = moreau_jax = None  # type: ignore[assignment]
 
 try:
     import jax
     import jax.numpy as jnp
 except ImportError:
-    jax = None  # type: ignore[assignment]
-    jnp = None  # type: ignore[assignment]
+    jax = jnp = None  # type: ignore[assignment]
 
 try:
     import torch
@@ -108,6 +110,11 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
 
     Returns:
         moreau.Cones object
+
+    Raises:
+        ValueError: If any second-order cone has dimension != 3. Moreau assumes
+            all SOCs are 3-dimensional (the ``num_so_cones`` API only stores
+            a count, not per-cone sizes).
     """
     if moreau is None:
         raise ImportError(
@@ -167,6 +174,19 @@ class MOREAU_ctx:
         reduced_P_mat=None,
         reduced_A_mat=None,
     ):
+        """Initialize Moreau solver context.
+
+        Args:
+            objective_structure: CSC structure for the P matrix (or None for LP).
+            constraint_structure: CSC structure for the A matrix and b vector.
+            dims: Cone dimensions dictionary.
+            options: Solver options forwarded to ``moreau.Settings``.
+            reduced_P_mat: Sparse parametrization matrix for P. When
+                ``reduced_P_mat[:, :-1].nnz == 0`` (and same for A), P and A
+                are constant across parameter values, enabling a one-time
+                ``setup()`` call (the ``PA_is_constant`` optimisation).
+            reduced_A_mat: Sparse parametrization matrix for A.
+        """
         # Convert constraint matrix from CSC to CSR
         A_shuffle, A_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
             constraint_structure, True
@@ -177,13 +197,15 @@ class MOREAU_ctx:
             P_shuffle, P_structure, P_shape = convert_csc_structure_to_csr_structure(
                 objective_structure, False
             )
-            assert P_shape[0] == P_shape[1]
+            if P_shape[0] != P_shape[1]:
+                raise ValueError(f"P matrix must be square, got shape {P_shape}")
         else:
             P_shuffle = None
             P_structure = (np.array([], dtype=np.int64), np.zeros(A_shape[1] + 1, dtype=np.int64))
             P_shape = (A_shape[1], A_shape[1])
 
-        assert P_shape[0] == A_shape[1]
+        if P_shape[0] != A_shape[1]:
+            raise ValueError(f"P dimension {P_shape[0]} != A column dimension {A_shape[1]}")
 
         # Store CSR structure
         # Note: convert_csc_structure_to_csr_structure returns (col_indices, row_offsets)
@@ -332,12 +354,7 @@ class MOREAU_ctx:
             settings=settings,
         )
 
-        # If P and A are constant, do setup once now (like PyTorch)
-        if self.PA_is_constant:
-            # Add batch dimension (1, nnz) to match solve() input format
-            P_values = jnp.expand_dims(jnp.array(self._P_const_values, dtype=jnp.float64), 0)
-            A_values = jnp.expand_dims(jnp.array(self._A_const_values, dtype=jnp.float64), 0)
-            solver.setup(P_values, A_values)
+        # For simplicity, we use the 4-arg jax solve in all cases.
 
         return solver
 
@@ -393,9 +410,11 @@ class MOREAU_ctx:
         # b is in the last b_idx.size entries of con_values
         b_start = con_values.shape[0] - self.b_idx.size
         b_raw = con_values[b_start:, :]  # (m, batch) but may need reordering
-        # Create full b tensor and fill in at correct indices
-        b = torch.zeros((self.A_shape[0], batch_size), dtype=torch.float64, device=device)
-        b[b_idx_tensor, :] = b_raw.to(dtype=torch.float64)
+        # Scatter into full b tensor (use non-in-place scatter to preserve autograd)
+        b_idx_expanded = b_idx_tensor.unsqueeze(1).expand(-1, batch_size)
+        b = torch.zeros(
+            (self.A_shape[0], batch_size), dtype=torch.float64, device=device
+        ).scatter(0, b_idx_expanded, b_raw.to(dtype=torch.float64))
 
         # Extract q (linear cost)
         q = lin_obj_values[:-1, :]  # (n, batch), exclude constant term
@@ -490,8 +509,8 @@ class MOREAU_ctx:
             P_eval_size=quad_obj_values.shape[0] if quad_obj_values is not None else 0,
             q_eval_size=lin_obj_values.shape[0],
             A_eval_size=con_values.shape[0],
-            # Whether setup() was already called (P/A constant optimization)
-            setup_cached=self.PA_is_constant,
+            # Always use 4-arg solve for JAX (no setup caching)
+            setup_cached=False,
         )
 
 
@@ -592,6 +611,7 @@ class MOREAU_data:
 
         # Use the internally stored backwards_info (not the parameter which is None)
         backwards_info = self._backwards_info
+        self._backwards_info = None  # Free memory after extraction
 
         # Use torch.autograd.grad to backprop through Moreau's autograd graph
         grads = torch.autograd.grad(
@@ -605,7 +625,7 @@ class MOREAU_data:
             grad_outputs=[dprimal, ddual],
             allow_unused=True,
         )
-        dP_values, dq_moreau, dA_values, db_moreau = grads
+        dP_values, dq_raw, dA_values, db_raw = grads
 
         device = dprimal.device
         dtype = torch.float64
@@ -619,10 +639,10 @@ class MOREAU_data:
             dP_eval = None
 
         # Scatter q gradients to q_eval format (q_eval has constant term appended)
-        # dq_moreau is (batch, n), need to make (n+1, batch)
-        if dq_moreau is not None:
+        # dq_raw is (batch, n), need to make (n+1, batch)
+        if dq_raw is not None:
             dq_eval = torch.zeros((self.q_eval_size, self.batch_size), dtype=dtype, device=device)
-            dq_eval[:-1, :] = dq_moreau.T
+            dq_eval[:-1, :] = dq_raw.T
         else:
             dq_eval = torch.zeros((self.q_eval_size, self.batch_size), dtype=dtype, device=device)
 
@@ -634,13 +654,13 @@ class MOREAU_data:
             # A was negated when extracting, so negate gradient back
             dA_eval[self.A_idx_tensor, :] = -dA_values.T
 
-        if db_moreau is not None:
+        if db_raw is not None:
             # b gradients go to the last portion of A_eval
             b_start = self.A_eval_size - self.b_idx_tensor.shape[0]
             b_section = torch.zeros(
                 (self.b_idx_tensor.shape[0], self.batch_size), dtype=dtype, device=device
             )
-            b_section[self.b_idx_tensor, :] = db_moreau.T
+            b_section[self.b_idx_tensor, :] = db_raw.T
             dA_eval[b_start:, :] = b_section
 
         # Remove batch dimension if originally unbatched
@@ -685,17 +705,21 @@ class MOREAU_data_jax:
         if jnp is None:
             raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
 
-        # Setup if P/A are NOT constant (otherwise was done at solver creation)
-        if not self.setup_cached:
-            self.solver.setup(self.P_values, self.A_values)
-
-        # Solve with q and b only
-        solution = self.solver.solve(self.q, self.b)
+        # Always use 4-arg solve for JAX
+        if self.batch_size > 1:
+            # Moreau JAX solvers expect unbatched inputs; use vmap for batching
+            solution = jax.vmap(self.solver.solve)(
+                self.P_values, self.A_values, self.q, self.b
+            )
+        else:
+            solution = self.solver.solve(
+                self.P_values, self.A_values, self.q, self.b
+            )
 
         primal = solution.x
         dual = solution.z
 
-        # Moreau auto-squeezes batch_size=1, but cvxpylayers needs consistent (batch, dim) shape
+        # Ensure consistent (batch, dim) shape
         if primal.ndim == 1:
             primal = jnp.expand_dims(primal, 0)
             dual = jnp.expand_dims(dual, 0)
@@ -719,27 +743,38 @@ class MOREAU_data_jax:
         if jnp is None:
             raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
 
-        # Handle batch dimension
-        if self.originally_unbatched:
-            dprimal = jnp.expand_dims(dprimal, 0)
-            ddual = jnp.expand_dims(ddual, 0)
-
         # Define loss function that extracts x and z from solution
         def solve_fn(P_vals, A_vals, q, b):
             solver = backwards_info["solver"]
             solution = solver.solve(P_vals, A_vals, q, b)
             return solution.x, solution.z
 
-        # Compute vector-Jacobian products using JAX
-        _, vjp_fn = jax.vjp(
-            solve_fn,
-            backwards_info["P_values"],
-            backwards_info["A_values"],
-            backwards_info["q"],
-            backwards_info["b"],
-        )
+        P_vjp = backwards_info["P_values"]
+        A_vjp = backwards_info["A_values"]
+        q_vjp = backwards_info["q"]
+        b_vjp = backwards_info["b"]
 
-        dP_values, dA_values, dq_moreau, db_moreau = vjp_fn((dprimal, ddual))
+        if self.batch_size > 1:
+            solve_fn = jax.vmap(solve_fn)
+        elif self.originally_unbatched:
+            # Squeeze batch dim so VJP inputs/outputs are consistently unbatched
+            P_vjp = jnp.squeeze(P_vjp, 0)
+            A_vjp = jnp.squeeze(A_vjp, 0)
+            q_vjp = jnp.squeeze(q_vjp, 0)
+            b_vjp = jnp.squeeze(b_vjp, 0)
+            dprimal = jnp.squeeze(dprimal, 0)
+            ddual = jnp.squeeze(ddual, 0)
+
+        # Compute vector-Jacobian products using JAX
+        _, vjp_fn = jax.vjp(solve_fn, P_vjp, A_vjp, q_vjp, b_vjp)
+        dP_values, dA_values, dq_raw, db_raw = vjp_fn((dprimal, ddual))
+
+        # Re-add batch dim for unbatched case
+        if self.originally_unbatched:
+            dP_values = jnp.expand_dims(dP_values, 0)
+            dA_values = jnp.expand_dims(dA_values, 0)
+            dq_raw = jnp.expand_dims(dq_raw, 0)
+            db_raw = jnp.expand_dims(db_raw, 0)
 
         # Scatter P gradients back to P_eval format
         if self.P_eval_size > 0 and self.P_idx is not None:
@@ -750,7 +785,7 @@ class MOREAU_data_jax:
 
         # Scatter q gradients to q_eval format
         dq_eval = jnp.zeros((self.q_eval_size, self.batch_size), dtype=jnp.float64)
-        dq_eval = dq_eval.at[:-1, :].set(dq_moreau.T)
+        dq_eval = dq_eval.at[:-1, :].set(dq_raw.T)
 
         # Scatter A and b gradients to A_eval format
         dA_eval = jnp.zeros((self.A_eval_size, self.batch_size), dtype=jnp.float64)
@@ -758,7 +793,7 @@ class MOREAU_data_jax:
 
         b_start = self.A_eval_size - self.b_idx.size
         b_section = jnp.zeros((self.b_idx.size, self.batch_size), dtype=jnp.float64)
-        b_section = b_section.at[self.b_idx, :].set(db_moreau.T)
+        b_section = b_section.at[self.b_idx, :].set(db_raw.T)
         dA_eval = dA_eval.at[b_start:, :].set(b_section)
 
         # Remove batch dimension if originally unbatched

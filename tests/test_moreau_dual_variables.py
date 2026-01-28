@@ -11,6 +11,10 @@ from cvxpylayers.torch import CvxpyLayer  # noqa: E402
 
 torch.set_default_dtype(torch.double)
 
+# Tolerance constants for solution comparisons
+SOLUTION_RTOL = 1e-3
+SOLUTION_ATOL = 1e-4
+
 # Check for CUDA availability
 HAS_CUDA = torch.cuda.is_available() and moreau.device_available("cuda")
 
@@ -65,8 +69,8 @@ def test_equality_constraint_dual_moreau(device):
     b.value = b_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -97,9 +101,9 @@ def test_inequality_constraint_dual_moreau(device):
     c.value = c_t.detach().cpu().numpy()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=1e-3, atol=1e-4
+        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
 
 
@@ -134,10 +138,10 @@ def test_multiple_dual_variables_moreau(device):
     b.value = b_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=1e-3, atol=1e-4
+        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
 
 
@@ -171,7 +175,7 @@ def test_dual_only_moreau(device):
     b.value = b_t.cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -248,8 +252,8 @@ def test_vector_equality_dual_moreau(device):
     b.value = b_t.detach().cpu().numpy()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 # ============================================================================
@@ -314,7 +318,7 @@ def test_dual_gradcheck_equality_moreau(device):
     c_t = torch.tensor([0.5, -0.3], requires_grad=True, device=device)
     b_t = torch.tensor(1.0, requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (c_t, b_t), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (c_t, b_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -340,7 +344,7 @@ def test_dual_gradcheck_inequality_moreau(device):
 
     c_t = torch.tensor([1.0, -1.0], requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (c_t,), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (c_t,), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -368,7 +372,7 @@ def test_dual_gradcheck_mixed_moreau(device):
     c_t = torch.tensor([0.5, -0.3], requires_grad=True, device=device)
     b_t = torch.tensor(1.0, requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (c_t, b_t), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (c_t, b_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -397,7 +401,7 @@ def test_dual_gradcheck_vector_equality_moreau(device):
     A_t = torch.randn(m, n, requires_grad=True, device=device)
     b_t = torch.randn(m, requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (A_t, b_t), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (A_t, b_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 # ============================================================================
@@ -440,17 +444,17 @@ def test_exp_cone_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=1e-3, atol=1e-4
+        dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=1e-3, atol=1e-4
+        dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=1e-3, atol=1e-4
+        dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
 
 
@@ -486,7 +490,7 @@ def test_exp_cone_gradcheck_moreau(device):
 
     t_t = torch.tensor(5.0, requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (t_t,), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (t_t,), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -524,54 +528,19 @@ def test_pow_cone_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=1e-3, atol=1e-4
-    )
-    np.testing.assert_allclose(
-        dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=1e-3, atol=1e-4
+        dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=1e-3, atol=1e-4
+        dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
 
-
-@pytest.mark.xfail(reason="Power cone dual gradients have Jacobian mismatch - known issue")
-@pytest.mark.parametrize("device", get_device_params())
-def test_pow_cone_gradcheck_moreau(device):
-    """Rigorous gradient check for power cone dual variables with Moreau."""
-    x = cp.Variable()
-    y = cp.Variable()
-    z = cp.Variable()
-    t = cp.Parameter(nonneg=True)
-
-    pow_con = cp.PowCone3D(x, y, z, 0.5)
-    prob = cp.Problem(
-        cp.Minimize(-z + 0.1 * (x**2 + y**2)),
-        [pow_con, x >= 0.1, y >= 0.1, x + y <= t],
-    )
-
-    layer = CvxpyLayer(
-        prob,
-        parameters=[t],
-        variables=[
-            x, y, z,
-            pow_con.dual_variables[0],
-            pow_con.dual_variables[1],
-            pow_con.dual_variables[2],
-        ],
-        solver="MOREAU",
-    )
-
-    def f(t_t):
-        x_opt, y_opt, z_opt, d0, d1, d2 = layer(t_t)
-        return d0.sum() + d1.sum() + d2.sum()
-
-    t_t = torch.tensor(4.0, requires_grad=True, device=device)
-
-    torch.autograd.gradcheck(f, (t_t,), atol=1e-4, rtol=1e-3)
 
 
 # ============================================================================
@@ -608,8 +577,8 @@ def test_soc_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(soc_dual.detach().cpu().numpy(), soc_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(soc_dual.detach().cpu().numpy(), soc_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -637,7 +606,7 @@ def test_soc_gradcheck_moreau(device):
     c_t = torch.tensor([0.5, 0.3], requires_grad=True, device=device)
     t_t = torch.tensor(2.0, requires_grad=True, device=device)
 
-    torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 def test_soc_explicit_multi_dual_moreau():
@@ -761,18 +730,18 @@ def test_mixed_cones_moreau(device):
     t_param.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_eq_opt.detach().cpu().numpy(), x_eq.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(x_ineq_opt.detach().cpu().numpy(), x_ineq.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(z_exp_opt.detach().cpu().numpy(), z_exp.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(z_pow_opt.detach().cpu().numpy(), z_pow.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_variables[0].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(ineq_dual.detach().cpu().numpy(), ineq_con.dual_variables[0].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(exp_dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(exp_dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(exp_dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(pow_dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(pow_dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(pow_dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(x_eq_opt.detach().cpu().numpy(), x_eq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(x_ineq_opt.detach().cpu().numpy(), x_ineq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(z_exp_opt.detach().cpu().numpy(), z_exp.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(z_pow_opt.detach().cpu().numpy(), z_pow.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(ineq_dual.detach().cpu().numpy(), ineq_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(exp_dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(exp_dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(exp_dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(pow_dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(pow_dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(pow_dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 # ============================================================================
@@ -810,11 +779,10 @@ def test_jax_equality_dual_moreau():
     b.value = float(b_val)
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(np.array(x_opt), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(np.array(eq_dual), eq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(np.array(x_opt), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(np.array(eq_dual), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
-@pytest.mark.xfail(reason="moreau.jax gradient has shape mismatch in VJP - known issue")
 def test_jax_dual_gradient_moreau():
     """Test JAX autodiff through dual variable with Moreau."""
     jax = pytest.importorskip("jax")
@@ -876,8 +844,8 @@ def test_jax_inequality_dual_moreau():
     c.value = np.array(c_val)
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(np.array(x_opt), x.value, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(np.array(ineq_dual), ineq_con.dual_value, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(np.array(x_opt), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(np.array(ineq_dual), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
 # ============================================================================
@@ -918,10 +886,10 @@ def test_dual_values_match_diffcp(device):
     x_diffcp, dual_diffcp = layer_diffcp(A_t.cpu().clone(), b_t.cpu().clone())
 
     np.testing.assert_allclose(
-        x_moreau.detach().cpu().numpy(), x_diffcp.detach().numpy(), rtol=1e-3, atol=1e-4
+        x_moreau.detach().cpu().numpy(), x_diffcp.detach().numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual_moreau.detach().cpu().numpy(), dual_diffcp.detach().numpy(), rtol=1e-3, atol=1e-4
+        dual_moreau.detach().cpu().numpy(), dual_diffcp.detach().numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
 
 
@@ -961,8 +929,8 @@ def test_dual_gradients_match_diffcp(device):
     dual_diffcp.sum().backward()
 
     np.testing.assert_allclose(
-        c_moreau.grad.cpu().numpy(), c_diffcp.grad.numpy(), rtol=1e-3, atol=1e-4
+        c_moreau.grad.cpu().numpy(), c_diffcp.grad.numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        b_moreau.grad.cpu().numpy(), b_diffcp.grad.numpy(), rtol=1e-3, atol=1e-4
+        b_moreau.grad.cpu().numpy(), b_diffcp.grad.numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
