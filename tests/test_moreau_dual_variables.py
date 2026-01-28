@@ -542,6 +542,42 @@ def test_pow_cone_constraint_dual_moreau(device):
     )
 
 
+@pytest.mark.parametrize("device", get_device_params())
+def test_pow_cone_gradcheck_moreau(device):
+    """Rigorous gradient check for power cone dual variables with Moreau."""
+    x = cp.Variable()
+    y = cp.Variable()
+    z = cp.Variable()
+    t = cp.Parameter(nonneg=True)
+
+    # Use asymmetric power (0.3) and tie x directly to the parameter
+    # so that the power cone duals have nonzero gradient w.r.t. t.
+    pow_con = cp.PowCone3D(x, y, z, 0.3)
+    prob = cp.Problem(
+        cp.Minimize(-z),
+        [pow_con, x == t, y == 1.0],
+    )
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[t],
+        variables=[
+            x, y, z,
+            pow_con.dual_variables[0],
+            pow_con.dual_variables[1],
+            pow_con.dual_variables[2],
+        ],
+        solver="MOREAU",
+    )
+
+    def f(t_t):
+        x_opt, y_opt, z_opt, d0, d1, d2 = layer(t_t)
+        return d0.sum() + d1.sum() + d2.sum()
+
+    t_t = torch.tensor(2.0, requires_grad=True, device=device)
+
+    torch.autograd.gradcheck(f, (t_t,), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
+
 
 # ============================================================================
 # SOC Tests (Moreau only supports 3D SOCs)
