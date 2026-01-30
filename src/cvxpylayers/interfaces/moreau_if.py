@@ -554,12 +554,20 @@ class MOREAU_data:
         grad_fn of the tensors inside, breaking the autograd chain.
 
         Args:
-            solver_args: Unused (solver settings are fixed at layer creation time).
+            solver_args: Optional dict of solver settings to override for this call.
+                Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
         """
         if torch is None:
             raise ImportError(
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
+
+        # Apply per-call solver_args by updating the solver's internal settings
+        if solver_args:
+            settings = self.solver._impl._settings
+            for key, value in solver_args.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
 
         # Enable gradients on inputs for Moreau's autograd
         q = self.q.requires_grad_(True)
@@ -702,9 +710,21 @@ class MOREAU_data_jax:
     setup_cached: bool = False
 
     def jax_solve(self, solver_args=None):
-        """Solve using moreau.jax.Solver with native custom_vjp gradients."""
+        """Solve using moreau.jax.Solver with native custom_vjp gradients.
+
+        Args:
+            solver_args: Optional dict of solver settings to override for this call.
+                Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
+        """
         if jnp is None:
             raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
+
+        # Apply per-call solver_args by updating the solver's internal settings
+        if solver_args:
+            settings = self.solver._settings
+            for key, value in solver_args.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
 
         # Always use 4-arg solve for JAX
         if self.batch_size > 1:
