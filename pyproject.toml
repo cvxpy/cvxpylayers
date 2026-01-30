@@ -7,7 +7,7 @@ name = "cvxpylayers"
 dynamic = ['version']
 description = "Solve and differentiate Convex Optimization problems on the GPU"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
     { name = "A. Agrawal" },
     { name = "B. Amos" },
@@ -24,7 +24,7 @@ dependencies = [
 ]
 keywords = ["convex optimization", "cvxpy", "mathematical programming"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
@@ -65,7 +65,7 @@ allow-direct-references = true
 packages = ["src/cvxpylayers"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/examples", "/README.md", "/LICENSE", "/NOTICE"]
+include = ["/src", "/examples", "/README.md", "/LICENSE"]
 
 [dependency-groups]
 dev = [
