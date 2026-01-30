@@ -410,11 +410,6 @@ def parse_args(
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
 
-    # Include verbose in solver_args so it's passed to the solver interface
-    if verbose and (solver_args is None or "verbose" not in solver_args):
-        solver_args = solver_args.copy() if solver_args else {}
-        solver_args["verbose"] = True
-
     # Create solver context
     solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
         solver,
@@ -422,6 +417,7 @@ def parse_args(
         cone_dims,
         data,
         solver_args,
+        verbose=verbose,
     )
 
     # Build parameter ordering mapping

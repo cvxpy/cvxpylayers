@@ -117,6 +117,7 @@ class DIFFCP_ctx:
         self.A_shape = (m, np1)
         self.b_idx = con_indices[con_ptr[-2]: con_ptr[-1]]
         self.dims = dims
+        self.options = options or {}
 
     def jax_to_data(self, quad_obj_values,
                     lin_obj_values, con_values) -> "DIFFCP_data":
@@ -149,6 +150,7 @@ class DIFFCP_ctx:
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
+            options=self.options,
         )
 
     def mlx_to_data(self, quad_obj_values,
@@ -193,6 +195,7 @@ class DIFFCP_ctx:
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
+            options=self.options,
         )
 
 
@@ -205,17 +208,20 @@ class DIFFCP_data:
     cone_dict: dict[str, int | list[int]]
     batch_size: int
     originally_unbatched: bool
+    options: dict
 
     def jax_solve(self, solver_args=None):
-        if solver_args is None:
-            solver_args = {}
+        # Merge layer options with per-call solver_args
+        merged_args = {**self.options}
+        if solver_args:
+            merged_args.update(solver_args)
 
         xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
             self.As,
             self.bs,
             self.cs,
             [self.cone_dict] * self.batch_size,
-            **solver_args,
+            **merged_args,
         )
 
         primal = jnp.stack([jnp.array(x) for x in xs])
@@ -248,15 +254,17 @@ class DIFFCP_data:
                 "Install with: pip install mlx"
             )
 
-        if solver_args is None:
-            solver_args = {}
+        # Merge layer options with per-call solver_args
+        merged_args = {**self.options}
+        if solver_args:
+            merged_args.update(solver_args)
 
         xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
             self.As,
             self.bs,
             self.cs,
             [self.cone_dict] * self.batch_size,
-            **solver_args,
+            **merged_args,
         )
         primal = mx.stack([mx.array(x, dtype=mx.float32) for x in xs])
         dual = mx.stack([mx.array(y, dtype=mx.float32) for y in ys])
@@ -324,15 +332,17 @@ if torch is not None:
                 batch_size,
             )
 
-            if solver_args is None:
-                solver_args = {}
+            # Merge layer options with per-call solver_args
+            merged_args = {**ctx.options}
+            if solver_args:
+                merged_args.update(solver_args)
 
             xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
                 As,
                 bs,
                 cs,
                 [dims_to_solver_dict(ctx.dims)] * batch_size,
-                **solver_args,
+                **merged_args,
             )
 
             primal = torch.stack([torch.from_numpy(x) for x in xs])

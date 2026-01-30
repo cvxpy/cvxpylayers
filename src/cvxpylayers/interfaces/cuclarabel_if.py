@@ -327,7 +327,8 @@ class CUCLARABEL_ctx:
             lin_obj_values = jax.device_put(lin_obj_values, device=gpu_device)
 
         if self.julia_ctx is None:
-            self.julia_ctx = Julia_CTX(self.dims)
+            verbose = self.options.get("verbose", False) if self.options else False
+            self.julia_ctx = Julia_CTX(self.dims, verbose=verbose)
 
         data_matrices = _build_gpu_cqp_matrices(
             con_values=con_values,
@@ -513,7 +514,7 @@ class Julia_CTX:
     jl: Any
     was_solved_once: bool
 
-    def __init__(self, dims: dict):
+    def __init__(self, dims: dict, verbose: bool = False):
         from juliacall import Main as jl
 
         self.jl = jl
@@ -525,9 +526,11 @@ class Julia_CTX:
 
         dims_to_cuclarabel_cones(self.jl, dims)
 
+        # Set verbose from Python
+        self.jl.verbose_flag = verbose
         self.jl.seval("""
         settings = Clarabel.Settings(direct_solve_method = :cudss)
-        settings.verbose = false
+        settings.verbose = verbose_flag
         solver   = Clarabel.Solver(settings)
         """)
 
