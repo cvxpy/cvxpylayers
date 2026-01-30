@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, cast
 
 import cvxpy as cp
@@ -426,11 +427,17 @@ def scipy_csr_to_torch_csr(
     num_rows, num_cols = scipy_csr.shape  # type: ignore[misc]
 
     # Create the torch sparse csr_tensor
-    torch_csr = torch.sparse_csr_tensor(
-        crow_indices=torch.tensor(row_ptr, dtype=torch.int64),
-        col_indices=torch.tensor(col_indices, dtype=torch.int64),
-        values=torch.tensor(values, dtype=torch.float64),
-        size=(num_rows, num_cols),
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sparse CSR tensor support is in beta state",
+            category=UserWarning,
+        )
+        torch_csr = torch.sparse_csr_tensor(
+            crow_indices=torch.tensor(row_ptr, dtype=torch.int64),
+            col_indices=torch.tensor(col_indices, dtype=torch.int64),
+            values=torch.tensor(values, dtype=torch.float64),
+            size=(num_rows, num_cols),
+        )
 
     return torch_csr
