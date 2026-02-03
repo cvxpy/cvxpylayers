@@ -414,7 +414,6 @@ class CvxpyLayer:
         A_idx = solver_ctx.A_idx
         b_idx = solver_ctx.b_idx
         m = solver_ctx.A_shape[0]
-        has_P = P_idx is not None
 
         def extract_and_solve(
             P_eval_single: jnp.ndarray | None,
@@ -423,7 +422,7 @@ class CvxpyLayer:
         ) -> tuple[jnp.ndarray, jnp.ndarray]:
             """Extract problem data and solve a single (unbatched) problem."""
             # Extract P values in CSR order
-            if has_P and P_eval_single is not None:
+            if P_idx is not None and P_eval_single is not None:
                 P_values = P_eval_single[P_idx]  # (nnzP,)
             else:
                 P_values = jnp.zeros(0, dtype=jnp.float64)

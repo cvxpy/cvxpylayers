@@ -904,6 +904,143 @@ def test_jax_inequality_dual_moreau():
     np.testing.assert_allclose(np.array(ineq_dual), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
 
 
+def test_jax_jit_dual_moreau():
+    """Test jax.jit with dual variables using Moreau solver."""
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 2
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    b = cp.Parameter()
+
+    eq_con = cp.sum(x) == b
+    prob = cp.Problem(cp.Minimize(c @ x + 0.5 * cp.sum_squares(x)), [eq_con])
+
+    layer = JaxCvxpyLayer(
+        prob,
+        parameters=[c, b],
+        variables=[x, eq_con.dual_variables[0]],
+        solver="MOREAU",
+    )
+
+    @jax.jit
+    def solve_and_sum_dual(c_val, b_val):
+        x_opt, eq_dual = layer(c_val, b_val)
+        return jnp.sum(eq_dual)
+
+    c_val = jnp.array([0.5, -0.3])
+    b_val = jnp.array(1.0)
+
+    # Test JIT forward
+    result = solve_and_sum_dual(c_val, b_val)
+    assert jnp.isfinite(result)
+
+    # Test JIT gradient
+    grad_c, grad_b = jax.grad(solve_and_sum_dual, argnums=(0, 1))(c_val, b_val)
+    assert jnp.isfinite(grad_c).all()
+    assert jnp.isfinite(grad_b)
+
+
+def test_jax_vmap_dual_moreau():
+    """Test jax.vmap with dual variables using Moreau solver."""
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 2
+    batch_size = 3
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    b = cp.Parameter()
+
+    eq_con = cp.sum(x) == b
+    prob = cp.Problem(cp.Minimize(c @ x + 0.5 * cp.sum_squares(x)), [eq_con])
+
+    layer = JaxCvxpyLayer(
+        prob,
+        parameters=[c, b],
+        variables=[x, eq_con.dual_variables[0]],
+        solver="MOREAU",
+    )
+
+    def solve_single(c_val, b_val):
+        x_opt, eq_dual = layer(c_val, b_val)
+        return x_opt, eq_dual
+
+    # Batched inputs
+    key = jax.random.PRNGKey(42)
+    c_batch = jax.random.normal(key, (batch_size, n))
+    b_batch = jnp.ones(batch_size)
+
+    # Test vmap
+    x_batch, dual_batch = jax.vmap(solve_single)(c_batch, b_batch)
+
+    assert x_batch.shape == (batch_size, n)
+    assert dual_batch.shape == (batch_size,)
+
+    # Verify each element against CVXPY
+    for i in range(batch_size):
+        c.value = np.array(c_batch[i])
+        b.value = float(b_batch[i])
+        prob.solve(solver=cp.CLARABEL)
+
+        np.testing.assert_allclose(np.array(x_batch[i]), x.value, rtol=1e-2, atol=1e-3)
+        np.testing.assert_allclose(np.array(dual_batch[i]), eq_con.dual_value, rtol=1e-2, atol=1e-3)
+
+
+# ============================================================================
+# torch.compile Tests
+# ============================================================================
+
+
+@pytest.fixture
+def reset_dynamo():
+    """Reset torch.compile cache between tests."""
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("device", get_device_params())
+def test_torch_compile_dual_moreau(device, reset_dynamo):
+    """Test torch.compile with dual variables using Moreau solver."""
+    n = 2
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    b = cp.Parameter()
+
+    eq_con = cp.sum(x) == b
+    prob = cp.Problem(cp.Minimize(c @ x + 0.5 * cp.sum_squares(x)), [eq_con])
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[c, b],
+        variables=[x, eq_con.dual_variables[0]],
+        solver="MOREAU",
+    )
+
+    @torch.compile
+    def solve_and_sum_dual(c_t, b_t):
+        x_opt, eq_dual = layer(c_t, b_t)
+        return eq_dual.sum()
+
+    c_t = torch.tensor([0.5, -0.3], requires_grad=True, device=device)
+    b_t = torch.tensor(1.0, requires_grad=True, device=device)
+
+    # Test compiled forward
+    result = solve_and_sum_dual(c_t, b_t)
+    assert torch.isfinite(result)
+
+    # Test compiled backward
+    result.backward()
+    assert c_t.grad is not None
+    assert b_t.grad is not None
+    assert torch.isfinite(c_t.grad).all()
+    assert torch.isfinite(b_t.grad)
+
+
 # ============================================================================
 # Comparison with DIFFCP
 # ============================================================================
