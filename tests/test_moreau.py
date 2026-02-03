@@ -1095,3 +1095,166 @@ def test_torch_compile_batch_size_one(device, reset_dynamo):
     loss.backward()
     assert b_val.grad is not None
     assert b_val.grad.shape == (1, n)
+
+
+# ========== JAX JIT Tests ==========
+# These tests verify JIT/vmap compatibility with the Moreau solver.
+# Moreau's JAX solver uses custom_vjp with pure_callback and vmap_method="broadcast_all",
+# making it fully compatible with jax.jit, jax.vmap, and jax.pmap.
+
+
+@pytest.fixture
+def clear_jax_cache():
+    """Clear JAX compilation cache between tests."""
+    jax = pytest.importorskip("jax")
+    yield
+    jax.clear_caches()
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_jit_unbatched(clear_jax_cache, device):
+    """Test that jax.jit works with unbatched inputs."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    jitted_layer = jax.jit(lambda b: layer(b, solver_args={"device": device}))
+    b_val = jnp.array([1.0, 2.0, 3.0])
+    (x_sol,) = jitted_layer(b_val)
+
+    assert x_sol.shape == (n,)
+    assert jnp.allclose(x_sol, b_val, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_jit_batched(clear_jax_cache, device):
+    """Test that jax.jit works with batched inputs."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n, batch_size = 4, 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    jitted_layer = jax.jit(lambda b: layer(b, solver_args={"device": device}))
+    b_val = jax.random.normal(jax.random.PRNGKey(0), (batch_size, n))
+    (x_sol,) = jitted_layer(b_val)
+
+    assert x_sol.shape == (batch_size, n)
+    assert jax.numpy.allclose(x_sol, b_val, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_jit_batch_size_one(clear_jax_cache, device):
+    """Regression: batch_size=1 should preserve batch dim."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 5
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    jitted_layer = jax.jit(lambda b: layer(b, solver_args={"device": device}))
+    b_val = jax.random.normal(jax.random.PRNGKey(0), (1, n))
+    (x_sol,) = jitted_layer(b_val)
+
+    assert x_sol.shape == (1, n), f"Expected (1, {n}), got {x_sol.shape}"
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_jit_gradient(clear_jax_cache, device):
+    """Test gradients through jax.jit."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    @jax.jit
+    def loss_fn(b_val):
+        (x,) = layer(b_val, solver_args={"device": device})
+        return jnp.sum(x)
+
+    grad_fn = jax.jit(jax.grad(loss_fn))
+    b_val = jnp.array([1.0, 2.0, 3.0])
+    grad = grad_fn(b_val)
+
+    # For min ||x-b||^2, x*=b, so dx*/db = I, d/db sum(x*) = [1,1,1]
+    expected_grad = jnp.ones(n)
+    assert jnp.allclose(grad, expected_grad, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_vmap_external(clear_jax_cache, device):
+    """Test using jax.vmap externally on the layer."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n, batch_size = 3, 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    def solve_single(b_val):
+        (x,) = layer(b_val, solver_args={"device": device})
+        return x
+
+    vmapped_solve = jax.vmap(solve_single)
+    b_batch = jax.random.normal(jax.random.PRNGKey(0), (batch_size, n))
+    x_batch = vmapped_solve(b_batch)
+
+    assert x_batch.shape == (batch_size, n)
+    assert jnp.allclose(x_batch, b_batch, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_jax_jit_vmap_composition(clear_jax_cache, device):
+    """Test jit(vmap(...)) composition."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n, batch_size = 3, 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    def solve_single(b_val):
+        (x,) = layer(b_val, solver_args={"device": device})
+        return x
+
+    jit_vmapped = jax.jit(jax.vmap(solve_single))
+    b_batch = jax.random.normal(jax.random.PRNGKey(0), (batch_size, n))
+    x_batch = jit_vmapped(b_batch)
+
+    assert x_batch.shape == (batch_size, n)
+    assert jnp.allclose(x_batch, b_batch, atol=1e-4)

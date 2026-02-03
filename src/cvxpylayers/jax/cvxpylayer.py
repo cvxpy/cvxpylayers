@@ -232,6 +232,15 @@ class CvxpyLayer:
     and computing gradients via implicit differentiation. Compatible with
     ``jax.grad``, ``jax.jit``, and ``jax.vmap``.
 
+    JIT/vmap Compatibility:
+        When using solver="MOREAU", this layer is fully compatible with
+        jax.jit, jax.vmap, and jax.pmap. The Moreau solver provides native
+        JAX autodiff support via custom_vjp with pure_callback, enabling
+        JIT compilation of the entire solve-differentiate pipeline.
+
+        Other solvers (DIFFCP) use Python-based solving and are not
+        JIT-compatible due to closure-based gradient handling.
+
     Example:
         >>> import cvxpy as cp
         >>> import jax
@@ -358,6 +367,131 @@ class CvxpyLayer:
         q_eval = self.q @ p_stack
         A_eval = self.A @ p_stack
 
+        # Check if solver has native JAX autodiff (Moreau)
+        # If so, bypass the closure-based custom_vjp wrapper and use Moreau's native autodiff
+        if self.ctx.solver == "MOREAU":
+            return self._solve_moreau(P_eval, q_eval, A_eval, batch, solver_args)
+
+        # Non-Moreau: use existing custom_vjp wrapper (not JIT-compatible)
+        return self._solve_with_custom_vjp(P_eval, q_eval, A_eval, batch, solver_args)
+
+    def _solve_moreau(
+        self,
+        P_eval: jnp.ndarray | None,
+        q_eval: jnp.ndarray,
+        A_eval: jnp.ndarray,
+        batch: tuple,
+        solver_args: dict[str, Any],
+    ) -> tuple[jnp.ndarray, ...]:
+        """Direct call to Moreau solver - uses its native custom_vjp (JIT-compatible).
+
+        Moreau's JAX solver (moreau.jax.Solver) implements custom_vjp with
+        pure_callback and vmap_method="broadcast_all", making it fully compatible
+        with jax.jit, jax.vmap, and jax.pmap.
+
+        This method inlines the data extraction logic (normally in jax_to_data) to
+        avoid creating Python objects that JAX can't vmap through. The key operations
+        are all pure JAX operations that work correctly under vmap.
+        """
+        solver_ctx = self.ctx.solver_ctx  # type: ignore[attr-defined]
+
+        # Apply per-call solver_args to solver settings
+        if solver_args:
+            settings = solver_ctx.get_jax_solver()._impl._settings
+            for key, value in solver_args.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
+
+        # Get the solve function from moreau solver
+        # Use _impl.solve (un-JIT'd) to avoid conflicts with outer JIT/grad
+        solve_fn = solver_ctx.get_jax_solver()._impl.solve
+
+        if batch:
+            # Batched case: inputs have shape (dim, batch)
+            batch_size = batch[0]
+
+            # Extract P values in CSR order
+            if solver_ctx.P_idx is not None and P_eval is not None:
+                P_values = P_eval[solver_ctx.P_idx, :]  # (nnzP, batch)
+            else:
+                P_values = jnp.zeros((0, batch_size), dtype=jnp.float64)
+
+            # Extract A values in CSR order (negated for Ax + s = b form)
+            A_values = -A_eval[solver_ctx.A_idx, :]  # (nnzA, batch)
+
+            # Extract b vector from the end of A_eval
+            b_start = A_eval.shape[0] - solver_ctx.b_idx.size
+            b_raw = A_eval[b_start:, :]  # (b_idx.size, batch)
+
+            # Scatter b_raw into full b vector at correct indices
+            m = solver_ctx.A_shape[0]
+            b = jnp.zeros((m, batch_size), dtype=jnp.float64)
+            b = b.at[solver_ctx.b_idx, :].set(b_raw)
+
+            # Extract q (linear cost) - exclude the constant term at the end
+            q = q_eval[:-1, :]  # (n, batch)
+
+            # Transpose to (batch, dim) format for moreau
+            P_values = P_values.T  # (batch, nnzP)
+            A_values = A_values.T  # (batch, nnzA)
+            q = q.T  # (batch, n)
+            b = b.T  # (batch, m)
+
+            # Call moreau's solve with batched inputs
+            solution, _info = solve_fn(P_values, A_values, q, b)
+
+            primal = solution.x  # (batch, n)
+            dual = solution.z  # (batch, m)
+
+        else:
+            # Unbatched case: inputs have shape (dim,)
+            # Extract P values in CSR order
+            if solver_ctx.P_idx is not None and P_eval is not None:
+                P_values = P_eval[solver_ctx.P_idx]  # (nnzP,)
+            else:
+                P_values = jnp.zeros(0, dtype=jnp.float64)
+
+            # Extract A values in CSR order (negated for Ax + s = b form)
+            A_values = -A_eval[solver_ctx.A_idx]  # (nnzA,)
+
+            # Extract b vector from the end of A_eval
+            b_start = A_eval.shape[0] - solver_ctx.b_idx.size
+            b_raw = A_eval[b_start:]  # (b_idx.size,)
+
+            # Scatter b_raw into full b vector at correct indices
+            m = solver_ctx.A_shape[0]
+            b = jnp.zeros(m, dtype=jnp.float64)
+            b = b.at[solver_ctx.b_idx].set(b_raw)
+
+            # Extract q (linear cost) - exclude the constant term at the end
+            q = q_eval[:-1]  # (n,)
+
+            # Call moreau's solve with unbatched inputs
+            solution, _info = solve_fn(P_values, A_values, q, b)
+
+            primal = solution.x  # (n,)
+            dual = solution.z  # (m,)
+
+            # Add batch dimension for _recover_results (which expects it)
+            primal = jnp.expand_dims(primal, 0)  # (1, n)
+            dual = jnp.expand_dims(dual, 0)  # (1, m)
+
+        return _recover_results(primal, dual, self.ctx, batch)
+
+    def _solve_with_custom_vjp(
+        self,
+        P_eval: jnp.ndarray | None,
+        q_eval: jnp.ndarray,
+        A_eval: jnp.ndarray,
+        batch: tuple,
+        solver_args: dict[str, Any],
+    ) -> tuple[jnp.ndarray, ...]:
+        """Solve using closure-based custom_vjp wrapper (not JIT-compatible).
+
+        This is used for non-Moreau solvers (e.g., DIFFCP) that don't have
+        native JAX autodiff support. The closure-based approach stores data
+        in a Python dict for the backward pass, which breaks JIT tracing.
+        """
         # Store data and adjoint in closure for backward pass
         # This avoids JAX trying to trace through DIFFCP's Python-based solver
         data_container: dict[str, Any] = {}

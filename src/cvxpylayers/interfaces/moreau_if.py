@@ -712,6 +712,17 @@ class MOREAU_data_jax:
     def jax_solve(self, solver_args=None):
         """Solve using moreau.jax.Solver with native custom_vjp gradients.
 
+        This calls moreau's _solve_raw function directly (bypassing Solver.solve)
+        to get a JIT-compatible solve function. The _solve_raw function has
+        custom_vjp defined and uses pure_callback with vmap_method="broadcast_all"
+        for JAX tracing compatibility.
+
+        NOTE: We do NOT do explicit vmap here. Moreau's pure_callback with
+        vmap_method="broadcast_all" handles batching correctly, including:
+        - Internal batching (when layer is called with batched inputs)
+        - External vmap (when user does jax.vmap(layer))
+        Doing explicit vmap here would break external vmap (double-batching).
+
         Args:
             solver_args: Optional dict of solver settings to override for this call.
                 Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
@@ -721,108 +732,50 @@ class MOREAU_data_jax:
 
         # Apply per-call solver_args by updating the solver's internal settings
         if solver_args:
-            settings = self.solver._settings
+            settings = self.solver._impl._settings
             for key, value in solver_args.items():
                 if hasattr(settings, key):
                     setattr(settings, key, value)
 
-        # Always use 4-arg solve for JAX
-        if self.batch_size > 1:
-            # Moreau JAX solvers expect unbatched inputs; use vmap for batching
-            solution = jax.vmap(self.solver.solve)(
-                self.P_values, self.A_values, self.q, self.b
-            )
-        else:
-            solution = self.solver.solve(
-                self.P_values, self.A_values, self.q, self.b
-            )
+        # Use the underlying _solve_raw function which is JIT-compatible
+        # (It has custom_vjp and uses pure_callback with vmap_method="broadcast_all")
+        # The high-level Solver.solve() method has len(args) checks and self._info
+        # mutations that break JIT tracing.
+        solve_fn = self.solver._solve_raw
 
-        primal = solution.x
-        dual = solution.z
+        # Call solve directly - DO NOT use jax.vmap here!
+        # Moreau's pure_callback with vmap_method="broadcast_all" handles batching.
+        # The inputs are already in (batch, dim) shape from jax_to_data.
+        # _solve_raw signature: (P_data, A_data, q, b) -> (JaxSolution, JaxSolveInfo)
+        solution, _info = solve_fn(
+            self.P_values, self.A_values, self.q, self.b
+        )
 
-        # Ensure consistent (batch, dim) shape
-        if primal.ndim == 1:
-            primal = jnp.expand_dims(primal, 0)
-            dual = jnp.expand_dims(dual, 0)
+        primal = solution.x  # Shape: (batch, n) or (n,) for unbatched
+        dual = solution.z  # Shape: (batch, m) or (m,) for unbatched
 
-        # Store info needed for gradient mapping
-        backwards_info = {
-            "solver": self.solver,
-            "P_values": self.P_values,
-            "A_values": self.A_values,
-            "q": self.q,
-            "b": self.b,
-        }
+        # backwards_info not used for Moreau - gradients flow through Moreau's custom_vjp
+        backwards_info = None
 
         return primal, dual, backwards_info
 
     def jax_derivative(self, dprimal, ddual, backwards_info):
-        """Compute gradients using JAX autodiff on Moreau's solve.
+        """Not used when Moreau's native custom_vjp handles gradients.
 
-        Maps Moreau's gradients back to cvxpylayers format.
+        When using the Moreau solver with JAX, gradients are computed via
+        Moreau's native custom_vjp implementation (in moreau.jax._cpu_impl),
+        which uses pure_callback with vmap_method="broadcast_all" for
+        JIT/vmap compatibility.
+
+        CvxpyLayer's JAX __call__ method bypasses the closure-based custom_vjp
+        wrapper for Moreau and calls jax_solve() directly. Moreau's solve()
+        returns tensors with gradients already attached via its own custom_vjp,
+        so this method should never be called.
+
+        If you're seeing this error, something is wrong with the solver dispatch.
         """
-        if jnp is None:
-            raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
-
-        # Define loss function that extracts x and z from solution
-        def solve_fn(P_vals, A_vals, q, b):
-            solver = backwards_info["solver"]
-            solution = solver.solve(P_vals, A_vals, q, b)
-            return solution.x, solution.z
-
-        P_vjp = backwards_info["P_values"]
-        A_vjp = backwards_info["A_values"]
-        q_vjp = backwards_info["q"]
-        b_vjp = backwards_info["b"]
-
-        if not self.originally_unbatched:
-            # Use vmap for any batched input (including batch_size=1)
-            solve_fn = jax.vmap(solve_fn)
-        else:
-            # Squeeze batch dim so VJP inputs/outputs are consistently unbatched
-            P_vjp = jnp.squeeze(P_vjp, 0)
-            A_vjp = jnp.squeeze(A_vjp, 0)
-            q_vjp = jnp.squeeze(q_vjp, 0)
-            b_vjp = jnp.squeeze(b_vjp, 0)
-            dprimal = jnp.squeeze(dprimal, 0)
-            ddual = jnp.squeeze(ddual, 0)
-
-        # Compute vector-Jacobian products using JAX
-        _, vjp_fn = jax.vjp(solve_fn, P_vjp, A_vjp, q_vjp, b_vjp)
-        dP_values, dA_values, dq_raw, db_raw = vjp_fn((dprimal, ddual))
-
-        # Re-add batch dim for unbatched case
-        if self.originally_unbatched:
-            dP_values = jnp.expand_dims(dP_values, 0)
-            dA_values = jnp.expand_dims(dA_values, 0)
-            dq_raw = jnp.expand_dims(dq_raw, 0)
-            db_raw = jnp.expand_dims(db_raw, 0)
-
-        # Scatter P gradients back to P_eval format
-        if self.P_eval_size > 0 and self.P_idx is not None:
-            dP_eval = jnp.zeros((self.P_eval_size, self.batch_size), dtype=jnp.float64)
-            dP_eval = dP_eval.at[self.P_idx, :].set(dP_values.T)
-        else:
-            dP_eval = None
-
-        # Scatter q gradients to q_eval format
-        dq_eval = jnp.zeros((self.q_eval_size, self.batch_size), dtype=jnp.float64)
-        dq_eval = dq_eval.at[:-1, :].set(dq_raw.T)
-
-        # Scatter A and b gradients to A_eval format
-        dA_eval = jnp.zeros((self.A_eval_size, self.batch_size), dtype=jnp.float64)
-        dA_eval = dA_eval.at[self.A_idx, :].set(-dA_values.T)  # Negate back
-
-        b_start = self.A_eval_size - self.b_idx.size
-        # Gather gradients from positions b_idx (backward of scatter)
-        b_section = db_raw[:, self.b_idx].T  # (b_idx.size, batch)
-        dA_eval = dA_eval.at[b_start:, :].set(b_section)
-
-        # Remove batch dimension if originally unbatched
-        if self.originally_unbatched:
-            if dP_eval is not None:
-                dP_eval = jnp.squeeze(dP_eval, 1)
-            dq_eval = jnp.squeeze(dq_eval, 1)
-            dA_eval = jnp.squeeze(dA_eval, 1)
-
-        return dP_eval, dq_eval, dA_eval
+        raise RuntimeError(
+            "jax_derivative should not be called for Moreau solver. "
+            "Moreau uses native JAX autodiff via its custom_vjp implementation. "
+            "The CvxpyLayer should call _solve_moreau() which bypasses this method."
+        )
