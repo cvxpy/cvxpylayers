@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
@@ -59,6 +59,9 @@ class VariableRecovery:
     shape: tuple[int, ...]
     is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
     is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
+    # Pre-computed fields for JIT compatibility (eliminate conditionals in hot path)
+    source: Literal["primal", "dual"] = "primal"  # Which solution to read from
+    unpack_fn: Literal["reshape", "svec_primal", "svec_dual"] = "reshape"  # How to unpack
 
 
 @dataclass
@@ -73,7 +76,7 @@ class LayersContext:
     solver_ctx: SolverContext
     solver: str
     var_recover: list[VariableRecovery]
-    user_order_to_col_order: dict[int, int]
+    user_order_to_col_order: tuple[int, ...]
     batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
@@ -82,6 +85,8 @@ class LayersContext:
     # Maps original GP parameters to their log-space DCP parameters
     # Used to determine which parameters need log transformation in forward pass
     gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
+    # Pre-computed mask: which params need log() for GP (JIT-compatible)
+    gp_log_mask: tuple[bool, ...] | None = None
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -174,11 +179,15 @@ def _build_primal_recovery(var: cp.Variable, param_prob: ParamConeProg) -> Varia
             dual=None,
             shape=var.shape,
             is_symmetric=True,
+            source="primal",
+            unpack_fn="svec_primal",
         )
     return VariableRecovery(
         primal=slice(start, start + var.size),
         dual=None,
         shape=var.shape,
+        source="primal",
+        unpack_fn="reshape",
     )
 
 
@@ -205,6 +214,8 @@ def _build_dual_recovery(
         dual=slice(dual_start, dual_start + dual_size),
         shape=var.shape,
         is_psd_dual=is_psd,
+        source="dual",
+        unpack_fn="svec_dual" if is_psd else "reshape",
     )
 
 
@@ -299,7 +310,7 @@ def _build_user_order_mapping(
     param_prob: ParamConeProg,
     gp: bool,
     gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None,
-) -> dict[int, int]:
+) -> tuple[int, ...]:
     """Build mapping from user parameter order to column order.
 
     CVXPY internally reorders parameters when canonicalizing problems. This
@@ -313,7 +324,7 @@ def _build_user_order_mapping(
         gp_param_to_log_param: Mapping from GP params to log-space DCP params
 
     Returns:
-        Dictionary mapping user parameter index to column order index
+        Tuple mapping user parameter index to column order index (JIT-compatible)
     """
     # For GP problems, we need to use the log-space DCP parameter IDs
     if gp and gp_param_to_log_param:
@@ -333,12 +344,13 @@ def _build_user_order_mapping(
             )
         }
 
-    # Convert column indices to sequential order mapping
-    user_order_to_col_order = {}
+    # Convert column indices to sequential order mapping as a tuple
+    # user_order_to_col_order[i] = j means user param i goes to column order j
+    user_order_to_col_order = [0] * len(parameters)
     for j, i in enumerate(user_order_to_col.keys()):
         user_order_to_col_order[i] = j
 
-    return user_order_to_col_order
+    return tuple(user_order_to_col_order)
 
 
 def parse_args(
@@ -447,6 +459,11 @@ def parse_args(
 
             var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice))
 
+    # Pre-compute GP log mask for JIT compatibility
+    gp_log_mask = None
+    if gp and gp_param_to_log_param:
+        gp_log_mask = tuple(p in gp_param_to_log_param for p in parameters)
+
     return LayersContext(
         parameters,
         param_prob.reduced_P,
@@ -459,4 +476,5 @@ def parse_args(
         user_order_to_col_order=user_order_to_col_order,
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,
+        gp_log_mask=gp_log_mask,
     )
