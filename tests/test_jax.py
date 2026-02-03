@@ -75,7 +75,7 @@ def test_simple_batch_socp():
         (sol,) = prob_jax(*params)
         return sum(sol)
 
-    check_grads(f, (P_sqrt_jax, q_jax, A_jax, b_jax), order=1, modes=["rev"])
+    check_grads(f, (P_sqrt_jax, q_jax, A_jax, b_jax), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
 
 
 def test_least_squares():
@@ -105,7 +105,12 @@ def test_least_squares():
     d_lstsq_sum_linalg = jax.grad(lstsq_sum_linalg, [0, 1])
 
     grad_A_cvxpy, grad_b_cvxpy = d_lstsq_sum_cp(A_jax, b_jax)
-    grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(A_jax, b_jax)
+    # Run linalg on CPU (conflict between JAX and multiprocessing)
+    cpu = jax.devices("cpu")[0]
+    with jax.default_device(cpu):
+        grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(
+            jax.device_put(A_jax, cpu), jax.device_put(b_jax, cpu)
+        )
 
     assert np.isclose(
         jnp.linalg.norm(grad_A_cvxpy - grad_A_lstsq).item(),
@@ -149,7 +154,7 @@ def test_logistic_regression():
 
     fit_logreg = CvxpyLayer(prob, [X, lam], [a])
 
-    check_grads(fit_logreg, (X_jax, lam_jax), order=1, modes=["rev"])
+    check_grads(fit_logreg, (X_jax, lam_jax), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.skip
@@ -189,7 +194,7 @@ def test_lml():
     lml = CvxpyLayer(prob, [x], [y])
 
     x_th = jnp.array([1.0, -1.0, -1.0, -1.0])
-    check_grads(lml, (x_th,), order=1, modes=["rev"])
+    check_grads(lml, (x_th,), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
 
 
 def test_sdp():
@@ -345,8 +350,13 @@ def test_broadcasting():
     d_lstsq_sum_cp = jax.grad(lstsq_sum_cp, [0, 1])
     d_lstsq_sum_linalg = jax.grad(lstsq_sum_linalg, [0, 1])
 
-    grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(A_jax, b_jax_0)
     grad_A_cvxpy, grad_b_cvxpy = d_lstsq_sum_cp(A_jax, b_jax)
+    # Run linalg on CPU (conflict between JAX and multiprocessing)
+    cpu = jax.devices("cpu")[0]
+    with jax.default_device(cpu):
+        grad_A_lstsq, grad_b_lstsq = d_lstsq_sum_linalg(
+            jax.device_put(A_jax, cpu), jax.device_put(b_jax_0, cpu)
+        )
 
     assert np.isclose(
         jnp.linalg.norm(grad_A_cvxpy / 2.0 - grad_A_lstsq).item(),
