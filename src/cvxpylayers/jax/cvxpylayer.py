@@ -526,11 +526,19 @@ def scipy_csr_to_jax_bcsr(
         return None
     # Use cast to help type checker understand scipy_csr is not None
     scipy_csr = cast(scipy.sparse.csr_array, scipy_csr)
+    num_rows, num_cols = scipy_csr.shape  # type: ignore[misc]
+
+    # JAX BCSR doesn't handle empty matrices (0 rows) properly.
+    # Create a minimal valid BCSR with a single zero element instead.
+    if num_rows == 0:
+        # Create a (1, num_cols) matrix with a single zero at position (0, 0)
+        # This will produce a (1, ...) result when multiplied, which we'll slice to (0, ...)
+        return _EmptyBCSRWrapper(num_cols)
+
     # Get the CSR format components
     values = scipy_csr.data
     col_indices = scipy_csr.indices
     row_ptr = scipy_csr.indptr
-    num_rows, num_cols = scipy_csr.shape  # type: ignore[misc]
 
     # Create the JAX BCSR tensor
     jax_bcsr = jax.experimental.sparse.BCSR(
@@ -539,3 +547,22 @@ def scipy_csr_to_jax_bcsr(
     )
 
     return jax_bcsr
+
+
+class _EmptyBCSRWrapper:
+    """Wrapper for empty (0-row) sparse matrices that JAX BCSR can't handle.
+
+    When multiplied with a vector/matrix, returns an empty array with the correct shape.
+    """
+
+    def __init__(self, num_cols: int):
+        self.num_cols = num_cols
+        self.shape = (0, num_cols)
+
+    def __matmul__(self, other: jnp.ndarray) -> jnp.ndarray:
+        # other shape: (num_cols,) or (num_cols, batch)
+        if other.ndim == 1:
+            return jnp.zeros((0,), dtype=other.dtype)
+        else:
+            batch_size = other.shape[1]
+            return jnp.zeros((0, batch_size), dtype=other.dtype)

@@ -178,7 +178,7 @@ class MOREAU_ctx:
 
         Args:
             objective_structure: CSC structure for the P matrix (or None for LP).
-            constraint_structure: CSC structure for the A matrix and b vector.
+            constraint_structure: CSC structure for the A matrix and b vector (or None for unconstrained).
             dims: Cone dimensions dictionary.
             options: Solver options forwarded to ``moreau.Settings``.
             reduced_P_mat: Sparse parametrization matrix for P. When
@@ -187,22 +187,40 @@ class MOREAU_ctx:
                 ``setup()`` call (the ``PA_is_constant`` optimisation).
             reduced_A_mat: Sparse parametrization matrix for A.
         """
-        # Convert constraint matrix from CSC to CSR
-        A_shuffle, A_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
-            constraint_structure, True
-        )
-
-        # Convert objective matrix from CSC to CSR
+        # Convert objective matrix from CSC to CSR first (needed to determine n for unconstrained case)
         if objective_structure is not None:
             P_shuffle, P_structure, P_shape = convert_csc_structure_to_csr_structure(
                 objective_structure, False
             )
             if P_shape[0] != P_shape[1]:
                 raise ValueError(f"P matrix must be square, got shape {P_shape}")
+            n = P_shape[0]
         else:
             P_shuffle = None
-            P_structure = (np.array([], dtype=np.int64), np.zeros(A_shape[1] + 1, dtype=np.int64))
-            P_shape = (A_shape[1], A_shape[1])
+            P_structure = None  # Will be set after we know n
+            P_shape = None  # Will be set after we know n
+            n = None  # Will be determined from constraint_structure
+
+        # Convert constraint matrix from CSC to CSR
+        if constraint_structure is not None:
+            A_shuffle, A_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
+                constraint_structure, True
+            )
+            if n is None:
+                n = A_shape[1]
+        else:
+            # Unconstrained problem: empty A matrix
+            if n is None:
+                raise ValueError("Cannot determine problem dimension: both P and A are None")
+            A_shuffle = np.array([], dtype=np.int64)
+            A_structure = (np.array([], dtype=np.int64), np.zeros(1, dtype=np.int64))
+            A_shape = (0, n)
+            b_idx = np.array([], dtype=np.int64)
+
+        # Set P structure for LP case (no quadratic objective)
+        if P_structure is None:
+            P_structure = (np.array([], dtype=np.int64), np.zeros(n + 1, dtype=np.int64))
+            P_shape = (n, n)
 
         if P_shape[0] != A_shape[1]:
             raise ValueError(f"P dimension {P_shape[0]} != A column dimension {A_shape[1]}")

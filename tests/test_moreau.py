@@ -197,6 +197,64 @@ def test_mixed_constraints():
     compare_solvers(problem, [A, b, G, h], [A_val, b_val, G_val, h_val], [x])
 
 
+def test_unconstrained_torch():
+    """Test unconstrained QP with PyTorch.
+
+    minimize x^2 + c*x  =>  x* = -c/2
+    """
+    n = 3
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x) + c @ x))
+
+    c_val = np.array([1.0, -2.0, 0.5])
+
+    layer = CvxpyLayer(problem, [c], [x], solver="MOREAU")
+    c_tensor = torch.tensor(c_val, requires_grad=True)
+    (x_sol,) = layer(c_tensor)
+
+    # Verify analytical solution: x* = -c/2
+    expected = -c_val / 2
+    error = np.linalg.norm(x_sol.detach().numpy() - expected)
+    assert error < 1e-4, f"Solution error: {error:.6e}"
+
+    # Verify gradient: d/dc sum(x*) = -1/2
+    x_sol.sum().backward()
+    expected_grad = torch.full((n,), -0.5, dtype=torch.float64)
+    grad_error = torch.norm(c_tensor.grad - expected_grad).item()
+    assert grad_error < 1e-4, f"Gradient error: {grad_error:.6e}"
+
+
+def test_unconstrained_jax():
+    """Test unconstrained QP with JAX (including JIT)."""
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x) + c @ x))
+
+    layer = JaxCvxpyLayer(problem, parameters=[c], variables=[x], solver="MOREAU")
+    c_val = jnp.array([1.0, -2.0, 0.5])
+
+    # Test basic solve
+    (x_sol,) = layer(c_val)
+    expected = -c_val / 2
+    assert jnp.linalg.norm(x_sol - expected) < 1e-4
+
+    # Test JIT + gradient
+    @jax.jit
+    def solve_and_sum(c):
+        (x,) = layer(c)
+        return jnp.sum(x)
+
+    grad = jax.grad(solve_and_sum)(c_val)
+    expected_grad = jnp.full((n,), -0.5)
+    assert jnp.linalg.norm(grad - expected_grad) < 1e-4
+
+
 def test_box_constraints():
     """Test with box constraints (variable bounds)."""
     # minimize (x-2)^T(x-2) subject to 0 <= x <= 1
