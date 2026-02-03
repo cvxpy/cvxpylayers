@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any, cast
 
 import cvxpy as cp
@@ -8,6 +9,37 @@ import numpy as np
 import scipy.sparse
 
 import cvxpylayers.utils.parse_args as pa
+
+
+def _make_scipy_matmul(
+    scipy_csr: scipy.sparse.csr_array,
+) -> "Callable[[jnp.ndarray], jnp.ndarray]":
+    """Create a reusable scipy sparse matmul function with JAX custom_vjp.
+
+    Returns a function that can be called repeatedly without re-creating
+    the custom_vjp machinery each time.
+
+    JAX BCSR on CPU has ~300-500us constant XLA dispatch overhead per matmul.
+    Scipy CSR is 20-180x faster for the sparse matrices typical in cvxpylayers.
+    """
+    scipy_csr_T = scipy_csr.T.tocsr()
+
+    @jax.custom_vjp
+    def matmul(x: jnp.ndarray) -> jnp.ndarray:
+        x_np = np.asarray(x)
+        result = np.asarray(scipy_csr @ x_np, dtype=x_np.dtype)
+        return jnp.array(result)
+
+    def matmul_fwd(x: jnp.ndarray) -> tuple[jnp.ndarray, None]:
+        return matmul(x), None
+
+    def matmul_bwd(_res: None, g: jnp.ndarray) -> tuple[jnp.ndarray]:
+        g_np = np.asarray(g)
+        result = np.asarray(scipy_csr_T @ g_np, dtype=g_np.dtype)
+        return (jnp.array(result),)
+
+    matmul.defvjp(matmul_fwd, matmul_bwd)
+    return matmul
 
 
 def _reshape_fortran(array: jnp.ndarray, shape: tuple) -> jnp.ndarray:
@@ -318,6 +350,17 @@ class CvxpyLayer:
             self.P = None
         self.q: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.q.tocsr())  # type: ignore[assignment]
         self.A: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined,assignment]
+        # On CPU, pre-build scipy sparse matmul functions (20-180x faster than
+        # JAX BCSR due to XLA dispatch overhead). Check device at init time to
+        # avoid tracing issues.
+        self._use_scipy = self.q.data.devices().pop().platform == "cpu"
+        if self._use_scipy:
+            if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
+                self._P_matmul = _make_scipy_matmul(self.ctx.reduced_P.reduced_mat.tocsr())  # type: ignore[attr-defined]
+            else:
+                self._P_matmul = None
+            self._q_matmul = _make_scipy_matmul(self.ctx.q.tocsr())
+            self._A_matmul = _make_scipy_matmul(self.ctx.reduced_A.reduced_mat.tocsr())  # type: ignore[attr-defined]
 
     def __call__(
         self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
@@ -361,9 +404,16 @@ class CvxpyLayer:
         p_stack = _flatten_and_batch_params(params, self.ctx, batch)
 
         # Evaluate parametrized matrices
-        P_eval = self.P @ p_stack if self.P is not None else None
-        q_eval = self.q @ p_stack
-        A_eval = self.A @ p_stack
+        if self._use_scipy:
+            # Use scipy sparse on CPU (20-180x faster than JAX BCSR due to XLA
+            # dispatch overhead)
+            P_eval = self._P_matmul(p_stack) if self._P_matmul is not None else None
+            q_eval = self._q_matmul(p_stack)
+            A_eval = self._A_matmul(p_stack)
+        else:
+            P_eval = self.P @ p_stack if self.P is not None else None
+            q_eval = self.q @ p_stack
+            A_eval = self.A @ p_stack
 
         # Store data and adjoint in closure for backward pass
         # This avoids JAX trying to trace through DIFFCP's Python-based solver

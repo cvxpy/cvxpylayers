@@ -9,6 +9,34 @@ import torch
 import cvxpylayers.utils.parse_args as pa
 
 
+class _ScipySparseMatmul(torch.autograd.Function):
+    """Sparse matrix-vector multiply using scipy on CPU with autograd support.
+
+    PyTorch sparse CSR matmul on CPU is 80-200x slower than scipy due to
+    MKL/OpenBLAS thread-spawning overhead. This uses scipy for the forward
+    pass and computes gradients via the transpose multiply.
+    """
+
+    @staticmethod
+    def forward(scipy_csr: scipy.sparse.csr_array, x: torch.Tensor) -> torch.Tensor:
+        x_np = x.detach().numpy()
+        result = scipy_csr @ x_np
+        return torch.from_numpy(np.asarray(result))
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: tuple, output: torch.Tensor) -> None:
+        scipy_csr, x = inputs
+        ctx.scipy_csr_T = scipy_csr.T.tocsr()
+        ctx.save_for_backward(x)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[None, torch.Tensor]:
+        grad_np = grad_output.numpy()
+        result = ctx.scipy_csr_T @ grad_np
+        return None, torch.from_numpy(np.asarray(result))
+
+
 def _reshape_fortran(array: torch.Tensor, shape: tuple) -> torch.Tensor:
     """Reshape array using Fortran (column-major) order.
 
@@ -333,13 +361,17 @@ class CvxpyLayer(torch.nn.Module):
                 "P",
                 scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat),  # type: ignore[attr-defined]
             )
+            self._P_scipy: scipy.sparse.csr_array | None = self.ctx.reduced_P.reduced_mat.tocsr()  # type: ignore[attr-defined]
         else:
             self.P = None
+            self._P_scipy = None
         self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
+        self._q_scipy: scipy.sparse.csr_array = self.ctx.q.tocsr()
         self.register_buffer(
             "A",
             scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat),  # type: ignore[attr-defined]
         )
+        self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
 
     def forward(
         self, *params: torch.Tensor, solver_args: dict[str, Any] | None = None
@@ -386,14 +418,25 @@ class CvxpyLayer(torch.nn.Module):
         param_dtype = p_stack.dtype
         param_device = p_stack.device
 
-        # Evaluate parametrized matrices (convert sparse matrices to match input dtype and device)
-        P_eval = (
-            (self.P.to(dtype=param_dtype, device=param_device) @ p_stack)
-            if self.P is not None
-            else None
-        )
-        q_eval = self.q.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
-        A_eval = self.A.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
+        # Evaluate parametrized matrices
+        if param_device.type == "cpu":
+            # Use scipy sparse matmul on CPU (80-200x faster than torch sparse CSR)
+            P_eval = (
+                _ScipySparseMatmul.apply(self._P_scipy, p_stack)
+                if self._P_scipy is not None
+                else None
+            )
+            q_eval = _ScipySparseMatmul.apply(self._q_scipy, p_stack)
+            A_eval = _ScipySparseMatmul.apply(self._A_scipy, p_stack)
+        else:
+            # Use torch sparse CSR on GPU (fast there)
+            P_eval = (
+                (self.P.to(dtype=param_dtype, device=param_device) @ p_stack)
+                if self.P is not None
+                else None
+            )
+            q_eval = self.q.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
+            A_eval = self.A.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
 
         # Get the solver-specific _CvxpyLayer class
         from cvxpylayers.interfaces import get_torch_cvxpylayer
