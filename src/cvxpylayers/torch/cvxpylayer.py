@@ -102,7 +102,7 @@ def _flatten_and_batch_params(
     )
 
     assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-    p_stack = torch.cat(cast(list[torch.Tensor], flattened_params), -1)
+    p_stack = torch.cat(flattened_params, -1)  # type: ignore[arg-type]
     # p_stack is always (batch_size, num_params), transpose to (num_params, batch_size)
     # Use permute which works uniformly for 2D tensors
     p_stack = p_stack.T

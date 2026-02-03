@@ -959,3 +959,139 @@ def test_parametrized_PA_not_cached():
     # Check constraint satisfaction: sum(x) = 3
     constraint_value = (A_val @ x_sol.unsqueeze(-1)).squeeze()
     assert torch.allclose(constraint_value, b_val, atol=1e-4)
+
+
+# ============================================================================
+# JIT/compile compatibility tests
+# ============================================================================
+
+
+@pytest.fixture
+def reset_dynamo():
+    """Reset torch.compile cache between tests to avoid cross-test pollution."""
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_torch_compile_unbatched(device, reset_dynamo):
+    """Test that torch.compile works with unbatched inputs.
+
+    This verifies that the batch-conditional code paths in cvxpylayer.py
+    don't break torch.compile tracing.
+    """
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Compile the forward pass
+    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+
+    # Test unbatched
+    b_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, device=device, requires_grad=True)
+    (x_sol,) = compiled_forward(b_val)
+
+    # Verify shape (unbatched should have no batch dim)
+    assert x_sol.shape == (n,), f"Expected shape ({n},), got {x_sol.shape}"
+
+    # Verify solution is correct (x* = b for this problem)
+    assert torch.allclose(x_sol, b_val.detach(), atol=1e-4), (
+        f"Expected {b_val.detach()}, got {x_sol}"
+    )
+
+    # Verify gradients work through compiled function
+    loss = x_sol.sum()
+    loss.backward()
+    expected_grad = torch.ones(n, dtype=torch.float64, device=device)
+    assert b_val.grad is not None, "Gradient was not computed"
+    assert torch.allclose(b_val.grad, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {b_val.grad}"
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_torch_compile_batched(device, reset_dynamo):
+    """Test that torch.compile works with batched inputs.
+
+    This verifies that the batch-conditional code paths in cvxpylayer.py
+    don't break torch.compile tracing for batched inputs.
+    """
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 4
+    batch_size = 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Compile the forward pass
+    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+
+    # Test batched
+    b_val = torch.randn(batch_size, n, dtype=torch.float64, device=device, requires_grad=True)
+    (x_sol,) = compiled_forward(b_val)
+
+    # Verify shape (batched should have batch dim)
+    assert x_sol.shape == (batch_size, n), (
+        f"Expected shape ({batch_size}, {n}), got {x_sol.shape}"
+    )
+
+    # Verify solution is correct (x* = b for this problem)
+    assert torch.allclose(x_sol, b_val.detach(), atol=1e-4), (
+        f"Expected {b_val.detach()}, got {x_sol}"
+    )
+
+    # Verify gradients work through compiled function
+    loss = x_sol.sum()
+    loss.backward()
+    expected_grad = torch.ones(batch_size, n, dtype=torch.float64, device=device)
+    assert b_val.grad is not None, "Gradient was not computed"
+    assert torch.allclose(b_val.grad, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {b_val.grad}"
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_torch_compile_batch_size_one(device, reset_dynamo):
+    """Test that torch.compile preserves batch dimension for batch_size=1.
+
+    This is a regression test: batch_size=1 with explicit batch dim (1, n)
+    should NOT be squeezed to (n,).
+    """
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 5
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+
+    # Explicitly batched with batch_size=1
+    b_val = torch.randn(1, n, dtype=torch.float64, device=device, requires_grad=True)
+    (x_sol,) = compiled_forward(b_val)
+
+    # Should preserve batch dimension
+    assert x_sol.shape == (1, n), (
+        f"Expected shape (1, {n}), got {x_sol.shape}. "
+        "Batch dimension should be preserved for batch_size=1."
+    )
+
+    # Verify gradients
+    loss = x_sol.sum()
+    loss.backward()
+    assert b_val.grad is not None
+    assert b_val.grad.shape == (1, n)
