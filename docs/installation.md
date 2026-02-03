@@ -54,7 +54,7 @@ pip install cvxpylayers[jax]
 
 **Requirements:** JAX >= 0.4.0
 
-Functional style with `jax.grad` and `jax.vmap`. Support for `jax.jit` coming soon.
+Functional style with `jax.grad`, `jax.vmap`, and `jax.jit` (Moreau solver).
 :::
 
 :::{tab-item} MLX

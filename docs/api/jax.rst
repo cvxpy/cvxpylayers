@@ -3,7 +3,7 @@ JAX API
 
 .. module:: cvxpylayers.jax
 
-The JAX layer is a callable class compatible with JAX transformations like ``jax.grad`` and ``jax.vmap``. Support for ``jax.jit`` is coming soon.
+The JAX layer is a callable class compatible with JAX transformations like ``jax.grad``, ``jax.vmap``, and ``jax.jit`` (with the Moreau solver).
 
 CvxpyLayer
 ----------
@@ -63,9 +63,28 @@ Use ``jax.grad`` to compute gradients:
 JIT Compilation
 ---------------
 
+``jax.jit`` is supported with the **Moreau solver**:
+
+.. code-block:: python
+
+   import jax
+   import jax.numpy as jnp
+
+   # Create layer with Moreau solver
+   layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver="MOREAU")
+
+   # JIT the entire solve + gradient computation
+   @jax.jit
+   def solve_and_grad(A, b):
+       (x,) = layer(A, b)
+       return jnp.sum(x)
+
+   grad_fn = jax.grad(solve_and_grad, argnums=[0, 1])
+   dA, db = grad_fn(A_jax, b_jax)
+
 .. note::
 
-   Support for ``jax.jit`` is coming soon.
+   JIT compilation requires ``solver="MOREAU"``. Other solvers (DIFFCP) use Python callbacks that are not JIT-compatible.
 
 Vectorization with vmap
 -----------------------
