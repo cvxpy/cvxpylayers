@@ -321,6 +321,11 @@ class CvxpyLayer:
         self.q: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.q.tocsr())  # type: ignore[assignment]
         self.A: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined,assignment]
 
+        # Cache the Moreau solve function for JIT compatibility.
+        # Must be captured as closure, not looked up dynamically during tracing.
+        if self.ctx.solver == "MOREAU":
+            self._moreau_solve_fn = self.ctx.solver_ctx.get_jax_solver()._impl.solve
+
     def __call__(
         self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
     ) -> tuple[jnp.ndarray, ...]:
@@ -389,9 +394,8 @@ class CvxpyLayer:
         pure_callback and vmap_method="broadcast_all", making it fully compatible
         with jax.jit, jax.vmap, and jax.pmap.
 
-        This method inlines the data extraction logic (normally in jax_to_data) to
-        avoid creating Python objects that JAX can't vmap through. The key operations
-        are all pure JAX operations that work correctly under vmap.
+        This method uses jax.vmap for batched cases to ensure each problem is
+        solved individually, which is required for JIT compatibility.
         """
         solver_ctx = self.ctx.solver_ctx  # type: ignore[attr-defined]
 
@@ -402,75 +406,63 @@ class CvxpyLayer:
                 if hasattr(settings, key):
                     setattr(settings, key, value)
 
-        # Get the solve function from moreau solver
-        # Use _impl.solve (un-JIT'd) to avoid conflicts with outer JIT/grad
-        solve_fn = solver_ctx.get_jax_solver()._impl.solve
+        # Use cached solve function (captured as closure, not dynamic lookup)
+        solve_fn = self._moreau_solve_fn
 
-        if batch:
-            # Batched case: inputs have shape (dim, batch)
-            batch_size = batch[0]
+        # Cache solver_ctx attributes for closure capture
+        P_idx = solver_ctx.P_idx
+        A_idx = solver_ctx.A_idx
+        b_idx = solver_ctx.b_idx
+        m = solver_ctx.A_shape[0]
+        has_P = P_idx is not None
 
+        def extract_and_solve(
+            P_eval_single: jnp.ndarray | None,
+            q_eval_single: jnp.ndarray,
+            A_eval_single: jnp.ndarray,
+        ) -> tuple[jnp.ndarray, jnp.ndarray]:
+            """Extract problem data and solve a single (unbatched) problem."""
             # Extract P values in CSR order
-            if solver_ctx.P_idx is not None and P_eval is not None:
-                P_values = P_eval[solver_ctx.P_idx, :]  # (nnzP, batch)
-            else:
-                P_values = jnp.zeros((0, batch_size), dtype=jnp.float64)
-
-            # Extract A values in CSR order (negated for Ax + s = b form)
-            A_values = -A_eval[solver_ctx.A_idx, :]  # (nnzA, batch)
-
-            # Extract b vector from the end of A_eval
-            b_start = A_eval.shape[0] - solver_ctx.b_idx.size
-            b_raw = A_eval[b_start:, :]  # (b_idx.size, batch)
-
-            # Scatter b_raw into full b vector at correct indices
-            m = solver_ctx.A_shape[0]
-            b = jnp.zeros((m, batch_size), dtype=jnp.float64)
-            b = b.at[solver_ctx.b_idx, :].set(b_raw)
-
-            # Extract q (linear cost) - exclude the constant term at the end
-            q = q_eval[:-1, :]  # (n, batch)
-
-            # Transpose to (batch, dim) format for moreau
-            P_values = P_values.T  # (batch, nnzP)
-            A_values = A_values.T  # (batch, nnzA)
-            q = q.T  # (batch, n)
-            b = b.T  # (batch, m)
-
-            # Call moreau's solve with batched inputs
-            solution, _info = solve_fn(P_values, A_values, q, b)
-
-            primal = solution.x  # (batch, n)
-            dual = solution.z  # (batch, m)
-
-        else:
-            # Unbatched case: inputs have shape (dim,)
-            # Extract P values in CSR order
-            if solver_ctx.P_idx is not None and P_eval is not None:
-                P_values = P_eval[solver_ctx.P_idx]  # (nnzP,)
+            if has_P and P_eval_single is not None:
+                P_values = P_eval_single[P_idx]  # (nnzP,)
             else:
                 P_values = jnp.zeros(0, dtype=jnp.float64)
 
             # Extract A values in CSR order (negated for Ax + s = b form)
-            A_values = -A_eval[solver_ctx.A_idx]  # (nnzA,)
+            A_values = -A_eval_single[A_idx]  # (nnzA,)
 
             # Extract b vector from the end of A_eval
-            b_start = A_eval.shape[0] - solver_ctx.b_idx.size
-            b_raw = A_eval[b_start:]  # (b_idx.size,)
+            b_start = A_eval_single.shape[0] - b_idx.size
+            b_raw = A_eval_single[b_start:]  # (b_idx.size,)
 
             # Scatter b_raw into full b vector at correct indices
-            m = solver_ctx.A_shape[0]
             b = jnp.zeros(m, dtype=jnp.float64)
-            b = b.at[solver_ctx.b_idx].set(b_raw)
+            b = b.at[b_idx].set(b_raw)
 
             # Extract q (linear cost) - exclude the constant term at the end
-            q = q_eval[:-1]  # (n,)
+            q = q_eval_single[:-1]  # (n,)
 
             # Call moreau's solve with unbatched inputs
             solution, _info = solve_fn(P_values, A_values, q, b)
 
-            primal = solution.x  # (n,)
-            dual = solution.z  # (m,)
+            return solution.x, solution.z  # (n,), (m,)
+
+        if batch:
+            # Batched case: inputs have shape (dim, batch)
+            # Transpose to (batch, dim) for vmap
+            P_eval_batched = P_eval.T if P_eval is not None else None
+            q_eval_batched = q_eval.T  # (batch, dim)
+            A_eval_batched = A_eval.T  # (batch, dim)
+
+            # Use vmap to solve each problem individually
+            vmapped_solve = jax.vmap(extract_and_solve, in_axes=(0, 0, 0))
+            primal, dual = vmapped_solve(P_eval_batched, q_eval_batched, A_eval_batched)
+            # primal: (batch, n), dual: (batch, m)
+
+        else:
+            # Unbatched case: inputs have shape (dim,)
+            primal, dual = extract_and_solve(P_eval, q_eval, A_eval)
+            # primal: (n,), dual: (m,)
 
             # Add batch dimension for _recover_results (which expects it)
             primal = jnp.expand_dims(primal, 0)  # (1, n)
