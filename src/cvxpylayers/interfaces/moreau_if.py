@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
-from cvxpylayers.utils.solver_utils import convert_csc_structure_to_csr_structure
-
 # Optional dependencies — each may be absent independently
 try:
     import moreau
@@ -150,9 +148,8 @@ class MOREAU_ctx:
     Stores problem structure (CSR format) and creates solvers with lazy batch init.
     Batch size is inferred from inputs at solve time (moreau handles auto-reset).
 
-    The parametrization matrices (reduced_P_mat, reduced_A_mat) are permuted at
-    init time so that matrix multiplication directly produces values in CSR order,
-    eliminating the need for runtime shuffle indexing in forward/backward passes.
+    CSR conversion and parametrization matrix row permutation are performed
+    externally by ``get_solver_ctx`` before this class is constructed.
     """
 
     P_col_indices: np.ndarray
@@ -169,8 +166,13 @@ class MOREAU_ctx:
 
     def __init__(
         self,
-        objective_structure,
-        constraint_structure,
+        P_csr_structure,
+        P_shape,
+        nnz_P,
+        A_csr_structure,
+        A_shape,
+        nnz_A,
+        b_idx,
         dims,
         options=None,
         reduced_P_mat=None,
@@ -179,79 +181,39 @@ class MOREAU_ctx:
         """Initialize Moreau solver context.
 
         Args:
-            objective_structure: CSC structure for the P matrix (or None for LP).
-            constraint_structure: CSC structure for the A matrix and b vector (or None for unconstrained).
+            P_csr_structure: Tuple of (col_indices, row_offsets) numpy arrays for P in CSR format.
+            P_shape: Shape of the P matrix.
+            nnz_P: Number of non-zeros in P.
+            A_csr_structure: Tuple of (col_indices, row_offsets) numpy arrays for A in CSR format.
+            A_shape: Shape of the A matrix.
+            nnz_A: Number of non-zeros in A.
+            b_idx: Indices of the RHS (b) entries in the constraint structure.
             dims: Cone dimensions dictionary.
             options: Solver options forwarded to ``moreau.Settings``.
-            reduced_P_mat: Sparse parametrization matrix for P. When
-                ``reduced_P_mat[:, :-1].nnz == 0`` (and same for A), P and A
+            reduced_P_mat: Already-permuted sparse parametrization matrix for P.
+                When ``reduced_P_mat[:, :-1].nnz == 0`` (and same for A), P and A
                 are constant across parameter values, enabling a one-time
                 ``setup()`` call (the ``PA_is_constant`` optimisation).
-                Rows will be permuted from CSC to CSR order.
-            reduced_A_mat: Sparse parametrization matrix for A.
-                Rows will be permuted from CSC to CSR order (b rows unchanged).
+            reduced_A_mat: Already-permuted sparse parametrization matrix for A.
         """
-        # Step 1: Determine n (problem dimension) from whichever structure is available
-        if objective_structure is not None:
-            n = objective_structure[2][0]  # P is square, so shape[0] == n
-        elif constraint_structure is not None:
-            n = constraint_structure[2][1] - 1  # A has n+1 columns (last is b)
+        # Store CSR structure (handle None P for LP problems)
+        if P_csr_structure is not None:
+            self.P_col_indices = P_csr_structure[0].astype(np.int64)
+            self.P_row_offsets = P_csr_structure[1].astype(np.int64)
         else:
-            raise ValueError("Cannot determine problem dimension: both P and A are None")
-
-        # Step 2: Convert P to CSR (or create empty for LP)
-        if objective_structure is not None:
-            P_shuffle, P_structure, P_shape = convert_csc_structure_to_csr_structure(
-                objective_structure, False
-            )
-            if P_shape[0] != P_shape[1]:
-                raise ValueError(f"P matrix must be square, got shape {P_shape}")
-        else:
-            P_shuffle = None
-            P_structure = (np.array([], dtype=np.int64), np.zeros(n + 1, dtype=np.int64))
-            P_shape = (n, n)
-
-        # Step 3: Convert A to CSR (or create empty for unconstrained)
-        if constraint_structure is not None:
-            A_shuffle, A_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
-                constraint_structure, True
-            )
-        else:
-            A_shuffle = np.array([], dtype=np.int64)
-            A_structure = (np.array([], dtype=np.int64), np.zeros(1, dtype=np.int64))
-            A_shape = (0, n)
-            b_idx = np.array([], dtype=np.int64)
-
-        if P_shape[0] != A_shape[1]:
-            raise ValueError(f"P dimension {P_shape[0]} != A column dimension {A_shape[1]}")
-
-        # Store CSR structure
-        self.P_col_indices = P_structure[0].astype(np.int64)
-        self.P_row_offsets = P_structure[1].astype(np.int64)
+            n = P_shape[0]
+            self.P_col_indices = np.array([], dtype=np.int64)
+            self.P_row_offsets = np.zeros(n + 1, dtype=np.int64)
         self.P_shape = P_shape
 
-        self.A_col_indices = A_structure[0].astype(np.int64)
-        self.A_row_offsets = A_structure[1].astype(np.int64)
+        self.A_col_indices = A_csr_structure[0].astype(np.int64)
+        self.A_row_offsets = A_csr_structure[1].astype(np.int64)
         self.A_shape = A_shape
         self.b_idx = b_idx
 
         # Number of non-zeros in P and A (used for slicing in forward/backward)
-        self.nnz_P = len(P_shuffle) if P_shuffle is not None else 0
-        self.nnz_A = len(A_shuffle) if A_shuffle is not None else 0
-
-        # Permute parametrization matrix rows so that matrix multiplication
-        # directly produces values in CSR order, eliminating runtime shuffle.
-        if reduced_P_mat is not None and P_shuffle is not None:
-            reduced_P_mat = reduced_P_mat[P_shuffle, :]
-        if reduced_A_mat is not None and A_shuffle is not None and len(A_shuffle) > 0:
-            nnz = len(A_shuffle)
-            nb = reduced_A_mat.shape[0] - nnz
-            full_perm = np.concatenate([A_shuffle, np.arange(nnz, nnz + nb)])
-            reduced_A_mat = reduced_A_mat[full_perm, :]
-
-        # Store permuted matrices so get_solver_ctx can copy them back to param_prob
-        self._permuted_P_mat = reduced_P_mat
-        self._permuted_A_mat = reduced_A_mat
+        self.nnz_P = nnz_P
+        self.nnz_A = nnz_A
 
         # Store dimensions
         self.dims = dims
@@ -274,7 +236,7 @@ class MOREAU_ctx:
 
         if self.PA_is_constant:
             # Pre-extract constant values (last column only, already in CSR order
-            # thanks to the row permutation applied above)
+            # thanks to the row permutation applied by get_solver_ctx)
             if reduced_P_mat is not None:
                 P_csr = reduced_P_mat[:, -1].tocsr()
                 self._P_const_values = P_csr.data
