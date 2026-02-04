@@ -131,8 +131,7 @@ def _flatten_and_batch_params(
 
     assert all(p is not None for p in flattened_params), "All parameters must be assigned"
     p_stack = torch.cat(flattened_params, -1)  # type: ignore[arg-type]
-    # p_stack is always (batch_size, num_params), transpose to (num_params, batch_size)
-    # Use permute which works uniformly for 2D tensors
+    # p_stack is (batch_size, num_params), transpose to (num_params, batch_size)
     p_stack = p_stack.T
     # For unbatched case, squeeze the trailing dimension to get (num_params,)
     # len(batch) is 0 for unbatched, 1 for batched - use this as a shape selector
@@ -262,8 +261,10 @@ def _recover_results(
             result = _unpack_primal_svec(data, var.shape[0], internal_batch)
         elif var.unpack_fn == "svec_dual":
             result = _unpack_svec(data, var.shape[0], internal_batch)
-        else:  # var.unpack_fn == "reshape"
+        elif var.unpack_fn == "reshape":
             result = _reshape_fortran(data, internal_batch + var.shape)
+        else:
+            raise ValueError(f"Unknown variable recovery type: {var.unpack_fn}")
 
         # Reshape to output batch shape (removes dummy batch dim for unbatched)
         # reshape from (1,) + var.shape to () + var.shape works because total elements match

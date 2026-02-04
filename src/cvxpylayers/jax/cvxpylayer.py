@@ -206,8 +206,10 @@ def _recover_results(
             results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
         elif var.unpack_fn == "svec_dual":
             results.append(_unpack_svec(data, var.shape[0], batch_shape))
-        else:  # var.unpack_fn == "reshape"
+        elif var.unpack_fn == "reshape":
             results.append(_reshape_fortran(data, batch_shape + var.shape))
+        else:
+            raise ValueError(f"Unknown variable recovery type: {var.unpack_fn}")
 
     # Apply exp transformation to recover primal variables from log-space for GP
     # (dual variables stay in original space - no transformation needed)
