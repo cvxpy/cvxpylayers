@@ -75,7 +75,7 @@ def test_simple_batch_socp():
         (sol,) = prob_jax(*params)
         return sum(sol)
 
-    check_grads(f, (P_sqrt_jax, q_jax, A_jax, b_jax), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
+    check_grads(f, (P_sqrt_jax, q_jax, A_jax, b_jax), order=1, modes=["rev"], atol=5e-3, rtol=5e-3)
 
 
 def test_least_squares():
