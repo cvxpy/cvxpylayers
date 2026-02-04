@@ -30,8 +30,11 @@ def get_solver_ctx(
         case "MOREAU":
             from cvxpylayers.interfaces.moreau_if import MOREAU_ctx
 
-            # MOREAU needs actual matrices to detect if P/A are constant
-            return MOREAU_ctx(
+            # MOREAU needs actual matrices to detect if P/A are constant.
+            # MOREAU_ctx permutes the matrix rows from CSC to CSR order so
+            # that matrix multiplication directly produces CSR-ordered values,
+            # eliminating runtime shuffle indexing in forward/backward passes.
+            ctx = MOREAU_ctx(
                 param_prob.reduced_P.problem_data_index,
                 param_prob.reduced_A.problem_data_index,
                 cone_dims,
@@ -39,6 +42,13 @@ def get_solver_ctx(
                 reduced_P_mat=param_prob.reduced_P.reduced_mat,
                 reduced_A_mat=param_prob.reduced_A.reduced_mat,
             )
+            # Copy permuted matrices back so the layer uses CSR-ordered output
+            if ctx._permuted_P_mat is not None:
+                param_prob.reduced_P.reduced_mat = ctx._permuted_P_mat
+            if ctx._permuted_A_mat is not None:
+                param_prob.reduced_A.reduced_mat = ctx._permuted_A_mat
+            del ctx._permuted_P_mat, ctx._permuted_A_mat
+            return ctx
         case "DIFFCP":
             from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
 

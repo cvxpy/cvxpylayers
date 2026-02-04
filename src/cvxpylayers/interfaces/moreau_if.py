@@ -149,14 +149,16 @@ class MOREAU_ctx:
 
     Stores problem structure (CSR format) and creates solvers with lazy batch init.
     Batch size is inferred from inputs at solve time (moreau handles auto-reset).
+
+    The parametrization matrices (reduced_P_mat, reduced_A_mat) are permuted at
+    init time so that matrix multiplication directly produces values in CSR order,
+    eliminating the need for runtime shuffle indexing in forward/backward passes.
     """
 
-    P_idx: np.ndarray | None
     P_col_indices: np.ndarray
     P_row_offsets: np.ndarray
     P_shape: tuple[int, int]
 
-    A_idx: np.ndarray
     A_col_indices: np.ndarray
     A_row_offsets: np.ndarray
     A_shape: tuple[int, int]
@@ -185,7 +187,9 @@ class MOREAU_ctx:
                 ``reduced_P_mat[:, :-1].nnz == 0`` (and same for A), P and A
                 are constant across parameter values, enabling a one-time
                 ``setup()`` call (the ``PA_is_constant`` optimisation).
+                Rows will be permuted from CSC to CSR order.
             reduced_A_mat: Sparse parametrization matrix for A.
+                Rows will be permuted from CSC to CSR order (b rows unchanged).
         """
         # Step 1: Determine n (problem dimension) from whichever structure is available
         if objective_structure is not None:
@@ -222,17 +226,32 @@ class MOREAU_ctx:
             raise ValueError(f"P dimension {P_shape[0]} != A column dimension {A_shape[1]}")
 
         # Store CSR structure
-        # Note: convert_csc_structure_to_csr_structure returns (col_indices, row_offsets)
-        self.P_idx = P_shuffle
         self.P_col_indices = P_structure[0].astype(np.int64)
         self.P_row_offsets = P_structure[1].astype(np.int64)
         self.P_shape = P_shape
 
-        self.A_idx = A_shuffle
         self.A_col_indices = A_structure[0].astype(np.int64)
         self.A_row_offsets = A_structure[1].astype(np.int64)
         self.A_shape = A_shape
         self.b_idx = b_idx
+
+        # Number of non-zeros in P and A (used for slicing in forward/backward)
+        self.nnz_P = len(P_shuffle) if P_shuffle is not None else 0
+        self.nnz_A = len(A_shuffle) if A_shuffle is not None else 0
+
+        # Permute parametrization matrix rows so that matrix multiplication
+        # directly produces values in CSR order, eliminating runtime shuffle.
+        if reduced_P_mat is not None and P_shuffle is not None:
+            reduced_P_mat = reduced_P_mat[P_shuffle, :]
+        if reduced_A_mat is not None and A_shuffle is not None and len(A_shuffle) > 0:
+            nnz = len(A_shuffle)
+            nb = reduced_A_mat.shape[0] - nnz
+            full_perm = np.concatenate([A_shuffle, np.arange(nnz, nnz + nb)])
+            reduced_A_mat = reduced_A_mat[full_perm, :]
+
+        # Store permuted matrices so get_solver_ctx can copy them back to param_prob
+        self._permuted_P_mat = reduced_P_mat
+        self._permuted_A_mat = reduced_A_mat
 
         # Store dimensions
         self.dims = dims
@@ -254,16 +273,16 @@ class MOREAU_ctx:
         )
 
         if self.PA_is_constant:
-            # Pre-extract constant values (last column only, in CSR order)
+            # Pre-extract constant values (last column only, already in CSR order
+            # thanks to the row permutation applied above)
             if reduced_P_mat is not None:
                 P_csr = reduced_P_mat[:, -1].tocsr()
-                self._P_const_values = (
-                    P_csr.data[self.P_idx] if self.P_idx is not None else P_csr.data
-                )
+                self._P_const_values = P_csr.data
             else:
                 self._P_const_values = np.array([], dtype=np.float64)
             A_csr = reduced_A_mat[:, -1].tocsr()
-            self._A_const_values = -A_csr.data[self.A_idx]  # Negated for Ax + s = b form
+            # Only take A values (first nnz_A), not b values; negate for Ax + s = b form
+            self._A_const_values = -A_csr.data[: self.nnz_A]
         else:
             self._P_const_values = None
             self._A_const_values = None
@@ -402,28 +421,25 @@ class MOREAU_ctx:
         device = con_values.device
         is_cuda = device.type == "cuda"
 
-        # Extract values using torch indexing (stays on GPU if input is on GPU)
-        # con_values shape: (num_con_entries, batch)
+        # Extract values using slicing (stays on GPU if input is on GPU).
+        # Parametrization matrices have been pre-permuted so that matrix
+        # multiplication produces values directly in CSR order.
+        # con_values shape: (nnz_A + nb, batch) — first nnz_A are A in CSR order
         # lin_obj_values shape: (n+1, batch) - last entry is constant term
 
-        # Extract P values in CSR order
-        if self.P_idx is not None and quad_obj_values is not None:
-            P_idx_tensor = torch.tensor(self.P_idx, dtype=torch.long, device=device)
-            P_values = quad_obj_values[P_idx_tensor, :]  # (nnzP, batch)
+        # P values are already in CSR order from pre-permuted matrix multiply
+        if quad_obj_values is not None:
+            P_values = quad_obj_values  # (nnzP, batch), already CSR-ordered
         else:
-            # Empty P matrix
+            # Empty P matrix (LP problem)
             P_values = torch.zeros((0, batch_size), dtype=torch.float64, device=device)
-            P_idx_tensor = torch.tensor([], dtype=torch.long, device=device)
 
-        # Extract A values in CSR order
-        A_idx_tensor = torch.tensor(self.A_idx, dtype=torch.long, device=device)
-        A_values = -con_values[A_idx_tensor, :]  # (nnzA, batch), negated for Ax + s = b form
+        # A values: first nnz_A entries are in CSR order, negated for Ax + s = b form
+        A_values = -con_values[: self.nnz_A, :]  # (nnzA, batch)
 
-        # Extract b vector
+        # b vector: entries after the A values
         b_idx_tensor = torch.tensor(self.b_idx, dtype=torch.long, device=device)
-        # b is in the last b_idx.size entries of con_values
-        b_start = con_values.shape[0] - self.b_idx.size
-        b_raw = con_values[b_start:, :]  # (m, batch) but may need reordering
+        b_raw = con_values[self.nnz_A :, :]  # (nb, batch)
         # Scatter into full b tensor (use non-in-place scatter to preserve autograd)
         b_idx_expanded = b_idx_tensor.unsqueeze(1).expand(-1, batch_size)
         b = torch.zeros(
@@ -454,9 +470,7 @@ class MOREAU_ctx:
             n=self.P_shape[0],
             m=self.A_shape[0],
             is_cuda=is_cuda,
-            # Store indices for gradient mapping
-            P_idx_tensor=P_idx_tensor,
-            A_idx_tensor=A_idx_tensor,
+            # Store b indices for gradient mapping (P/A no longer need shuffle)
             b_idx_tensor=b_idx_tensor,
             # Store shapes for gradient scatter
             P_eval_size=quad_obj_values.shape[0] if quad_obj_values is not None else 0,
@@ -484,15 +498,13 @@ class MOREAU_data:
     m: int
     is_cuda: bool  # Whether tensors are on CUDA
 
-    # Indices for gradient mapping
-    P_idx_tensor: Any  # torch.Tensor for scattering P gradients
-    A_idx_tensor: Any  # torch.Tensor for scattering A gradients
+    # Index for b gradient mapping (P/A no longer need shuffle indices)
     b_idx_tensor: Any  # torch.Tensor for scattering b gradients
 
     # Sizes for gradient scatter
-    P_eval_size: int  # Size of P_eval tensor
+    P_eval_size: int  # Size of P_eval tensor (= nnz_P)
     q_eval_size: int  # Size of q_eval tensor (n+1)
-    A_eval_size: int  # Size of A_eval tensor
+    A_eval_size: int  # Size of A_eval tensor (= nnz_A + nb)
 
     # Whether setup() was already called in get_torch_solver (P/A constant case)
     setup_cached: bool = False
@@ -593,11 +605,10 @@ class MOREAU_data:
         device = dprimal.device
         dtype = torch.float64
 
-        # Scatter P gradients back to P_eval format
+        # P gradients: directly transpose (no scatter needed, matrices are pre-permuted)
         if self.P_eval_size > 0 and dP_values is not None:
-            # dP_values is (batch, nnzP), need to scatter to (P_eval_size, batch)
-            dP_eval = torch.zeros((self.P_eval_size, self.batch_size), dtype=dtype, device=device)
-            dP_eval[self.P_idx_tensor, :] = dP_values.T
+            # dP_values is (batch, nnzP), transpose to (nnzP, batch) = (P_eval_size, batch)
+            dP_eval = dP_values.T
         else:
             dP_eval = None
 
@@ -609,20 +620,20 @@ class MOREAU_data:
         else:
             dq_eval = torch.zeros((self.q_eval_size, self.batch_size), dtype=dtype, device=device)
 
-        # Scatter A and b gradients to A_eval format
-        # A_eval contains: A values (negated), then b values
+        # A and b gradients to A_eval format
+        # A_eval layout (after pre-permutation): [A values in CSR order, b values]
+        nnz_A = self.A_eval_size - self.b_idx_tensor.shape[0]
         dA_eval = torch.zeros((self.A_eval_size, self.batch_size), dtype=dtype, device=device)
 
         if dA_values is not None:
             # A was negated when extracting, so negate gradient back
-            dA_eval[self.A_idx_tensor, :] = -dA_values.T
+            dA_eval[:nnz_A, :] = -dA_values.T
 
         if db_raw is not None:
             # b gradients go to the last portion of A_eval
-            b_start = self.A_eval_size - self.b_idx_tensor.shape[0]
             # Gather gradients from positions b_idx (backward of scatter)
             b_section = db_raw[:, self.b_idx_tensor].T  # (b_idx.size, batch)
-            dA_eval[b_start:, :] = b_section
+            dA_eval[nnz_A:, :] = b_section
 
         # Remove batch dimension if originally unbatched
         if self.originally_unbatched:
