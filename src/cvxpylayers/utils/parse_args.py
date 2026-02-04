@@ -5,6 +5,7 @@ import cvxpy as cp
 import cvxpy.constraints
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
+from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 
@@ -265,6 +266,7 @@ def _validate_problem(
     parameters: list[cp.Parameter],
     gp: bool,
     dual_var_to_constraint: dict[int, cp.Constraint],
+    use_quad_form_dpp_scope: bool = False,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
@@ -274,6 +276,8 @@ def _validate_problem(
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
         dual_var_to_constraint: Mapping from dual variable ID to parent constraint
+        use_quad_form_dpp_scope: If True, check DPP within quad_form_dpp_scope to
+            allow parametric P in quad_form (requires CVXPY >= 1.9).
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
@@ -283,7 +287,15 @@ def _validate_problem(
         if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP for geometric programming.")
     else:
-        if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
+        # For solvers that support quadratic objectives (MOREAU, etc.), we can use
+        # quad_form with parametric P. This requires entering the quad_form_dpp_scope
+        # to make quad_form considered DPP.
+        if use_quad_form_dpp_scope and hasattr(scopes, "quad_form_dpp_scope"):
+            with scopes.quad_form_dpp_scope():
+                is_dpp = problem.is_dcp(dpp=True)  # type: ignore[call-arg]
+        else:
+            is_dpp = problem.is_dcp(dpp=True)  # type: ignore[call-arg]
+        if not is_dpp:
             raise ValueError("Problem must be DPP.")
 
     # Validate parameters match problem definition
@@ -385,11 +397,18 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
-    # Validate problem is DPP (disciplined parametrized programming)
-    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
-
     if solver is None:
         solver = "DIFFCP"
+
+    # Solvers that support quadratic objectives can use quad_form with parametric P
+    # This requires CVXPY >= 1.9 with the quad_form_dpp_scope feature
+    solver_supports_quad_obj = solver in ("MOREAU",)
+    use_quad_form_dpp_scope = solver_supports_quad_obj and hasattr(scopes, "quad_form_dpp_scope")
+
+    # Validate problem is DPP (disciplined parametrized programming)
+    _validate_problem(
+        problem, variables, parameters, gp, dual_var_to_constraint, use_quad_form_dpp_scope
+    )
 
     # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
     gp_param_to_log_param = None
@@ -410,14 +429,24 @@ def parse_args(
             solver_opts=solver_args,
         )
     else:
-        # Standard DCP path
-        data, _, _ = problem.get_problem_data(
-            solver=solver,
-            gp=False,
-            verbose=verbose,
-            canon_backend=canon_backend,
-            solver_opts=solver_args,
-        )
+        # Standard DCP path - wrap in quad_form_dpp_scope if supported
+        if use_quad_form_dpp_scope:
+            with scopes.quad_form_dpp_scope():
+                data, _, _ = problem.get_problem_data(
+                    solver=solver,
+                    gp=False,
+                    verbose=verbose,
+                    canon_backend=canon_backend,
+                    solver_opts=solver_args,
+                )
+        else:
+            data, _, _ = problem.get_problem_data(
+                solver=solver,
+                gp=False,
+                verbose=verbose,
+                canon_backend=canon_backend,
+                solver_opts=solver_args,
+            )
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
