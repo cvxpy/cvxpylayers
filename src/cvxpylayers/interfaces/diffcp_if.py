@@ -229,6 +229,25 @@ class DIFFCP_data:
 
         return primal, dual, adj_batch
 
+    def jax_solve_only(self, solver_args=None):
+        # Merge layer options with per-call solver_args
+        merged_args = {**self.options}
+        if solver_args:
+            merged_args.update(solver_args)
+
+        xs, ys, _ = diffcp.solve_only_batch(
+            self.As,
+            self.bs,
+            self.cs,
+            [self.cone_dict] * self.batch_size,
+            **merged_args,
+        )
+
+        primal = jnp.stack([jnp.array(x) for x in xs])
+        dual = jnp.stack([jnp.array(y) for y in ys])
+
+        return primal, dual
+
     def jax_derivative(self, dprimal, ddual, adj_batch):
         dq_batch, dA_batch = _compute_gradients(
             adj_batch, dprimal, ddual, self.bs, self.b_idxs, self.batch_size
@@ -314,6 +333,7 @@ if torch is not None:
             A_eval: torch.Tensor,
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
+            needs_grad: bool = True,
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
             ctx = cl_ctx.solver_ctx
 
@@ -337,13 +357,18 @@ if torch is not None:
             if solver_args:
                 merged_args.update(solver_args)
 
-            xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
-                As,
-                bs,
-                cs,
-                [dims_to_solver_dict(ctx.dims)] * batch_size,
-                **merged_args,
-            )
+            cone_dicts = [dims_to_solver_dict(ctx.dims)] * batch_size
+
+            # Skip computing the adjoint operator when gradients aren't needed
+            if needs_grad:
+                xs, ys, _, _, adj_batch = diffcp.solve_and_derivative_batch(
+                    As, bs, cs, cone_dicts, **merged_args,
+                )
+            else:
+                xs, ys, _ = diffcp.solve_only_batch(
+                    As, bs, cs, cone_dicts, **merged_args,
+                )
+                adj_batch = None
 
             primal = torch.stack([torch.from_numpy(x) for x in xs])
             dual = torch.stack([torch.from_numpy(y) for y in ys])
@@ -360,7 +385,7 @@ if torch is not None:
         @torch.autograd.function.once_differentiable
         def backward(
             ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _adj: Any, _data: Any
-        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
+        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None]:
             bs, b_idxs, batch_size, originally_unbatched = ctx.backward_data
 
             dq_batch, dA_batch = _compute_gradients(
@@ -374,4 +399,4 @@ if torch is not None:
                 dq_stacked = dq_stacked.squeeze(1)
                 dA_stacked = dA_stacked.squeeze(1)
 
-            return None, dq_stacked, dA_stacked, None, None
+            return None, dq_stacked, dA_stacked, None, None, None

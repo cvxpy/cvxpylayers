@@ -491,17 +491,19 @@ class CvxpyLayer:
 
         @jax.custom_vjp
         def solve_problem(P_eval, q_eval, A_eval):
-            # Forward pass: solve the optimization problem
+            # Function body: runs when NOT differentiating
+            # Use solve_only to skip computing the adjoint operator
+            data = self.ctx.solver_ctx.jax_to_data(P_eval, q_eval, A_eval)  # type: ignore[attr-defined]
+            primal, dual = data.jax_solve_only(solver_args)  # type: ignore[attr-defined]
+            return primal, dual
+
+        def solve_problem_fwd(P_eval, q_eval, A_eval):
+            # Runs when differentiating: compute derivatives for backward pass
             data = self.ctx.solver_ctx.jax_to_data(P_eval, q_eval, A_eval)  # type: ignore[attr-defined]
             primal, dual, adj_batch = data.jax_solve(solver_args)  # type: ignore[attr-defined]
             # Store for backward pass (outside JAX tracing)
             data_container["data"] = data
             data_container["adj_batch"] = adj_batch
-            return primal, dual
-
-        def solve_problem_fwd(P_eval, q_eval, A_eval):
-            # Call forward to execute and populate container
-            primal, dual = solve_problem(P_eval, q_eval, A_eval)
             # Return empty residuals (data is in closure)
             return (primal, dual), ()
 
