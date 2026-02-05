@@ -443,6 +443,12 @@ class CvxpyLayer(torch.nn.Module):
 
         _CvxpyLayer = get_torch_cvxpylayer(self.ctx.solver)
 
+        # Determine if gradients are needed (must check here, not inside
+        # Function.forward() where torch.is_grad_enabled() is always False)
+        needs_grad = torch.is_grad_enabled() and any(
+            p.requires_grad for p in params
+        )
+
         # Solve optimization problem
         primal, dual, _, _ = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
@@ -450,6 +456,7 @@ class CvxpyLayer(torch.nn.Module):
             A_eval,
             self.ctx,
             solver_args,
+            needs_grad,
         )
 
         # Recover results and apply GP inverse transform if needed
