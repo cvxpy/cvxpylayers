@@ -411,10 +411,11 @@ class CvxpyLayer:
         # Use cached solve function (captured as closure, not dynamic lookup)
         solve_fn = self._moreau_solve_fn
 
-        # Cache solver_ctx attributes for closure capture
-        P_idx = solver_ctx.P_idx
-        A_idx = solver_ctx.A_idx
+        # Cache solver_ctx attributes for closure capture.
+        # Parametrization matrices are pre-permuted so matrix multiplication
+        # directly produces values in CSR order — no shuffle indexing needed.
         b_idx = solver_ctx.b_idx
+        nnz_A = solver_ctx.nnz_A
         m = solver_ctx.A_shape[0]
 
         def extract_and_solve(
@@ -423,18 +424,17 @@ class CvxpyLayer:
             A_eval_single: jnp.ndarray,
         ) -> tuple[jnp.ndarray, jnp.ndarray]:
             """Extract problem data and solve a single (unbatched) problem."""
-            # Extract P values in CSR order
-            if P_idx is not None and P_eval_single is not None:
-                P_values = P_eval_single[P_idx]  # (nnzP,)
+            # P values are already in CSR order from pre-permuted matrix multiply
+            if P_eval_single is not None:
+                P_values = P_eval_single  # (nnzP,)
             else:
                 P_values = jnp.zeros(0, dtype=jnp.float64)
 
-            # Extract A values in CSR order (negated for Ax + s = b form)
-            A_values = -A_eval_single[A_idx]  # (nnzA,)
+            # A values: first nnz_A entries are in CSR order, negated for Ax + s = b form
+            A_values = -A_eval_single[:nnz_A]  # (nnzA,)
 
-            # Extract b vector from the end of A_eval
-            b_start = A_eval_single.shape[0] - b_idx.size
-            b_raw = A_eval_single[b_start:]  # (b_idx.size,)
+            # b vector: entries after the A values
+            b_raw = A_eval_single[nnz_A:]  # (nb,)
 
             # Scatter b_raw into full b vector at correct indices
             b = jnp.zeros(m, dtype=jnp.float64)
