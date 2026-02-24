@@ -43,6 +43,7 @@ if torch is not None:
             A_eval: torch.Tensor,
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
+            needs_grad: bool = True,
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
             solver_ctx = cl_ctx.solver_ctx
 
@@ -83,12 +84,21 @@ if torch is not None:
             def batched_solver(quad_vals, lin_vals, con_vals):
                 return solve_batched(quad_vals, lin_vals, con_vals)
 
-            (primal, dual), vjp_fun = jax.vjp(
-                batched_solver,
-                quad_obj_values,
-                lin_obj_values,
-                con_values,
-            )
+            # Skip computing VJP when gradients aren't needed
+            if needs_grad:
+                (primal, dual), vjp_fun = jax.vjp(
+                    batched_solver,
+                    quad_obj_values,
+                    lin_obj_values,
+                    con_values,
+                )
+            else:
+                primal, dual = batched_solver(
+                    quad_obj_values,
+                    lin_obj_values,
+                    con_values,
+                )
+                vjp_fun = None
 
             primal_torch = torch.utils.dlpack.from_dlpack(primal)
             dual_torch = torch.utils.dlpack.from_dlpack(dual)
@@ -103,7 +113,7 @@ if torch is not None:
         @torch.autograd.function.once_differentiable
         def backward(
             ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _vjp: Any, _: Any
-        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
+        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None]:
             raise NotImplementedError(
                 "Backward pass is not implemented for MPAX solver. "
                 "Use solver='DIFFCP' for differentiable optimization layers."
@@ -460,11 +470,11 @@ class MPAX_data:
     batch_size: int
     originally_unbatched: bool
 
-    def jax_solve(self, solver_args=None):
+    def _batched_solver(self, solver_args):
+        """Build a vmap'd solver function and return it with warm-start args."""
         if solver_args is None:
             solver_args = {}
 
-        # Extract warm start options if provided
         initial_primal = solver_args.get("initial_primal_solution", None)
         initial_dual = solver_args.get("initial_dual_solution", None)
 
@@ -479,11 +489,15 @@ class MPAX_data:
                 initial_dual,
             )
 
-        # Vectorize over batch dimension (axis 1 of parameter arrays)
         solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
 
         def batched_solver(quad_vals, lin_vals, con_vals):
             return solve_batched(quad_vals, lin_vals, con_vals)
+
+        return batched_solver
+
+    def jax_solve(self, solver_args=None):
+        batched_solver = self._batched_solver(solver_args)
 
         # Compute forward pass and VJP function
         (primal, dual), vjp_fun = jax.vjp(
@@ -494,6 +508,17 @@ class MPAX_data:
         )
 
         return primal, dual, vjp_fun
+
+    def jax_solve_only(self, solver_args=None):
+        batched_solver = self._batched_solver(solver_args)
+
+        primal, dual = batched_solver(
+            self.quad_obj_values,
+            self.lin_obj_values,
+            self.con_values,
+        )
+
+        return primal, dual
 
     def mlx_solve(self, solver_args=None):
         if mx is None:
