@@ -24,8 +24,14 @@ jobs:
         run: |
           uv pip install --system -e ".[torch,jax]"
           uv pip install --system "mlx[cpu]" mpax pytest
+      - name: Install Moreau
+        run: uv pip install --system moreau --extra-index-url https://${FURY_TOKEN}:@pypi.fury.io/optimalintellect/
+        env:
+          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
       - name: Run tests
         run: pytest
+        env:
+          MOREAU_LICENSE_KEY: ${{ secrets.MOREAU_KEY }}
 
       - name: build
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
