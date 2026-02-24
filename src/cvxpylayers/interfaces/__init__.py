@@ -1,3 +1,6 @@
+from cvxpylayers.utils.solver_utils import convert_to_csr
+
+
 def _merge_verbose(kwargs, verbose):
     """Merge verbose flag into kwargs if set."""
     if verbose:
@@ -15,46 +18,50 @@ def get_solver_ctx(
     kwargs,
     verbose=False,
 ):
-    # Merge verbose into options for solvers that support it
     options = _merge_verbose(kwargs, verbose)
 
+    if solver == "DIFFCP":
+        from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
+
+        return DIFFCP_ctx(
+            param_prob.reduced_P.problem_data_index,
+            param_prob.reduced_A.problem_data_index,
+            cone_dims,
+            data.get("lower_bound"),
+            data.get("upper_bound"),
+            options,
+        )
+
+    # All non-DIFFCP solvers need CSR format.
+    # NOTE: mutates param_prob.reduced_{P,A}.reduced_mat (row permutation).
+    csr = convert_to_csr(param_prob)
+
     match solver:
-        case "MPAX":
-            from cvxpylayers.interfaces.mpax_if import MPAX_ctx
-
-            ctx_cls = MPAX_ctx
-        case "CUCLARABEL":
-            from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx
-
-            ctx_cls = CUCLARABEL_ctx
         case "MOREAU":
             from cvxpylayers.interfaces.moreau_if import MOREAU_ctx
 
-            # MOREAU needs actual matrices to detect if P/A are constant
             return MOREAU_ctx(
-                param_prob.reduced_P.problem_data_index,
-                param_prob.reduced_A.problem_data_index,
-                cone_dims,
-                options,
+                csr, cone_dims, options,
                 reduced_P_mat=param_prob.reduced_P.reduced_mat,
                 reduced_A_mat=param_prob.reduced_A.reduced_mat,
             )
-        case "DIFFCP":
-            from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
+        case "CUCLARABEL":
+            from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx
 
-            ctx_cls = DIFFCP_ctx
+            return CUCLARABEL_ctx(csr, cone_dims, options)
+        case "MPAX":
+            from cvxpylayers.interfaces.mpax_if import MPAX_ctx
+
+            return MPAX_ctx(
+                csr, cone_dims,
+                lower_bounds=data.get("lower_bound"),
+                upper_bounds=data.get("upper_bound"),
+                options=options,
+            )
         case _:
             raise RuntimeError(
                 "Unknown solver. Check if your solver is supported by CVXPYlayers",
             )
-    return ctx_cls(
-        param_prob.reduced_P.problem_data_index,
-        param_prob.reduced_A.problem_data_index,
-        cone_dims,
-        data.get("lower_bound"),
-        data.get("upper_bound"),
-        options,
-    )
 
 
 def get_torch_cvxpylayer(solver):

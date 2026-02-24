@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import scipy.sparse as sp
 
 try:
     import jax
@@ -110,43 +109,6 @@ if torch is not None:
             )
 
 
-def _parse_objective_structure(
-    objective_structure: tuple,
-) -> tuple[slice, np.ndarray, tuple[np.ndarray, np.ndarray],
-           tuple[int, int], int]:
-    """Parse objective structure to extract quadratic (Q) matrix components.
-
-    Converts CVXPY's canonical objective structure
-    into sparse matrix components
-    for the quadratic cost matrix Q in the QP formulation.
-
-    Args:
-        objective_structure: Tuple of (indices, indptr, (n, n)) from CVXPY
-
-    Returns:
-        Tuple of (c_slice, Q_idxs, Q_structure, Q_shape, n) where:
-            - c_slice: Slice for linear cost vector c
-            - Q_idxs: Data indices for Q matrix values
-            - Q_structure: (indices, indptr) for Q sparse structure
-            - Q_shape: Shape (n, n) of Q matrix
-            - n: Number of primal variables
-    """
-    obj_indices, obj_ptr, (n, _) = objective_structure
-    c_slice = slice(0, n)
-
-    # Convert to CSR format for efficient row access
-    obj_csr = sp.csc_array(
-        (np.arange(obj_indices.size), obj_indices, obj_ptr),
-        shape=(n, n),
-    ).tocsr()
-
-    Q_idxs = obj_csr.data
-    Q_structure = obj_csr.indices, obj_csr.indptr
-    Q_shape = (n, n)
-
-    return c_slice, Q_idxs, Q_structure, Q_shape, n
-
-
 def _initialize_solver(options:
                        dict[str, Any] | None) -> tuple[Callable, bool]:
     """Initialize MPAX solver based on options.
@@ -184,18 +146,15 @@ def _initialize_solver(options:
 
 
 class MPAX_ctx:
-    Q_idxs: jnp.ndarray
     c_slice: slice
     Q_structure: tuple[jnp.ndarray, jnp.ndarray]
     Q_shape: tuple[int, int]
 
-    A_idxs: jnp.ndarray
-    b_slice: slice
+    nnz_A_eq: int
+    nnz_G: int
     A_structure: tuple[jnp.ndarray, jnp.ndarray]
     A_shape: tuple[int, int]
 
-    G_idxs: jnp.ndarray
-    h_slice: slice
     G_structure: tuple[jnp.ndarray, jnp.ndarray]
     G_shape: tuple[int, int]
 
@@ -206,11 +165,11 @@ class MPAX_ctx:
 
     def __init__(
         self,
-        objective_structure,
-        constraint_structure,
+        csr,
         dims,
-        lower_bounds,
-        upper_bounds,
+        *,
+        lower_bounds=None,
+        upper_bounds=None,
         options=None,
     ):
         if mpax is None or jax is None:
@@ -220,47 +179,32 @@ class MPAX_ctx:
                 "Install with: pip install mpax jax"
             )
 
-        # Parse objective structure
-        self.c_slice, self.Q_idxs, self.Q_structure, self.Q_shape, n = (
-            _parse_objective_structure(
-                objective_structure)
-        )
+        n = csr.P_shape[0]
+        m = csr.A_shape[0]
 
-        # Parse constraint structure - splits into equality
-        # (A) and inequality (G) matrices
-        con_indices, con_ptr, (m, np1) = constraint_structure
-        assert np1 == n + 1
+        # Objective: Q matrix in CSR format, c is the linear cost vector
+        self.c_slice = slice(0, n)
+        self.Q_structure = csr.P_csr_structure
+        self.Q_shape = csr.P_shape
 
-        # Extract indices for the last column
-        # (which contains b and h RHS values)
-        # Use indices instead of slices because
-        # sparse matrices may have reduced out
-        # explicit zeros, so we need to reconstruct the full dense vectors
-        self.last_col_start = con_ptr[-2]
-        self.last_col_end = con_ptr[-1]
-        self.last_col_indices = con_indices[
-            self.last_col_start:self.last_col_end
-        ]
-        self.m = m  # Total number of constraint rows
+        # RHS handling: b_idx entries after the nnz_A values
+        self.last_col_start = csr.nnz_A
+        self.last_col_end = csr.nnz_A + len(csr.b_idx)
+        self.last_col_indices = csr.b_idx
+        self.m = m
 
-        # Convert to CSR format for row-based splitting
-        con_csr = sp.csc_array(
-            (np.arange(con_indices.size), con_indices, con_ptr[:-1]),
-            shape=(m, n),
-        ).tocsr()
-        # Split point between equality and inequality
+        # Split constraint CSR at dims.zero into equality (A) and inequality (G)
+        col_indices, row_offsets = csr.A_csr_structure
+        split = row_offsets[dims.zero]
+        self.nnz_A_eq = split
+        self.nnz_G = csr.nnz_A - split
 
-        split = con_csr.indptr[dims.zero]
-        # Extract equality constraints (A)
-        self.A_idxs = con_csr.data[:split]
-        self.A_structure = con_csr.indices[:split], \
-            con_csr.indptr[: dims.zero + 1]
+        self.A_structure = col_indices[:split], \
+            row_offsets[: dims.zero + 1]
         self.A_shape = (dims.zero, n)
 
-        # Extract inequality constraints (G)
-        self.G_idxs = con_csr.data[split:]
-        self.G_structure = con_csr.indices[split:], \
-            con_csr.indptr[dims.zero:] - split
+        self.G_structure = col_indices[split:], \
+            row_offsets[dims.zero:] - split
         self.G_shape = (m - dims.zero, n)
 
         # Precompute split_at to avoid binary search on every solve
@@ -422,19 +366,20 @@ def _build_and_solve_qp(
     b_vals, h_vals = _extract_rhs_vectors(con_vals_i, ctx)
 
     # Build QP model: minimize (1/2)x^T Q x + c^T x subject to Ax = b, Gx <= h, l <= x <= u
+    # Parametrization matrices have been pre-permuted so values are already in CSR order.
     model = mpax.create_qp(
         jax.experimental.sparse.BCSR(
-            (quad_obj_vals_i[ctx.Q_idxs], *ctx.Q_structure),
+            (quad_obj_vals_i, *ctx.Q_structure),
             shape=ctx.Q_shape,
         ),
         lin_obj_vals_i[ctx.c_slice],
         jax.experimental.sparse.BCSR(
-            (con_vals_i[ctx.A_idxs], *ctx.A_structure),
+            (con_vals_i[:ctx.nnz_A_eq], *ctx.A_structure),
             shape=ctx.A_shape,
         ),
         b_vals,
         jax.experimental.sparse.BCSR(
-            (con_vals_i[ctx.G_idxs], *ctx.G_structure),
+            (con_vals_i[ctx.nnz_A_eq:ctx.nnz_A_eq + ctx.nnz_G], *ctx.G_structure),
             shape=ctx.G_shape,
         ),
         h_vals,

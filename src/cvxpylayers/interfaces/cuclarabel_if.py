@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import scipy.sparse as sp
 from cvxpy.reductions.solvers.conic_solvers.cuclarabel_conif import (
     dims_to_solver_cones as dims_to_cuclarabel_cones,
 )
@@ -90,8 +88,6 @@ if torch is not None:
             dP_batch, dq_batch, dA_batch = _compute_gradients(
                 dprimal=jax.dlpack.from_dlpack(dprimal.detach()),
                 ddual=jax.dlpack.from_dlpack(ddual.detach()),
-                P_csr_to_csc_perm=data.P_csr_to_csc_perm,
-                A_csr_to_csc_perm=data.A_csr_to_csc_perm,
                 b_idxs=data.b_idxs,
                 vjps=ctx.vjps,
             )
@@ -126,10 +122,9 @@ def _build_gpu_cqp_matrices(
     con_values: Float[jax.Array, "m n batch"],
     quad_obj_values: Float[jax.Array, " n batch"] | None,
     lin_obj_values: Float[jax.Array, "n batch"],
-    P_csr_idxs: Integer[jax.Array, "_"] | None,
     P_structure: tuple[Integer[jax.Array, "_"], Integer[jax.Array, "_"]],
     P_shape: tuple[int, int],
-    A_csr_idxs: Integer[jax.Array, "_"],
+    nnz_A: int,
     A_structure: tuple[Integer[jax.Array, "_"], Integer[jax.Array, "_"]],
     A_shape: tuple[int, int],
     b_idxs: Integer[jax.Array, "_"],
@@ -141,18 +136,19 @@ def _build_gpu_cqp_matrices(
         minimize 1/2 x^T P x + q^T x subject to Ax + s = b, s in K
     where K is a product of cones.
 
+    Parametrization matrices have been pre-permuted so that matrix multiplication
+    directly produces values in CSR order — no runtime shuffle indexing needed.
+
     TODO(quill): in future you can probably just store jax values as single
     BCSR array.
 
     Args:
-        `con_values`: Constraint coefficient values (batched)
-        `quad_obj_values`: Quadratic objective coefficient values (batched)
+        `con_values`: Constraint coefficient values (batched), already in CSR order
+        `quad_obj_values`: Quadratic objective coefficient values (batched), already in CSR order
         `lin_obj_values`: Linear objective coefficient values (batched)
-        `P_csr_idxs`: Permutation 1D array that re-arranges the 1D `quad_obj_values`, which
-            is data sorted for Sparse CSC layout construction.
         `P_structure`: Sparse matrix structure (CSR layout) for objective: (indices, indptr)
         `P_shape`: Shape of objective matrix. Must be square
-        `A_csr_idxs`:
+        `nnz_A`: Number of non-zeros in the A matrix
         `A_structure`: Sparse matrix structure (CSR layout) for constraint matrix-
             -**NOT augmented constraint matrix**: (indices, indptr).
         `A_shape`: Shape of the constraint matrix. **NOT the augmented constraint matrix**.
@@ -168,9 +164,6 @@ def _build_gpu_cqp_matrices(
 
     Pjxs, qjxs, Ajxs, bjxs = [], [], [], []
     Pcps, qcps, Acps, bcps = [], [], [], []
-
-    if quad_obj_values is not None and P_csr_idxs is not None:
-        quad_obj_values = quad_obj_values[P_csr_idxs, :]
 
     for i in range(batch_size):
         quad_vals_i = quad_obj_values[:, i] if quad_obj_values is not None else None
@@ -193,7 +186,8 @@ def _build_gpu_cqp_matrices(
             )
 
         # Negate A to match CuClarabel / diffqcp convention.
-        Ajx_data = -con_vals_i[A_csr_idxs]
+        # con_vals_i[:nnz_A] are already in CSR order from pre-permuted matrices.
+        Ajx_data = -con_vals_i[:nnz_A]
         Ajx = jsparse.BCSR((Ajx_data, *A_structure), shape=A_shape)
         Acp_data = cupy.from_dlpack(Ajx_data)
         Acp = csr_matrix(
@@ -221,14 +215,11 @@ def _build_gpu_cqp_matrices(
 
 class CUCLARABEL_ctx:
     P_structure: tuple[Integer[jax.Array, "_"], Integer[jax.Array, "_"]]
-    P_csr_idxs: Integer[jax.Array, "_"] | None
-    P_csr_to_csc_permutation: Integer[jax.Array, "_"] | None
     P_shape: tuple[int, int]
 
     A_structure: tuple[Integer[jax.Array, "_"], Integer[jax.Array, "_"]]
-    A_csr_idxs: Integer[jax.Array, "_"]
-    A_csr_to_csc_permutation: Integer[jax.Array, "_"]
     A_shape: tuple[int, int]
+    nnz_A: int
     b_idxs: Integer[jax.Array, "_"]
 
     dims: dict
@@ -238,56 +229,22 @@ class CUCLARABEL_ctx:
 
     def __init__(
         self,
-        objective_structure: tuple[np.ndarray, np.ndarray, tuple[int, int]] | None,
-        constraint_structure: tuple[np.ndarray, np.ndarray, tuple[int, int]],
-        cone_dims: dict,
-        lower_bounds: None,
-        upper_bounds: None,
-        options: dict | None = None,
+        csr,
+        cone_dims,
+        options=None,
     ):
-        assert lower_bounds is None and upper_bounds is None
+        self.A_shape = csr.A_shape
+        self.nnz_A = csr.nnz_A
+        self.b_idxs = jnp.array(csr.b_idx)
 
-        con_indices, con_ptr, (m, np1) = constraint_structure
-        n = np1 - 1
-        self.A_shape = (m, n)
+        self.A_structure = jnp.array(csr.A_csr_structure[0]), jnp.array(csr.A_csr_structure[1])
 
-        self.b_idxs = jnp.array(con_indices[con_ptr[-2] : con_ptr[-1]])
-
-        # Now construct the structure for just the A matrix as expected by `diffqcp`
-        con_csr = sp.csc_array(
-            (np.arange(con_indices.size), con_indices, con_ptr[:-1]),
-            shape=(m, n),
-        ).tocsr()
-        self.A_structure = jnp.array(con_csr.indices), jnp.array(con_csr.indptr)
-        # keep the following in NumPy since will be faster + allows for in place updates
-        A_csr_idxs = con_csr.data.astype(np.intp)
-        A_csr_to_csc_permutation = np.zeros_like(A_csr_idxs)
-        A_csr_to_csc_permutation[A_csr_idxs] = np.arange(np.size(A_csr_idxs))
-        # now move to JAX
-        self.A_csr_idxs = jnp.array(A_csr_idxs)
-        self.A_csr_to_csc_permutation = jnp.array(A_csr_to_csc_permutation)
-
-        if objective_structure is not None:
-            obj_indices, obj_ptr, (n, _) = objective_structure
-            self.P_shape = (n, n)
-
-            obj_csr = sp.csc_array(
-                (np.arange(obj_indices.size), obj_indices, obj_ptr),
-                shape=(n, n),
-            ).tocsr()
-            self.P_structure = jnp.array(obj_csr.indices), jnp.array(obj_csr.indptr)
-            # keep the following in NumPy since will be faster + allows for in place updates
-            P_csr_idxs = obj_csr.data.astype(np.intp)
-            P_csr_to_csc_permutation = np.zeros_like(P_csr_idxs)
-            P_csr_to_csc_permutation[P_csr_idxs] = np.arange(np.size(P_csr_idxs))
-            # Now move to JAX
-            self.P_csr_idxs = jnp.array(P_csr_idxs)
-            self.P_csr_to_csc_permutation = jnp.array(P_csr_to_csc_permutation)
+        if csr.P_csr_structure is not None:
+            self.P_shape = csr.P_shape
+            self.P_structure = jnp.array(csr.P_csr_structure[0]), jnp.array(csr.P_csr_structure[1])
         else:
-            self.P_shape = (self.A_shape[1], self.A_shape[1])
-            self.P_structure = (jnp.array([], dtype=int), jnp.array([0] * (self.A_shape[1] + 1)))
-            self.P_csr_idxs = None
-            self.P_csr_to_csc_permutation = None
+            self.P_shape = (csr.A_shape[1], csr.A_shape[1])
+            self.P_structure = (jnp.array([], dtype=int), jnp.array([0] * (csr.A_shape[1] + 1)))
 
         self.options = options
         self.dims = cone_dims
@@ -334,10 +291,9 @@ class CUCLARABEL_ctx:
             con_values=con_values,
             quad_obj_values=quad_obj_values,
             lin_obj_values=lin_obj_values,
-            P_csr_idxs=self.P_csr_idxs,
             P_structure=self.P_structure,
             P_shape=self.P_shape,
-            A_csr_idxs=self.A_csr_idxs,
+            nnz_A=self.nnz_A,
             A_structure=self.A_structure,
             A_shape=self.A_shape,
             b_idxs=self.b_idxs,
@@ -352,8 +308,6 @@ class CUCLARABEL_ctx:
         return CUCLARABEL_data(
             data_matrices=data_matrices,
             qcp_structure=self.diffqcp_problem_struc,
-            P_csr_to_csc_perm=self.P_csr_to_csc_permutation,
-            A_csr_to_csc_perm=self.A_csr_to_csc_permutation,
             b_idxs=self.b_idxs,
             julia_ctx=self.julia_ctx,
             originally_unbatched=originally_unbatched,
@@ -395,8 +349,6 @@ def _compute_gradients(
     dprimal: Float[jax.Array, "batch n"],
     ddual: Float[jax.Array, "batch m"],
     vjps: list[DeviceQCP],
-    P_csr_to_csc_perm: Integer[jax.Array, "..."] | None,
-    A_csr_to_csc_perm: Integer[jax.Array, "..."],
     b_idxs: Integer[jax.Array, "..."],
 ) -> tuple[list[jax.Array], list[jax.Array], list[jax.Array]]:
     """Compute gradients using DIFFQCP's adjoint method.
@@ -405,15 +357,14 @@ def _compute_gradients(
     solution with respect to problem parameters. The adjoint method efficiently
     computes these gradients by solving the adjoint system.
 
+    Parametrization matrices have been pre-permuted so gradient data from
+    DIFFQCP (in CSR order) is already in the correct order — no CSR→CSC
+    permutation needed.
+
     Args:
         `dprimal`: Incoming gradients w.r.t. primal solution
         `ddual`: Incoming gradients w.r.t. dual solution
         `vjps`: A list of DIFFQCP's vector-Jacobian function.
-        `P_csr_to_csc_perm`: 1D permutation array that restores a gradient w.r.t.
-            the quadratic objective coefficients stored in CSR layout to CSC layout.
-            It is `None` if the problem's objective function doesn't include a quadratic form.
-        `A_csr_to_csc_perm`: 1D permutation array that restores a gradient w.r.t. the
-            constraint coefficients stored in CSR layout to CSC layout.
         `b_idxs`: RHS indices from forward pass
 
     Returns:
@@ -431,24 +382,21 @@ def _compute_gradients(
     dslack = jnp.zeros_like(ddual[0])  # No gradient w.r.t. slack
 
     import equinox as eqx
-    
+
     # NOTE(quill): doing the following to enforce only one comilation of QCP.vjp
     @eqx.filter_jit
     def _compute_vjp(qcp_module_instance: DeviceQCP, dx, dy, ds):
         return qcp_module_instance.vjp(dx, dy, ds)
-    
+
     for i in range(num_batches):
         # TODO(quill): add ability to pass parameters to `vjp`
         dP, dA, dq, db = _compute_vjp(vjps[i], dprimal[i], ddual[i], dslack)
 
-        con_grad = jnp.hstack([-dA.data[A_csr_to_csc_perm], db[b_idxs]])
+        con_grad = jnp.hstack([-dA.data, db[b_idxs]])
         lin_grad = jnp.hstack([dq, jnp.array([0.0])])
         dA_batch.append(con_grad)
         dq_batch.append(lin_grad)
-        if P_csr_to_csc_perm is not None:
-            dP_batch.append(dP.data[P_csr_to_csc_perm])
-        else:
-            dP_batch.append(dP.data)
+        dP_batch.append(dP.data)
 
     return dP_batch, dq_batch, dA_batch
 
@@ -457,8 +405,6 @@ def _compute_gradients(
 class CUCLARABEL_data:
     data_matrices: GpuDataMatrices
     qcp_structure: QCPStructureGPU  # QCPStructureLayers
-    P_csr_to_csc_perm: Integer[jax.Array, "..."] | None
-    A_csr_to_csc_perm: Integer[jax.Array, "..."]
     b_idxs: Integer[jax.Array, "..."]
     julia_ctx: Julia_CTX
     originally_unbatched: bool
@@ -485,8 +431,6 @@ class CUCLARABEL_data:
         dP_batch, dq_batch, dA_batch = _compute_gradients(
             dprimal=dprimal,
             ddual=ddual,
-            P_csr_to_csc_perm=self.P_csr_to_csc_perm,
-            A_csr_to_csc_perm=self.A_csr_to_csc_perm,
             b_idxs=self.b_idxs,
             vjps=vjps,
         )
