@@ -33,8 +33,13 @@ def get_solver_ctx(
         )
 
     # All non-DIFFCP solvers need CSR format.
-    # NOTE: mutates param_prob.reduced_{P,A}.reduced_mat (row permutation).
-    csr = convert_to_csr(param_prob)
+    # convert_to_csr is pure; we apply the row permutation here so that
+    # downstream matrix multiplies (matrix @ params) produce CSR-ordered values.
+    csr, permuted_P_mat, permuted_A_mat = convert_to_csr(param_prob)
+    if permuted_P_mat is not None:
+        param_prob.reduced_P.reduced_mat = permuted_P_mat
+    if permuted_A_mat is not None:
+        param_prob.reduced_A.reduced_mat = permuted_A_mat
 
     match solver:
         case "MOREAU":
@@ -42,8 +47,8 @@ def get_solver_ctx(
 
             return MOREAU_ctx(
                 csr, cone_dims, options,
-                reduced_P_mat=param_prob.reduced_P.reduced_mat,
-                reduced_A_mat=param_prob.reduced_A.reduced_mat,
+                reduced_P_mat=permuted_P_mat,
+                reduced_A_mat=permuted_A_mat,
             )
         case "CUCLARABEL":
             from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx

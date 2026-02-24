@@ -22,22 +22,32 @@ class CsrProblemData:
     b_idx: np.ndarray
 
 
-def convert_to_csr(param_prob) -> CsrProblemData:
+def convert_to_csr(
+    param_prob,
+) -> tuple["CsrProblemData", sp.sparray | None, sp.sparray | None]:
     """Convert a parametrized problem from CSC to CSR format.
 
     Reads ``param_prob.reduced_P.problem_data_index`` and
     ``reduced_A.problem_data_index``, calls
-    ``convert_csc_structure_to_csr_structure`` for each, and **permutes the
-    rows of** ``param_prob.reduced_P.reduced_mat`` **and**
-    ``param_prob.reduced_A.reduced_mat`` **in-place** so that subsequent
+    ``convert_csc_structure_to_csr_structure`` for each, and computes
+    row-permuted copies of the parametrization matrices so that
     ``matrix @ params`` produces values directly in CSR order.
 
+    This function is pure — it does **not** mutate ``param_prob``.  The
+    caller is responsible for assigning the returned matrices back (e.g.
+    ``param_prob.reduced_P.reduced_mat = permuted_P_mat``).
+
     Args:
-        param_prob: Parametrized problem from CVXPY canonicalization.  Its
-            ``reduced_P`` and ``reduced_A`` attributes are mutated.
+        param_prob: Parametrized problem from CVXPY canonicalization.
+            Must expose ``reduced_P.problem_data_index``,
+            ``reduced_P.reduced_mat``, ``reduced_A.problem_data_index``,
+            and ``reduced_A.reduced_mat``.
 
     Returns:
-        A ``CsrProblemData`` with the CSR structure for P and A.
+        A 3-tuple ``(csr, permuted_P_mat, permuted_A_mat)`` where *csr*
+        is a ``CsrProblemData`` and the matrices are the row-permuted
+        parametrization matrices (or ``None`` when the corresponding
+        structure is absent).
     """
     P_structure_csc = param_prob.reduced_P.problem_data_index
     A_structure_csc = param_prob.reduced_A.problem_data_index
@@ -58,13 +68,12 @@ def convert_to_csr(param_prob) -> CsrProblemData:
             P_structure_csc, False
         )
         nnz_P = len(P_perm)
-        param_prob.reduced_P.reduced_mat = (
-            param_prob.reduced_P.reduced_mat[P_perm, :]
-        )
+        permuted_P_mat = param_prob.reduced_P.reduced_mat[P_perm, :]
     else:
         P_csr_structure = None
         P_shape = (n, n)
         nnz_P = 0
+        permuted_P_mat = None
 
     # --- A matrix (with last-column extraction for b) ---
     if A_structure_csc is not None:
@@ -75,9 +84,7 @@ def convert_to_csr(param_prob) -> CsrProblemData:
         # Permute constraint rows: [A values in CSR order | b values unchanged]
         nb = param_prob.reduced_A.reduced_mat.shape[0] - nnz_A
         full_A_perm = np.concatenate([A_perm, np.arange(nnz_A, nnz_A + nb)])
-        param_prob.reduced_A.reduced_mat = (
-            param_prob.reduced_A.reduced_mat[full_A_perm, :]
-        )
+        permuted_A_mat = param_prob.reduced_A.reduced_mat[full_A_perm, :]
     else:
         A_csr_structure = (
             np.array([], dtype=np.int64),
@@ -86,8 +93,9 @@ def convert_to_csr(param_prob) -> CsrProblemData:
         A_shape = (0, n)
         nnz_A = 0
         b_idx = np.array([], dtype=np.int64)
+        permuted_A_mat = None
 
-    return CsrProblemData(
+    csr = CsrProblemData(
         P_csr_structure=P_csr_structure,
         P_shape=P_shape,
         nnz_P=nnz_P,
@@ -96,6 +104,7 @@ def convert_to_csr(param_prob) -> CsrProblemData:
         nnz_A=nnz_A,
         b_idx=b_idx,
     )
+    return csr, permuted_P_mat, permuted_A_mat
 
 
 @overload
