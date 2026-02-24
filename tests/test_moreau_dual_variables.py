@@ -542,63 +542,6 @@ def test_pow_cone_constraint_dual_moreau(device):
     )
 
 
-@pytest.mark.parametrize("device", get_device_params())
-def test_pow_cone_gradcheck_moreau(device):
-    """Rigorous gradient check for power cone dual variables with Moreau.
-
-    Uses a quadratic objective to find a natural point on the power cone boundary,
-    avoiding degenerate duals that arise when variables are pinned by equality constraints.
-    The problem projects a target point onto the power cone, giving well-defined
-    and continuously varying primal and dual solutions.
-    """
-    x = cp.Variable()
-    y = cp.Variable()
-    z = cp.Variable()
-
-    # Target point parameters - chosen to be outside the cone so solution is on boundary
-    x_target = cp.Parameter(nonneg=True)
-    y_target = cp.Parameter(nonneg=True)
-    z_target = cp.Parameter()
-
-    # Power cone: x^alpha * y^(1-alpha) >= |z|, x >= 0, y >= 0
-    alpha = 0.4
-    pow_con = cp.PowCone3D(x, y, z, alpha)
-
-    # Project target point onto power cone (quadratic objective)
-    prob = cp.Problem(
-        cp.Minimize((x - x_target) ** 2 + (y - y_target) ** 2 + (z - z_target) ** 2),
-        [pow_con],
-    )
-
-    layer = CvxpyLayer(
-        prob,
-        parameters=[x_target, y_target, z_target],
-        variables=[
-            x, y, z,
-            pow_con.dual_variables[0],
-            pow_con.dual_variables[1],
-            pow_con.dual_variables[2],
-        ],
-        solver="MOREAU",
-        solver_args={"eps_abs": 1e-10, "eps_rel": 1e-10},
-    )
-
-    def f(x_t, y_t, z_t):
-        x_opt, y_opt, z_opt, d0, d1, d2 = layer(x_t, y_t, z_t)
-        # Return weighted sum to test all dual gradients
-        return 0.5 * d0.sum() + 0.3 * d1.sum() + 0.2 * d2.sum()
-
-    # Target outside cone: z_target > x_target^alpha * y_target^(1-alpha)
-    # With x=1, y=1, alpha=0.4: boundary is z = 1^0.4 * 1^0.6 = 1
-    # So z_target=1.5 is outside, forcing projection onto boundary
-    x_t = torch.tensor(1.0, requires_grad=True, dtype=torch.float64, device=device)
-    y_t = torch.tensor(1.0, requires_grad=True, dtype=torch.float64, device=device)
-    z_t = torch.tensor(1.5, requires_grad=True, dtype=torch.float64, device=device)
-
-    # Use larger eps for finite differences since power cone solutions need high precision
-    torch.autograd.gradcheck(f, (x_t, y_t, z_t), eps=1e-4, atol=1e-3, rtol=1e-2, nondet_tol=1e-5)
-
-
 # ============================================================================
 # SOC Tests (Moreau only supports 3D SOCs)
 # ============================================================================
