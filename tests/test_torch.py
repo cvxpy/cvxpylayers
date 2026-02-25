@@ -926,8 +926,9 @@ def test_quad_form_psd_rejects_diffcp():
         cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x),
         [x >= -1, x <= 1],
     )
-    # DIFFCP can't handle parametric P — scope is not entered, DPP check fails.
-    with pytest.raises(ValueError, match="DPP"):
+    # DIFFCP can't handle parametric P — scope is not entered, so construction
+    # fails (either DPP validation or canonicalization, depending on CVXPY version).
+    with pytest.raises((ValueError, AssertionError)):
         CvxpyLayer(prob, parameters=[Q, q], variables=[x])
 
 
