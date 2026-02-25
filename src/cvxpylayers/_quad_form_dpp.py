@@ -42,8 +42,10 @@ if _NEEDS_PATCH:
     def _quad_form_dpp_scope():
         prev = scopes._quad_form_dpp_scope_active
         scopes._quad_form_dpp_scope_active = True
-        yield
-        scopes._quad_form_dpp_scope_active = prev
+        try:
+            yield
+        finally:
+            scopes._quad_form_dpp_scope_active = prev
 
     def _quad_form_dpp_scope_active():
         return scopes._quad_form_dpp_scope_active

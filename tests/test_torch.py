@@ -1,5 +1,7 @@
 """Unit tests for cvxpylayers.torch."""
 
+import importlib.util
+
 import cvxpy as cp
 import diffcp
 import numpy as np
@@ -719,11 +721,14 @@ def test_nd_array_variable():
 # Parametric quad_form(x, P) tests (issue #136)
 # ---------------------------------------------------------------------------
 
-moreau = pytest.importorskip("moreau")
-
+_moreau_available = importlib.util.find_spec("moreau") is not None
+requires_moreau = pytest.mark.skipif(
+    not _moreau_available, reason="moreau not installed"
+)
 SOLVER_ARGS = {"tol": 1e-12, "max_iters": 500}
 
 
+@requires_moreau
 def test_quad_form_psd_parameter_dpp():
     """quad_form(x, Q) with Q=Parameter(PSD=True) should pass DPP check in scope."""
     from cvxpy.utilities import scopes
@@ -744,6 +749,7 @@ def test_quad_form_psd_parameter_dpp():
     assert layer is not None
 
 
+@requires_moreau
 def test_quad_form_psd_forward():
     """Unconstrained QP: x* = -Q^{-1} q."""
     n = 4
@@ -764,6 +770,7 @@ def test_quad_form_psd_forward():
     assert np.allclose(y.detach().numpy(), expected, atol=1e-6)
 
 
+@requires_moreau
 def test_quad_form_psd_different_Q():
     """Different Q values should give different solutions."""
     n = 3
@@ -788,6 +795,7 @@ def test_quad_form_psd_different_Q():
     assert np.allclose(y2.detach().numpy(), expected2, atol=1e-6)
 
 
+@requires_moreau
 def test_quad_form_psd_gradcheck_q():
     """Gradient w.r.t. linear parameter q should pass gradcheck."""
     n = 3
@@ -807,6 +815,30 @@ def test_quad_form_psd_gradcheck_q():
     assert torch.autograd.gradcheck(func, (q_t,), eps=1e-5, atol=1e-3)
 
 
+@requires_moreau
+def test_quad_form_psd_gradcheck_Q():
+    """Gradient w.r.t. quadratic parameter Q should pass gradcheck."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    def func(Q_t):
+        # Symmetrize so that gradcheck's per-entry perturbation affects both
+        # Q[k,l] and Q[l,k], matching the analytical gradient.
+        Q_sym = (Q_t + Q_t.T) / 2
+        (y,) = layer(Q_sym, q_t, solver_args=SOLVER_ARGS)
+        return y.sum()
+
+    Q_t = 2.0 * torch.eye(n, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(func, (Q_t,), eps=1e-5, atol=1e-3)
+
+
+@requires_moreau
 def test_quad_form_psd_backward():
     """Backward pass should produce finite, non-zero gradients for both Q and q."""
     n = 4
@@ -829,6 +861,7 @@ def test_quad_form_psd_backward():
     assert q_t.grad.norm() > 0
 
 
+@requires_moreau
 def test_quad_form_psd_batched():
     """Batched Q and q should produce correct per-element solutions."""
     n, batch = 3, 4
@@ -862,6 +895,7 @@ def test_quad_form_psd_batched():
     assert q_batch.grad is not None
 
 
+@requires_moreau
 def test_quad_form_psd_with_constraints():
     """Parametric Q with box constraints should clamp the solution."""
     n = 3
@@ -897,6 +931,7 @@ def test_quad_form_psd_rejects_diffcp():
         CvxpyLayer(prob, parameters=[Q, q], variables=[x])
 
 
+@requires_moreau
 def test_quad_form_nsd_maximize():
     """Maximize x'Qx + q'x with Q=NSD parameter and box constraints.
 
@@ -922,6 +957,7 @@ def test_quad_form_nsd_maximize():
     assert np.allclose(y.detach().numpy(), [1.0, -1.0, 0.5], atol=1e-4)
 
 
+@requires_moreau
 def test_quad_form_nsd_maximize_backward():
     """Backward pass for NSD maximize should produce finite, non-zero gradients."""
     n = 4
