@@ -1,5 +1,7 @@
 """Unit tests for cvxpylayers.torch."""
 
+import importlib.util
+
 import cvxpy as cp
 import diffcp
 import numpy as np
@@ -713,3 +715,267 @@ def test_nd_array_variable():
     b.value = b_th.numpy()
     prob.solve()
     assert np.allclose(x.value, x_th.numpy(), atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Parametric quad_form(x, P) tests (issue #136)
+# ---------------------------------------------------------------------------
+
+_moreau_available = importlib.util.find_spec("moreau") is not None
+requires_moreau = pytest.mark.skipif(
+    not _moreau_available, reason="moreau not installed"
+)
+SOLVER_ARGS = {"tol": 1e-12, "max_iters": 500}
+
+
+@requires_moreau
+def test_quad_form_psd_parameter_dpp():
+    """quad_form(x, Q) with Q=Parameter(PSD=True) should pass DPP check in scope."""
+    from cvxpy.utilities import scopes
+
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    # Parametric quad_form requires quad_form_dpp_scope for DPP validation.
+    # CvxpyLayer enters this scope automatically for QP-capable solvers.
+    with scopes.quad_form_dpp_scope():
+        assert prob.is_dcp(dpp=True)
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+    assert layer is not None
+
+
+@requires_moreau
+def test_quad_form_psd_forward():
+    """Unconstrained QP: x* = -Q^{-1} q."""
+    n = 4
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    rng = set_seed(136)
+    Q_np = np.eye(n) * 2.0
+    q_np = rng.standard_normal(n)
+    Q_t = torch.tensor(Q_np)
+    q_t = torch.tensor(q_np)
+
+    (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+    expected = np.linalg.solve(Q_np, -q_np)
+    assert np.allclose(y.detach().numpy(), expected, atol=1e-6)
+
+
+@requires_moreau
+def test_quad_form_psd_different_Q():
+    """Different Q values should give different solutions."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+    Q1 = torch.eye(n, dtype=torch.float64)
+    Q2 = 3.0 * torch.eye(n, dtype=torch.float64)
+
+    (y1,) = layer(Q1, q_t, solver_args=SOLVER_ARGS)
+    (y2,) = layer(Q2, q_t, solver_args=SOLVER_ARGS)
+    assert not torch.allclose(y1, y2, atol=1e-6)
+
+    # Verify both are correct
+    expected1 = np.linalg.solve(Q1.numpy(), -q_t.numpy())
+    expected2 = np.linalg.solve(Q2.numpy(), -q_t.numpy())
+    assert np.allclose(y1.detach().numpy(), expected1, atol=1e-6)
+    assert np.allclose(y2.detach().numpy(), expected2, atol=1e-6)
+
+
+@requires_moreau
+def test_quad_form_psd_gradcheck_q():
+    """Gradient w.r.t. linear parameter q should pass gradcheck."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    Q_t = 2.0 * torch.eye(n, dtype=torch.float64)
+    q_t = torch.tensor([1.0, -1.0, 0.5], requires_grad=True)
+
+    def func(q_t):
+        (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+        return y.sum()
+
+    assert torch.autograd.gradcheck(func, (q_t,), eps=1e-5, atol=1e-3)
+
+
+@requires_moreau
+def test_quad_form_psd_gradcheck_Q():
+    """Gradient w.r.t. quadratic parameter Q should pass gradcheck."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    def func(Q_t):
+        # Symmetrize so that gradcheck's per-entry perturbation affects both
+        # Q[k,l] and Q[l,k], matching the analytical gradient.
+        Q_sym = (Q_t + Q_t.T) / 2
+        (y,) = layer(Q_sym, q_t, solver_args=SOLVER_ARGS)
+        return y.sum()
+
+    Q_t = 2.0 * torch.eye(n, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(func, (Q_t,), eps=1e-5, atol=1e-3)
+
+
+@requires_moreau
+def test_quad_form_psd_backward():
+    """Backward pass should produce finite, non-zero gradients for both Q and q."""
+    n = 4
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    Q_t = torch.tensor(2.0 * np.eye(n), dtype=torch.float64, requires_grad=True)
+    q_t = torch.randn(n, dtype=torch.float64, requires_grad=True)
+
+    (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+    y.sum().backward()
+
+    assert Q_t.grad is not None
+    assert q_t.grad is not None
+    assert torch.all(torch.isfinite(Q_t.grad))
+    assert torch.all(torch.isfinite(q_t.grad))
+    assert q_t.grad.norm() > 0
+
+
+@requires_moreau
+def test_quad_form_psd_batched():
+    """Batched Q and q should produce correct per-element solutions."""
+    n, batch = 3, 4
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    # Batched Q: diagonal with different scales
+    scales = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    Q_batch = torch.eye(n, dtype=torch.float64).unsqueeze(0) * scales.unsqueeze(
+        1
+    ).unsqueeze(2)
+    Q_batch.requires_grad_(True)
+    torch.manual_seed(136)
+    q_batch = torch.randn(batch, n, dtype=torch.float64, requires_grad=True)
+
+    (y_batch,) = layer(Q_batch, q_batch, solver_args=SOLVER_ARGS)
+    assert y_batch.shape == (batch, n)
+
+    # Verify each element
+    for i in range(batch):
+        expected = np.linalg.solve(
+            Q_batch[i].detach().numpy(), -q_batch[i].detach().numpy()
+        )
+        assert np.allclose(y_batch[i].detach().numpy(), expected, atol=1e-5)
+
+    y_batch.sum().backward()
+    assert Q_batch.grad is not None
+    assert q_batch.grad is not None
+
+
+@requires_moreau
+def test_quad_form_psd_with_constraints():
+    """Parametric Q with box constraints should clamp the solution."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x),
+        [x >= -0.5, x <= 0.5],
+    )
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    Q_t = torch.eye(n, dtype=torch.float64)
+    q_t = torch.tensor([3.0, -3.0, 0.1])  # Large q pushes x to bounds
+
+    (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+    # x* = clip(-Q^{-1}q, -0.5, 0.5) = clip([-3, 3, -0.1], -0.5, 0.5)
+    assert np.allclose(y.detach().numpy(), [-0.5, 0.5, -0.1], atol=1e-4)
+
+
+def test_quad_form_psd_rejects_diffcp():
+    """Parametric quad_form(x, Q) should fail with DIFFCP (non-QP solver)."""
+    n = 3
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, Q) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    # DIFFCP can't handle parametric P — scope is not entered, so construction
+    # fails (either DPP validation or canonicalization, depending on CVXPY version).
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[Q, q], variables=[x])
+
+
+@requires_moreau
+def test_quad_form_nsd_maximize():
+    """Maximize x'Qx + q'x with Q=NSD parameter and box constraints.
+
+    max 0.5*x'Qx + q'x  s.t. -1 <= x <= 1
+    For Q = -I, q = [2, -2, 0.5]:
+        grad = Qx + q = 0 => x* = -Q^{-1}(-q) = q (unconstrained)
+        clipped: clip([2, -2, 0.5], -1, 1) = [1, -1, 0.5]
+    """
+    n = 3
+    Q = cp.Parameter((n, n), NSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Maximize(0.5 * cp.quad_form(x, Q) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    Q_t = -torch.eye(n, dtype=torch.float64)
+    q_t = torch.tensor([2.0, -2.0, 0.5])
+
+    (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+    assert np.allclose(y.detach().numpy(), [1.0, -1.0, 0.5], atol=1e-4)
+
+
+@requires_moreau
+def test_quad_form_nsd_maximize_backward():
+    """Backward pass for NSD maximize should produce finite, non-zero gradients."""
+    n = 4
+    Q = cp.Parameter((n, n), NSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(cp.Maximize(0.5 * cp.quad_form(x, Q) + q.T @ x), [])
+    layer = CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="MOREAU")
+
+    Q_t = torch.tensor(-2.0 * np.eye(n), dtype=torch.float64, requires_grad=True)
+    q_t = torch.randn(n, dtype=torch.float64, requires_grad=True)
+
+    (y,) = layer(Q_t, q_t, solver_args=SOLVER_ARGS)
+    y.sum().backward()
+
+    assert Q_t.grad is not None
+    assert q_t.grad is not None
+    assert torch.all(torch.isfinite(Q_t.grad))
+    assert torch.all(torch.isfinite(q_t.grad))
+    assert q_t.grad.norm() > 0
