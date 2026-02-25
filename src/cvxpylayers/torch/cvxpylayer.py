@@ -372,9 +372,13 @@ class CvxpyLayer(torch.nn.Module):
             scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat),  # type: ignore[attr-defined]
         )
         self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
+        self._warm_start_cache = None
 
     def forward(
-        self, *params: torch.Tensor, solver_args: dict[str, Any] | None = None
+        self,
+        *params: torch.Tensor,
+        solver_args: dict[str, Any] | None = None,
+        warm_start: bool = False,
     ) -> tuple[torch.Tensor, ...]:
         """Solve the optimization problem and return optimal variable values.
 
@@ -386,6 +390,8 @@ class CvxpyLayer(torch.nn.Module):
                 unbatched parameters are broadcast.
             solver_args: Keyword arguments passed to the solver, overriding any
                 defaults set in __init__.
+            warm_start: If True, use the cached solution from the previous solve
+                as a warm start for the solver. Only supported with solver="MOREAU".
 
         Returns:
             Tuple of tensors containing optimal values for each CVXPY Variable
@@ -394,6 +400,7 @@ class CvxpyLayer(torch.nn.Module):
 
         Raises:
             RuntimeError: If the solver fails to find a solution.
+            ValueError: If warm_start=True with a non-Moreau solver.
 
         Example:
             >>> # Single problem
@@ -406,6 +413,11 @@ class CvxpyLayer(torch.nn.Module):
         """
         if solver_args is None:
             solver_args = {}
+        if warm_start and self.ctx.solver != "MOREAU":
+            raise ValueError(
+                "warm_start=True is only supported with solver='MOREAU'. "
+                f"Current solver is '{self.ctx.solver}'."
+            )
         batch = self.ctx.validate_params(list(params))
 
         # Apply log transformation to GP parameters
@@ -449,15 +461,23 @@ class CvxpyLayer(torch.nn.Module):
             p.requires_grad for p in params
         )
 
+        # Pass warm start cache if using Moreau with warm_start=True
+        ws = self._warm_start_cache if warm_start else None
+
         # Solve optimization problem
-        primal, dual, _, _ = _CvxpyLayer.apply(  # type: ignore[misc]
+        primal, dual, _, solver_data = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
             q_eval,
             A_eval,
             self.ctx,
             solver_args,
             needs_grad,
+            ws,
         )
+
+        # Always update warm start cache for Moreau solver (negligible cost)
+        if self.ctx.solver == "MOREAU":
+            self._warm_start_cache = solver_data._solution.to_warm_start()
 
         # Recover results and apply GP inverse transform if needed
         return _recover_results(primal, dual, self.ctx, batch)

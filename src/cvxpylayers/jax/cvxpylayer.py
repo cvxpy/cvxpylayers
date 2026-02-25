@@ -7,6 +7,12 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.sparse
 
+try:
+    from moreau._types import BatchedWarmStart, WarmStart
+except ImportError:
+    WarmStart = None  # type: ignore[assignment,misc]
+    BatchedWarmStart = None  # type: ignore[assignment,misc]
+
 import cvxpylayers.utils.parse_args as pa
 
 
@@ -327,9 +333,13 @@ class CvxpyLayer:
         # Must be captured as closure, not looked up dynamically during tracing.
         if self.ctx.solver == "MOREAU":
             self._moreau_solve_fn = self.ctx.solver_ctx.get_jax_solver()._impl.solve
+        self._warm_start_cache = None
 
     def __call__(
-        self, *params: jnp.ndarray, solver_args: dict[str, Any] | None = None
+        self,
+        *params: jnp.ndarray,
+        solver_args: dict[str, Any] | None = None,
+        warm_start: bool = False,
     ) -> tuple[jnp.ndarray, ...]:
         """Solve the optimization problem and return optimal variable values.
 
@@ -341,6 +351,8 @@ class CvxpyLayer:
                 unbatched parameters are broadcast.
             solver_args: Keyword arguments passed to the solver, overriding any
                 defaults set in __init__().
+            warm_start: If True, use the cached solution from the previous solve
+                as a warm start for the solver. Only supported with solver="MOREAU".
 
         Returns:
             Tuple of arrays containing optimal values for each CVXPY Variable
@@ -349,6 +361,7 @@ class CvxpyLayer:
 
         Raises:
             RuntimeError: If the solver fails to find a solution.
+            ValueError: If warm_start=True with a non-Moreau solver.
 
         Example:
             >>> # Single problem
@@ -361,6 +374,11 @@ class CvxpyLayer:
         """
         if solver_args is None:
             solver_args = {}
+        if warm_start and self.ctx.solver != "MOREAU":
+            raise ValueError(
+                "warm_start=True is only supported with solver='MOREAU'. "
+                f"Current solver is '{self.ctx.solver}'."
+            )
         batch = self.ctx.validate_params(list(params))
 
         # Apply log transformation to GP parameters
@@ -377,7 +395,9 @@ class CvxpyLayer:
         # Check if solver has native JAX autodiff (Moreau)
         # If so, bypass the closure-based custom_vjp wrapper and use Moreau's native autodiff
         if self.ctx.solver == "MOREAU":
-            return self._solve_moreau(P_eval, q_eval, A_eval, batch, solver_args)
+            ws = self._warm_start_cache if warm_start else None
+            return self._solve_moreau(P_eval, q_eval, A_eval, batch, solver_args,
+                                      warm_start=ws)
 
         # Non-Moreau: use existing custom_vjp wrapper (not JIT-compatible)
         return self._solve_with_custom_vjp(P_eval, q_eval, A_eval, batch, solver_args)
@@ -389,6 +409,7 @@ class CvxpyLayer:
         A_eval: jnp.ndarray,
         batch: tuple,
         solver_args: dict[str, Any],
+        warm_start: Any = None,
     ) -> tuple[jnp.ndarray, ...]:
         """Direct call to Moreau solver - uses its native custom_vjp (JIT-compatible).
 
@@ -398,15 +419,28 @@ class CvxpyLayer:
 
         This method uses jax.vmap for batched cases to ensure each problem is
         solved individually, which is required for JIT compatibility.
+
+        Args:
+            warm_start: Optional WarmStart or BatchedWarmStart from a previous
+                solve. Set on the solver's _impl before solving.
         """
         solver_ctx = self.ctx.solver_ctx  # type: ignore[attr-defined]
+        jax_solver = solver_ctx.get_jax_solver()
 
         # Apply per-call solver_args to solver settings
         if solver_args:
-            settings = solver_ctx.get_jax_solver()._impl._settings
+            settings = jax_solver._impl._settings
             for key, value in solver_args.items():
                 if hasattr(settings, key):
                     setattr(settings, key, value)
+
+        # Set warm start on the solver impl (mimics moreau.jax.Solver.solve() internals)
+        if warm_start is not None:
+            jax_solver._impl._pending_warm_start = {
+                "warm_x": np.asarray(warm_start.x, dtype=np.float64),
+                "warm_z": np.asarray(warm_start.z, dtype=np.float64),
+                "warm_s": np.asarray(warm_start.s, dtype=np.float64),
+            }
 
         # Use cached solve function (captured as closure, not dynamic lookup)
         solve_fn = self._moreau_solve_fn
@@ -422,7 +456,7 @@ class CvxpyLayer:
             P_eval_single: jnp.ndarray | None,
             q_eval_single: jnp.ndarray,
             A_eval_single: jnp.ndarray,
-        ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
             """Extract problem data and solve a single (unbatched) problem."""
             # P values are already in CSR order from pre-permuted matrix multiply
             if P_eval_single is not None:
@@ -446,7 +480,7 @@ class CvxpyLayer:
             # Call moreau's solve with unbatched inputs
             solution, _info = solve_fn(P_values, A_values, q, b)
 
-            return solution.x, solution.z  # (n,), (m,)
+            return solution.x, solution.z, solution.s  # (n,), (m,), (m,)
 
         if batch:
             # Batched case: inputs have shape (dim, batch)
@@ -457,17 +491,36 @@ class CvxpyLayer:
 
             # Use vmap to solve each problem individually
             vmapped_solve = jax.vmap(extract_and_solve, in_axes=(0, 0, 0))
-            primal, dual = vmapped_solve(P_eval_batched, q_eval_batched, A_eval_batched)
-            # primal: (batch, n), dual: (batch, m)
+            primal, dual, slack = vmapped_solve(
+                P_eval_batched, q_eval_batched, A_eval_batched
+            )
+            # primal: (batch, n), dual: (batch, m), slack: (batch, m)
 
         else:
             # Unbatched case: inputs have shape (dim,)
-            primal, dual = extract_and_solve(P_eval, q_eval, A_eval)
-            # primal: (n,), dual: (m,)
+            primal, dual, slack = extract_and_solve(P_eval, q_eval, A_eval)
+            # primal: (n,), dual: (m,), slack: (m,)
 
             # Add batch dimension for _recover_results (which expects it)
             primal = jnp.expand_dims(primal, 0)  # (1, n)
             dual = jnp.expand_dims(dual, 0)  # (1, m)
+
+        # Clear pending warm start after solve
+        jax_solver._impl._pending_warm_start = None
+
+        # Always update warm start cache (negligible cost)
+        if batch:
+            self._warm_start_cache = BatchedWarmStart(
+                x=np.asarray(primal, dtype=np.float64),
+                z=np.asarray(dual, dtype=np.float64),
+                s=np.asarray(slack, dtype=np.float64),
+            )
+        else:
+            self._warm_start_cache = WarmStart(
+                x=np.asarray(primal.squeeze(0), dtype=np.float64),
+                z=np.asarray(dual.squeeze(0), dtype=np.float64),
+                s=np.asarray(slack, dtype=np.float64),
+            )
 
         return _recover_results(primal, dual, self.ctx, batch)
 

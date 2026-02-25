@@ -1316,3 +1316,224 @@ def test_jax_jit_vmap_composition(clear_jax_cache, device):
 
     assert x_batch.shape == (batch_size, n)
     assert jnp.allclose(x_batch, b_batch, atol=1e-4)
+
+
+# ============================================================================
+# Warm-starting tests
+# ============================================================================
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_basic(device):
+    """Test that warm-started solve produces the same solution as cold solve."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 5
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    b_val = torch.randn(n, device=device)
+
+    # First call (cold, populates cache)
+    (x_cold,) = layer(b_val)
+
+    # Second call with warm start (uses cached solution)
+    b_val2 = b_val + 0.01 * torch.randn(n, device=device)
+    (x_warm,) = layer(b_val2, warm_start=True)
+
+    # Also solve cold for comparison
+    (x_cold2,) = layer(b_val2)
+
+    # Warm and cold should produce same solution
+    assert torch.allclose(x_warm, x_cold2, atol=1e-5), (
+        f"Warm-started solve should match cold: diff={torch.norm(x_warm - x_cold2)}"
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_gradients(device):
+    """Test that backward() works correctly with warm_start=True."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # First call to populate cache
+    b_val1 = torch.randn(n, device=device, requires_grad=True)
+    (x1,) = layer(b_val1, warm_start=True)
+    x1.sum().backward()
+    grad1 = b_val1.grad.clone()
+
+    # Second call with warm start
+    b_val2 = torch.randn(n, device=device, requires_grad=True)
+    (x2,) = layer(b_val2, warm_start=True)
+    x2.sum().backward()
+    grad2 = b_val2.grad.clone()
+
+    # For min ||x-b||^2, x*=b, so dx*/db = I, d/db sum(x*) = [1,1,...,1]
+    expected_grad = torch.ones(n, dtype=torch.float64, device=device)
+    assert torch.allclose(grad1, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {grad1}"
+    )
+    assert torch.allclose(grad2, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {grad2}"
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_batched(device):
+    """Test warm-starting with batched problems."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 3
+    batch_size = 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # First batched call
+    b_val1 = torch.randn(batch_size, n, device=device)
+    (x1,) = layer(b_val1, warm_start=True)
+
+    assert x1.shape == (batch_size, n)
+    assert torch.allclose(x1, b_val1, atol=1e-4)
+
+    # Second batched call with warm start
+    b_val2 = b_val1 + 0.01 * torch.randn(batch_size, n, device=device)
+    (x2,) = layer(b_val2, warm_start=True)
+
+    assert x2.shape == (batch_size, n)
+    assert torch.allclose(x2, b_val2, atol=1e-4)
+
+
+def test_warm_start_non_moreau_raises():
+    """Test that warm_start=True raises ValueError with non-Moreau solver."""
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="DIFFCP")
+
+    b_val = torch.randn(n)
+    with pytest.raises(ValueError, match="warm_start=True is only supported with solver='MOREAU'"):
+        layer(b_val, warm_start=True)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_training_loop(device):
+    """Test warm-starting in a multi-step training loop."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Simulate a training loop where parameters change gradually
+    b_val = torch.randn(n, device=device, requires_grad=True)
+    losses = []
+
+    for _ in range(5):
+        (x_sol,) = layer(b_val, warm_start=True)
+        loss = x_sol.sum()
+        losses.append(loss.item())
+
+        # Check gradient
+        loss.backward()
+        assert b_val.grad is not None
+
+        # Simulate parameter update (small step)
+        with torch.no_grad():
+            b_val = (b_val - 0.01 * b_val.grad).requires_grad_(True)
+
+    # Verify the layer's warm start cache was updated
+    assert layer._warm_start_cache is not None
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_cache_updated_without_flag(device):
+    """Test that warm start cache is updated even when warm_start=False."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Call without warm_start flag
+    b_val = torch.randn(n, device=device)
+    (x1,) = layer(b_val)
+
+    # Cache should be populated
+    assert layer._warm_start_cache is not None
+
+    # Now call with warm_start=True — should use the cached solution
+    b_val2 = b_val + 0.01 * torch.randn(n, device=device)
+    (x2,) = layer(b_val2, warm_start=True)
+    assert torch.allclose(x2, b_val2, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_jax_basic(device):
+    """Test JAX warm-starting produces correct solutions."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 5
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    b_val = jnp.array(np.random.randn(n))
+
+    # First call (cold, populates cache)
+    (x_cold,) = layer(b_val, solver_args={"device": device})
+
+    # Verify solution is correct
+    assert jnp.allclose(x_cold, b_val, atol=1e-4)
+
+    # Second call with warm start (uses cached solution)
+    b_val2 = b_val + 0.01 * jnp.array(np.random.randn(n))
+    (x_warm,) = layer(b_val2, warm_start=True, solver_args={"device": device})
+
+    assert jnp.allclose(x_warm, b_val2, atol=1e-4), (
+        f"Warm-started solve incorrect: diff={jnp.linalg.norm(x_warm - b_val2)}"
+    )
+
+
+def test_warm_start_jax_non_moreau_raises():
+    """Test that JAX warm_start=True raises ValueError with non-Moreau solver."""
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x])
+
+    b_val = jnp.array(np.random.randn(n))
+    with pytest.raises(ValueError, match="warm_start=True is only supported with solver='MOREAU'"):
+        layer(b_val, warm_start=True)
