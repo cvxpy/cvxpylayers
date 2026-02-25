@@ -1,3 +1,4 @@
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -5,8 +6,10 @@ import cvxpy as cp
 import cvxpy.constraints
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
+from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
+from cvxpylayers._quad_form_dpp import QP_SOLVERS
 
 if TYPE_CHECKING:
     import torch
@@ -385,39 +388,49 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
-    # Validate problem is DPP (disciplined parametrized programming)
-    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
+    # For QP-capable solvers, enter quad_form_dpp_scope so that
+    # parametric quad_form(x, P) passes DPP validation and canonicalization.
+    effective_solver = solver or "DIFFCP"
+    qf_scope = (
+        scopes.quad_form_dpp_scope()
+        if effective_solver in QP_SOLVERS
+        else contextlib.nullcontext()
+    )
 
-    if solver is None:
-        solver = "DIFFCP"
+    with qf_scope:
+        # Validate problem is DPP (disciplined parametrized programming)
+        _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
 
-    # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
-    gp_param_to_log_param = None
-    if gp:
-        # Apply native CVXPY DGP→DCP reduction
-        dgp2dcp = cp.reductions.Dgp2Dcp(problem)  # type: ignore[attr-defined]
-        dcp_problem, _ = dgp2dcp.apply(problem)
+        if solver is None:
+            solver = "DIFFCP"
 
-        # Extract parameter mapping from the reduction
-        gp_param_to_log_param = dgp2dcp.canon_methods._parameters
+        # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
+        gp_param_to_log_param = None
+        if gp:
+            # Apply native CVXPY DGP→DCP reduction
+            dgp2dcp = cp.reductions.Dgp2Dcp(problem)  # type: ignore[attr-defined]
+            dcp_problem, _ = dgp2dcp.apply(problem)
 
-        # Get problem data from the already-transformed DCP problem
-        data, _, _ = dcp_problem.get_problem_data(
-            solver=solver,
-            gp=False,
-            verbose=verbose,
-            canon_backend=canon_backend,
-            solver_opts=solver_args,
-        )
-    else:
-        # Standard DCP path
-        data, _, _ = problem.get_problem_data(
-            solver=solver,
-            gp=False,
-            verbose=verbose,
-            canon_backend=canon_backend,
-            solver_opts=solver_args,
-        )
+            # Extract parameter mapping from the reduction
+            gp_param_to_log_param = dgp2dcp.canon_methods._parameters
+
+            # Get problem data from the already-transformed DCP problem
+            data, _, _ = dcp_problem.get_problem_data(
+                solver=solver,
+                gp=False,
+                verbose=verbose,
+                canon_backend=canon_backend,
+                solver_opts=solver_args,
+            )
+        else:
+            # Standard DCP path
+            data, _, _ = problem.get_problem_data(
+                solver=solver,
+                gp=False,
+                verbose=verbose,
+                canon_backend=canon_backend,
+                solver_opts=solver_args,
+            )
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
