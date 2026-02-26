@@ -199,6 +199,50 @@ Supply chain network flow optimization.
 Optimizing mechanical stiffness parameters.
 :::
 
+:::{grid-item-card} GP Circuit Sizing
+:link: https://colab.research.google.com/github/cvxpy/cvxpylayers/blob/master/examples/torch/gp_circuit_sizing.ipynb
+:link-type: url
+
+Geometric program for transistor sizing with `gp=True`. Sensitivity analysis of delay vs. area/power budgets.
+:::
+
+::::
+
+---
+
+## Optimization Techniques
+
+::::{grid} 1 1 2 2
+:gutter: 3
+
+:::{grid-item-card} Batched Portfolio with Duals
+:link: https://colab.research.google.com/github/cvxpy/cvxpylayers/blob/master/examples/torch/batched_portfolio.ipynb
+:link-type: url
+
+Batched solving, parameter broadcasting, and dual variable extraction for portfolio optimization.
+:::
+
+:::{grid-item-card} Robust Optimization
+:link: https://colab.research.google.com/github/cvxpy/cvxpylayers/blob/master/examples/torch/robust_optimization.ipynb
+:link-type: url
+
+Learn the right amount of robustness from data. Worst-case design under uncertainty.
+:::
+
+:::{grid-item-card} Predict-then-Optimize
+:link: https://colab.research.google.com/github/cvxpy/cvxpylayers/blob/master/examples/torch/predict_then_optimize.ipynb
+:link-type: url
+
+Neural net + CvxpyLayer end-to-end pipeline. Decision-focused learning vs. two-stage training.
+:::
+
+:::{grid-item-card} Convex Regression
+:link: https://colab.research.google.com/github/cvxpy/cvxpylayers/blob/master/examples/torch/convex_regression.ipynb
+:link-type: url
+
+Fit a convex piecewise-linear function (max-of-affines) to data via SGD.
+:::
+
 ::::
 
 ---
