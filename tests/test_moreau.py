@@ -1523,6 +1523,73 @@ def test_warm_start_jax_basic(device):
     )
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_jax_gradients(device):
+    """Test JAX gradients work with warm_start=True."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 5
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    def solve_and_sum(b_val):
+        (x_sol,) = layer(b_val, warm_start=True, solver_args={"device": device})
+        return jnp.sum(x_sol)
+
+    b_val = jnp.array(np.random.randn(n))
+
+    # First call to populate cache
+    grad1 = jax.grad(solve_and_sum)(b_val)
+
+    # For min ||x-b||^2, x*=b, so dx*/db = I, d/db sum(x*) = [1,1,...,1]
+    expected_grad = jnp.ones(n)
+    assert jnp.allclose(grad1, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {grad1}"
+    )
+
+    # Second call with warm start
+    b_val2 = b_val + 0.01 * jnp.array(np.random.randn(n))
+    grad2 = jax.grad(solve_and_sum)(b_val2)
+    assert jnp.allclose(grad2, expected_grad, atol=1e-4), (
+        f"Expected grad {expected_grad}, got {grad2}"
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_jax_batched(device):
+    """Test JAX warm-starting with batched problems."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    batch_size = 4
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # First batched call
+    b_val1 = jnp.array(np.random.randn(batch_size, n))
+    (x1,) = layer(b_val1, solver_args={"device": device})
+
+    assert x1.shape == (batch_size, n)
+    assert jnp.allclose(x1, b_val1, atol=1e-4)
+
+    # Second batched call with warm start
+    b_val2 = b_val1 + 0.01 * jnp.array(np.random.randn(batch_size, n))
+    (x2,) = layer(b_val2, warm_start=True, solver_args={"device": device})
+
+    assert x2.shape == (batch_size, n)
+    assert jnp.allclose(x2, b_val2, atol=1e-4)
+
+
 def test_warm_start_jax_non_moreau_raises():
     """Test that JAX warm_start=True raises ValueError with non-Moreau solver."""
     from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
