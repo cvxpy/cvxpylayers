@@ -933,6 +933,61 @@ def test_quad_form_psd_rejects_diffcp():
 
 
 @requires_moreau
+def test_quad_form_rejects_sum_of_parameters():
+    """quad_form(x, P + Q) with P, Q both PSD Parameters should be rejected.
+
+    Only raw Parameters are supported — expressions of parameters are not.
+    """
+    n = 3
+    P = cp.Parameter((n, n), PSD=True)
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P + Q) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_rejects_negated_parameter():
+    """quad_form(x, -P) with P NSD Parameter should be rejected.
+
+    Only raw Parameters are supported — negation creates an expression.
+    """
+    n = 3
+    P = cp.Parameter((n, n), NSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, -P) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_rejects_symmetric_only_parameter():
+    """quad_form(x, P) with P=Parameter(symmetric=True) but no PSD/NSD should be rejected.
+
+    The convexity check requires P.is_psd() or P.is_nsd() to be True.
+    """
+    n = 3
+    P = cp.Parameter((n, n), symmetric=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P) + q.T @ x),
+        [x >= -1, x <= 1],
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
 def test_quad_form_nsd_maximize():
     """Maximize x'Qx + q'x with Q=NSD parameter and box constraints.
 
