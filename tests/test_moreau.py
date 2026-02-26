@@ -1493,6 +1493,61 @@ def test_warm_start_cache_updated_without_flag(device):
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_constrained_reduces_iterations(device):
+    """Test that warm start reduces iterations on a constrained problem."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 10
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)), [x >= 0])
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Use positive b so the solution is interior (x* = b)
+    b_val = torch.linspace(1, 5, n, dtype=torch.float64, device=device)
+    (x1,) = layer(b_val)
+
+    solver = layer.ctx.solver_ctx.get_torch_solver(device)
+    cold_iters = int(solver.info.iterations)
+
+    # Slightly perturbed — warm start should help significantly
+    b_val2 = b_val + 0.01 * torch.randn(n, dtype=torch.float64, device=device)
+    (x2,) = layer(b_val2, warm_start=True)
+    warm_iters = int(solver.info.iterations)
+
+    assert warm_iters < cold_iters, (
+        f"Warm start should reduce iterations: cold={cold_iters}, warm={warm_iters}"
+    )
+    assert torch.allclose(x2, b_val2, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_batch_size_change(device):
+    """Test that changing batch size doesn't crash (cache is silently skipped)."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Unbatched solve (populates cache with batch_size=1)
+    b_val = torch.randn(n, device=device)
+    (x1,) = layer(b_val)
+
+    # Batched solve with warm_start=True — cache mismatch, should silently skip
+    b_batch = torch.randn(4, n, device=device)
+    (x2,) = layer(b_batch, warm_start=True)
+    assert x2.shape == (4, n)
+    assert torch.allclose(x2, b_batch, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_warm_start_jax_basic(device):
     """Test JAX warm-starting produces correct solutions."""
     if device == "cuda" and not HAS_CUDA:
@@ -1588,6 +1643,31 @@ def test_warm_start_jax_batched(device):
 
     assert x2.shape == (batch_size, n)
     assert jnp.allclose(x2, b_val2, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_warm_start_jax_batch_size_change(device):
+    """Test JAX warm start silently skips when batch size changes."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    from cvxpylayers.jax import CvxpyLayer as JaxCvxpyLayer
+
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
+
+    # Unbatched solve (populates cache)
+    b_val = jnp.array(np.random.randn(n))
+    (x1,) = layer(b_val, solver_args={"device": device})
+
+    # Batched solve with warm_start=True — cache mismatch, should silently skip
+    b_batch = jnp.array(np.random.randn(4, n))
+    (x2,) = layer(b_batch, warm_start=True, solver_args={"device": device})
+    assert x2.shape == (4, n)
+    assert jnp.allclose(x2, b_batch, atol=1e-4)
 
 
 def test_warm_start_jax_non_moreau_raises():

@@ -461,8 +461,17 @@ class CvxpyLayer(torch.nn.Module):
             p.requires_grad for p in params
         )
 
-        # Solve optimization problem
-        ws = self._warm_start_cache if warm_start else None
+        # Validate warm start batch compatibility before using cache.
+        # moreau.torch always uses batched mode internally (batch_size=1 for unbatched),
+        # so compare effective batch sizes directly.
+        ws = None
+        if warm_start and self._warm_start_cache is not None:
+            cached_ws = self._warm_start_cache
+            cached_batch = cached_ws.x.shape[0]
+            current_batch = batch[0] if batch else 1
+            if cached_batch == current_batch:
+                ws = cached_ws
+
         primal, dual, _, solver_data = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
             q_eval,
