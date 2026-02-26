@@ -933,10 +933,10 @@ def test_quad_form_psd_rejects_diffcp():
 
 
 @requires_moreau
-def test_quad_form_rejects_sum_of_parameters():
-    """quad_form(x, P + Q) with P, Q both PSD Parameters should be rejected.
+def test_quad_form_sum_of_parameters():
+    """quad_form(x, P + Q) with P, Q both PSD Parameters — forward correctness.
 
-    Only raw Parameters are supported — expressions of parameters are not.
+    min 0.5*x'(P+Q)x + q'x  =>  x* = -(P+Q)^{-1} q
     """
     n = 3
     P = cp.Parameter((n, n), PSD=True)
@@ -945,17 +945,25 @@ def test_quad_form_rejects_sum_of_parameters():
     x = cp.Variable(n)
     prob = cp.Problem(
         cp.Minimize(0.5 * cp.quad_form(x, P + Q) + q.T @ x),
-        [x >= -1, x <= 1],
     )
-    with pytest.raises((ValueError, AssertionError)):
-        CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+    layer = CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+
+    P_t = torch.tensor(2.0 * np.eye(n), dtype=torch.float64)
+    Q_t = torch.tensor(3.0 * np.eye(n), dtype=torch.float64)
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    (y,) = layer(P_t, Q_t, q_t, solver_args=SOLVER_ARGS)
+    expected = np.linalg.solve(
+        P_t.numpy() + Q_t.numpy(), -q_t.numpy()
+    )
+    assert np.allclose(y.detach().numpy(), expected, atol=1e-5)
 
 
 @requires_moreau
-def test_quad_form_rejects_negated_parameter():
-    """quad_form(x, -P) with P NSD Parameter should be rejected.
+def test_quad_form_negated_parameter():
+    """quad_form(x, -P) with P NSD Parameter — forward correctness.
 
-    Only raw Parameters are supported — negation creates an expression.
+    min 0.5*x'(-P)x + q'x  =>  x* = -(-P)^{-1} q = P^{-1} q
     """
     n = 3
     P = cp.Parameter((n, n), NSD=True)
@@ -963,10 +971,91 @@ def test_quad_form_rejects_negated_parameter():
     x = cp.Variable(n)
     prob = cp.Problem(
         cp.Minimize(0.5 * cp.quad_form(x, -P) + q.T @ x),
-        [x >= -1, x <= 1],
     )
-    with pytest.raises((ValueError, AssertionError)):
-        CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+    layer = CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+
+    P_t = torch.tensor(-2.0 * np.eye(n), dtype=torch.float64)
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    (y,) = layer(P_t, q_t, solver_args=SOLVER_ARGS)
+    # -P = 2I, so x* = -(2I)^{-1} q = -q/2
+    expected = -q_t.numpy() / 2
+    assert np.allclose(y.detach().numpy(), expected, atol=1e-5)
+
+
+@requires_moreau
+def test_quad_form_sum_of_parameters_gradcheck():
+    """Gradient w.r.t. P, Q in quad_form(x, P + Q) should pass gradcheck."""
+    n = 3
+    P = cp.Parameter((n, n), PSD=True)
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P + Q) + q.T @ x),
+    )
+    layer = CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    def func(P_t, Q_t):
+        P_sym = (P_t + P_t.T) / 2
+        Q_sym = (Q_t + Q_t.T) / 2
+        (y,) = layer(P_sym, Q_sym, q_t, solver_args=SOLVER_ARGS)
+        return y.sum()
+
+    P_t = 2.0 * torch.eye(n, dtype=torch.float64, requires_grad=True)
+    Q_t = 3.0 * torch.eye(n, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(func, (P_t, Q_t), eps=1e-5, atol=1e-3)
+
+
+@requires_moreau
+def test_quad_form_negated_parameter_gradcheck():
+    """Gradient w.r.t. P in quad_form(x, -P) should pass gradcheck."""
+    n = 3
+    P = cp.Parameter((n, n), NSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, -P) + q.T @ x),
+    )
+    layer = CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    def func(P_t):
+        P_sym = (P_t + P_t.T) / 2
+        (y,) = layer(P_sym, q_t, solver_args=SOLVER_ARGS)
+        return y.sum()
+
+    P_t = -2.0 * torch.eye(n, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(func, (P_t,), eps=1e-5, atol=1e-3)
+
+
+@requires_moreau
+def test_quad_form_sum_of_parameters_backward():
+    """Backward pass for P+Q should produce finite non-zero grads for P, Q, q."""
+    n = 4
+    P = cp.Parameter((n, n), PSD=True)
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P + Q) + q.T @ x),
+    )
+    layer = CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+
+    P_t = torch.tensor(2.0 * np.eye(n), dtype=torch.float64, requires_grad=True)
+    Q_t = torch.tensor(3.0 * np.eye(n), dtype=torch.float64, requires_grad=True)
+    q_t = torch.randn(n, dtype=torch.float64, requires_grad=True)
+
+    (y,) = layer(P_t, Q_t, q_t, solver_args=SOLVER_ARGS)
+    y.sum().backward()
+
+    for t, name in [(P_t, "P"), (Q_t, "Q"), (q_t, "q")]:
+        assert t.grad is not None, f"{name}.grad is None"
+        assert torch.all(torch.isfinite(t.grad)), f"{name}.grad has non-finite values"
+        assert t.grad.norm() > 0, f"{name}.grad is all zeros"
 
 
 @requires_moreau
@@ -985,6 +1074,144 @@ def test_quad_form_rejects_symmetric_only_parameter():
     )
     with pytest.raises((ValueError, AssertionError)):
         CvxpyLayer(prob, parameters=[P, q], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_rejects_param_times_param():
+    """quad_form(x, P @ P) is quadratic in params — not param-affine, rejected."""
+    n = 2
+    P = cp.Parameter((n, n), PSD=True)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(cp.quad_form(x, P @ P, assume_PSD=True)),
+        [cp.sum(x) == 1],
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[P], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_rejects_param_in_x():
+    """quad_form(p, Q) where x-argument contains a parameter should be rejected."""
+    n = 2
+    p = cp.Parameter(n)
+    Q = cp.Parameter((n, n), PSD=True)
+    prob = cp.Problem(
+        cp.Minimize(cp.quad_form(p, Q)),
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[p, Q], variables=[], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_rejects_x_plus_param():
+    """quad_form(x + p, Q) should be rejected — x argument is not param-free."""
+    n = 2
+    x = cp.Variable(n)
+    p = cp.Parameter(n)
+    Q = cp.Parameter((n, n), PSD=True)
+    prob = cp.Problem(
+        cp.Minimize(cp.quad_form(x + p, Q)),
+        [x >= -1, x <= 1],
+    )
+    with pytest.raises((ValueError, AssertionError)):
+        CvxpyLayer(prob, parameters=[p, Q], variables=[x], solver="MOREAU")
+
+
+@requires_moreau
+def test_quad_form_dpp_detection_in_scope():
+    """Parametric P expressions should be DPP only inside quad_form_dpp_scope."""
+    from cvxpy.utilities import scopes
+
+    n = 2
+    P = cp.Parameter((n, n), PSD=True)
+    Q = cp.Parameter((n, n), PSD=True)
+    x = cp.Variable(n)
+
+    # P+Q: DPP only in scope
+    expr_sum = cp.quad_form(x, P + Q)
+    assert not expr_sum.is_dpp()
+    with scopes.quad_form_dpp_scope():
+        assert expr_sum.is_dpp()
+
+    # -P (with P NSD): DPP only in scope
+    P_nsd = cp.Parameter((n, n), NSD=True)
+    expr_neg = cp.quad_form(x, -P_nsd)
+    assert not expr_neg.is_dpp()
+    with scopes.quad_form_dpp_scope():
+        assert expr_neg.is_dpp()
+
+    # P@P: never DPP (not param-affine)
+    with scopes.quad_form_dpp_scope():
+        assert not cp.quad_form(x, P @ P, assume_PSD=True).is_dpp()
+
+
+@requires_moreau
+def test_quad_form_multiple_quad_forms():
+    """quad_form(x, P1) + quad_form(x, P2) — two separate quad_forms.
+
+    Equivalent to x'(P1+P2)x, so x* = -(P1+P2)^{-1} q.
+    """
+    n = 3
+    P1 = cp.Parameter((n, n), PSD=True)
+    P2 = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(
+            0.5 * cp.quad_form(x, P1) + 0.5 * cp.quad_form(x, P2) + q.T @ x
+        ),
+    )
+    layer = CvxpyLayer(
+        prob, parameters=[P1, P2, q], variables=[x], solver="MOREAU"
+    )
+
+    P1_t = torch.tensor(
+        np.array([[2, 0.5, 0], [0.5, 1, 0], [0, 0, 3]], dtype=np.float64)
+    )
+    P2_t = torch.tensor(
+        np.array([[1, 0, 0], [0, 2, 0.5], [0, 0.5, 1]], dtype=np.float64)
+    )
+    q_t = torch.tensor([1.0, -1.0, 0.5])
+
+    (y,) = layer(P1_t, P2_t, q_t, solver_args=SOLVER_ARGS)
+    expected = np.linalg.solve(
+        P1_t.numpy() + P2_t.numpy(), -q_t.numpy()
+    )
+    assert np.allclose(y.detach().numpy(), expected, atol=1e-5)
+
+
+@requires_moreau
+def test_quad_form_sum_of_parameters_resolve():
+    """Re-solving quad_form(x, P+Q) with different param values gives correct results."""
+    n = 2
+    P = cp.Parameter((n, n), PSD=True)
+    Q = cp.Parameter((n, n), PSD=True)
+    q = cp.Parameter(n)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P + Q) + q.T @ x),
+    )
+    layer = CvxpyLayer(prob, parameters=[P, Q, q], variables=[x], solver="MOREAU")
+
+    q_t = torch.tensor([1.0, -1.0])
+
+    # First solve: P+Q = [[3,0],[0,2]]
+    P1 = torch.tensor([[2.0, 0], [0, 1.0]])
+    Q1 = torch.tensor([[1.0, 0], [0, 1.0]])
+    (y1,) = layer(P1, Q1, q_t, solver_args=SOLVER_ARGS)
+    expected1 = np.linalg.solve(P1.numpy() + Q1.numpy(), -q_t.numpy())
+    assert np.allclose(y1.detach().numpy(), expected1, atol=1e-5)
+
+    # Second solve: P+Q = [[2,0],[0,5]]
+    P2 = torch.tensor([[1.0, 0], [0, 3.0]])
+    Q2 = torch.tensor([[1.0, 0], [0, 2.0]])
+    (y2,) = layer(P2, Q2, q_t, solver_args=SOLVER_ARGS)
+    expected2 = np.linalg.solve(P2.numpy() + Q2.numpy(), -q_t.numpy())
+    assert np.allclose(y2.detach().numpy(), expected2, atol=1e-5)
+
+    # Solutions should differ
+    assert not np.allclose(y1.detach().numpy(), y2.detach().numpy(), atol=1e-3)
 
 
 @requires_moreau

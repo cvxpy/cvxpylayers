@@ -19,7 +19,7 @@ import scipy.sparse as sp
 
 from cvxpy.atoms.quad_form import QuadForm
 from cvxpy.cvxcore.python import canonInterface
-from cvxpy.expressions.constants.parameter import Parameter
+from cvxpy.expressions.constants.parameter import is_param_affine, is_param_free
 from cvxpy.lin_ops.canon_backend import TensorRepresentation
 from cvxpy.reductions.inverse_data import InverseData
 from cvxpy.utilities import performance_utils as perf
@@ -75,26 +75,24 @@ if _NEEDS_PATCH:
 
     def _scoped_is_atom_convex(self):
         if scopes._quad_form_dpp_scope_active:
-            P = self.args[1]
-            if isinstance(P, Parameter):
-                x = self.args[0]
-                return len(x.parameters()) == 0 and P.is_psd()
+            x, P = self.args[0], self.args[1]
+            if is_param_free(x) and is_param_affine(P):
+                return P.is_psd()
         return _orig_is_atom_convex(self)
 
     def _scoped_is_atom_concave(self):
         if scopes._quad_form_dpp_scope_active:
-            P = self.args[1]
-            if isinstance(P, Parameter):
-                x = self.args[0]
-                return len(x.parameters()) == 0 and P.is_nsd()
+            x, P = self.args[0], self.args[1]
+            if is_param_free(x) and is_param_affine(P):
+                return P.is_nsd()
         return _orig_is_atom_concave(self)
 
     QuadForm.is_atom_convex = _scoped_is_atom_convex
     QuadForm.is_atom_concave = _scoped_is_atom_concave
 
     # -- Patch 2: extract_quadratic_coeffs with parametric P -------------------
-    # When P is a bare Parameter, build a TensorRepresentation mapping P's
-    # flattened parameter columns to the QP's P matrix entries.
+    # When P involves parameters (bare Parameter, P+Q, -P, etc.), build a
+    # TensorRepresentation mapping parameter columns to the QP's P matrix entries.
 
     _orig_extract_quadratic_coeffs = CoeffExtractor.extract_quadratic_coeffs
 
@@ -102,7 +100,7 @@ if _NEEDS_PATCH:
         """extract_quadratic_coeffs with parametric-P support."""
         for var in affine_expr.variables():
             if var.id in quad_forms:
-                if isinstance(quad_forms[var.id][2].args[1], Parameter):
+                if is_param_affine(quad_forms[var.id][2].args[1]):
                     return _extract_with_param_P(self, affine_expr, quad_forms)
         return _orig_extract_quadratic_coeffs(self, affine_expr, quad_forms)
 
@@ -136,16 +134,12 @@ if _NEEDS_PATCH:
 
                 P_expr = quad_forms[var_id][2].args[1]
 
-                if isinstance(P_expr, Parameter):
+                if is_param_affine(P_expr):
                     # -- Parametric P path --
                     assert var_size == 1, (
-                        "quad_form with parametric P only supports scalar output"
+                        "DPP quad_form with parametric P requires a scalar quad_form output."
                     )
                     n = P_expr.shape[0]
-                    P_param_offset = self.param_id_map[P_expr.id]
-                    rows = np.tile(np.arange(n), n)
-                    cols = np.repeat(np.arange(n), n)
-                    param_offsets = P_param_offset + np.arange(n * n)
 
                     nonzero_idxs = c_part[0] != 0
                     if not np.any(nonzero_idxs):
@@ -155,14 +149,34 @@ if _NEEDS_PATCH:
                         c_nz_idxs = np.arange(num_params)[nonzero_idxs]
                         if np.any(c_nz_idxs != (num_params - 1)):
                             raise ValueError(
-                                "quad_form with parametric P requires x to be "
-                                "parameter-free"
+                                "DPP quad_form requires x to be parameter-free. "
+                                "Found parameter dependence in x, which would make "
+                                "the expression quadratic in parameters."
                             )
+                        scale = c_nz_vals[0]
+
+                        # Use canonInterface to get P_expr's coefficient matrix.
+                        # P_expr has no variables, so var_length=0 and offsets={}.
+                        P_coeffs = canonInterface.get_problem_matrix(
+                            [P_expr.canonical_form[0]],
+                            0,
+                            {},
+                            self.param_to_size,
+                            self.param_id_map,
+                            P_expr.size,
+                            self.canon_backend,
+                        )
+                        # P_coeffs is (n*n, total_param_size+1) sparse.
+                        # Exclude the constant column (last col).
+                        P_coo = sp.coo_matrix(P_coeffs[:, :-1])
+                        # Column-major unflattening of row indices.
+                        matrix_rows = P_coo.row % n
+                        matrix_cols = P_coo.row // n
                         P_tup = TensorRepresentation(
-                            np.full(n * n, c_nz_vals[0]),
-                            rows,
-                            cols,
-                            param_offsets,
+                            scale * P_coo.data,
+                            matrix_rows,
+                            matrix_cols,
+                            P_coo.col,
                             (n, n),
                         )
                 else:
