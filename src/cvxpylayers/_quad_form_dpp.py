@@ -215,14 +215,14 @@ if _NEEDS_PATCH:
                             c_part[ri, ci], ri, ri.copy(), ci, P.shape
                         )
 
-                if orig_id in coeffs:
-                    if "P" in coeffs[orig_id]:
-                        coeffs[orig_id]["P"] = coeffs[orig_id]["P"] + P_tup
-                    else:
-                        coeffs[orig_id]["P"] = P_tup
-                else:
+                if orig_id not in coeffs:
                     coeffs[orig_id] = {}
+                if "P" in coeffs[orig_id]:
+                    coeffs[orig_id]["P"] = coeffs[orig_id]["P"] + P_tup
+                else:
                     coeffs[orig_id]["P"] = P_tup
+                # Initialize q only if not already set (e.g., from a linear term).
+                if "q" not in coeffs[orig_id]:
                     q_shape = (P_tup.shape[0], c.shape[1])
                     if num_params == 1:
                         coeffs[orig_id]["q"] = np.zeros(q_shape)

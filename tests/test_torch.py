@@ -916,6 +916,35 @@ def test_quad_form_psd_with_constraints():
     assert np.allclose(y.detach().numpy(), [-0.5, 0.5, -0.1], atol=1e-4)
 
 
+@requires_moreau
+def test_quad_form_plus_constant_linear():
+    """quad_form(x, P) + c @ x with constant c solves correctly.
+
+    Regression test: ensures the q coefficient from the linear term is
+    not overwritten when the quad_form dummy variable is processed after
+    the true variable in extract_quadratic_coeffs.
+    """
+    n = 3
+    P = cp.Parameter((n, n), PSD=True)
+    c = np.array([2.0, -2.0, 0.5])
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(0.5 * cp.quad_form(x, P) + c @ x),
+    )
+    layer = CvxpyLayer(prob, parameters=[P], variables=[x], solver="MOREAU")
+
+    P_t = torch.eye(n, dtype=torch.float64)
+    (y,) = layer(P_t, solver_args=SOLVER_ARGS)
+    # x* = -P^{-1} c = -c for P=I
+    assert np.allclose(y.detach().numpy(), -c, atol=1e-5)
+
+    # Re-solve with different P to test DPP caching
+    P_t2 = 2.0 * torch.eye(n, dtype=torch.float64)
+    (y2,) = layer(P_t2, solver_args=SOLVER_ARGS)
+    # x* = -(2I)^{-1} c = -c/2
+    assert np.allclose(y2.detach().numpy(), -c / 2, atol=1e-5)
+
+
 def test_quad_form_psd_rejects_diffcp():
     """Parametric quad_form(x, Q) should fail with DIFFCP (non-QP solver)."""
     n = 3
