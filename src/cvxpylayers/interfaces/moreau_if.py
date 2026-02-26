@@ -69,15 +69,21 @@ if torch is not None:
             A_eval: torch.Tensor,
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
+            needs_grad: bool = True,
+            warm_start: Any = None,
         ) -> tuple[torch.Tensor, torch.Tensor, None, Any]:
             """Forward pass using Moreau's native solve with autograd.
 
             Returns (primal, dual, None, data) matching the interface expected
             by CvxpyLayer. The primal and dual tensors have Moreau's grad_fn
             attached and will automatically compute gradients during backward.
+
+            Args:
+                warm_start: Optional WarmStart or BatchedWarmStart from a previous
+                    solve, passed through to Moreau's solver.
             """
             data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
-            primal, dual, _ = data.torch_solve(solver_args)
+            primal, dual, _ = data.torch_solve(solver_args, warm_start=warm_start)
             # Return primal/dual with Moreau's grad_fn intact
             # Third element (backwards_info) is None - not used since Moreau handles backward
             return primal, dual, None, data
@@ -463,7 +469,7 @@ class MOREAU_data:
     # Whether setup() was already called in get_torch_solver (P/A constant case)
     setup_cached: bool = False
 
-    def torch_solve(self, solver_args=None):
+    def torch_solve(self, solver_args=None, warm_start=None):
         """Solve using moreau.torch.Solver with autograd support.
 
         Returns (primal, dual, None) and stores backwards_info in self for
@@ -474,6 +480,8 @@ class MOREAU_data:
         Args:
             solver_args: Optional dict of solver settings to override for this call.
                 Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
+            warm_start: Optional WarmStart or BatchedWarmStart from a previous
+                solve, passed through to Moreau's solver.
         """
         if torch is None:
             raise ImportError(
@@ -502,7 +510,10 @@ class MOREAU_data:
             A_values = self.A_values.requires_grad_(True)
             self.solver.setup(P_values, A_values)
 
-        solution = self.solver.solve(q, b)
+        solution = self.solver.solve(q, b, warm_start=warm_start)
+
+        # Store solution for warm start extraction
+        self._solution = solution
 
         # Extract primal and dual - keep connected to autograd graph (don't detach!)
         primal = solution.x  # (batch, n)
