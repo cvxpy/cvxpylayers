@@ -261,22 +261,40 @@ class MOREAU_ctx:
             self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims))
         return self._cones
 
+    @staticmethod
+    def _apply_settings(settings, options: dict):
+        """Apply options to moreau.Settings or its IPM sub-settings.
+
+        Handles the two-level settings structure: options that exist on
+        Settings (max_iter, verbose, device, ...) are set there; options
+        that exist on IPMSettings (tol_gap_abs, tol_feas, direct_solve_method,
+        ...) are forwarded to the IPM sub-settings.
+
+        Works with both the Python ``moreau.Settings`` (which stores IPM
+        settings in ``ipm_settings``) and the native backend
+        ``DefaultSettings`` (which uses ``ipm``).
+        """
+        # Resolve the IPM sub-object (Python vs native naming)
+        ipm = getattr(settings, "ipm_settings", None) or getattr(settings, "ipm", None)
+
+        for key, value in options.items():
+            if hasattr(settings, key):
+                setattr(settings, key, value)
+            elif ipm is not None and hasattr(ipm, key):
+                setattr(ipm, key, value)
+
     def _get_settings(self, enable_grad: bool = True):
         """Get moreau.Settings configured from self.options.
 
         Args:
             enable_grad: Whether to enable gradient computation in Moreau.
 
-        Accepts any moreau.Settings field names directly (e.g., max_iter,
-        tol_gap_abs, verbose, etc.).
+        Accepts moreau.Settings fields (max_iter, verbose, device, ...) and
+        moreau.IPMSettings fields (tol_gap_abs, tol_feas, direct_solve_method,
+        ...) which are forwarded to settings.ipm_settings.
         """
         settings = moreau.Settings(enable_grad=enable_grad)
-
-        # Set any field that exists on moreau.Settings
-        for key, value in self.options.items():
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-
+        self._apply_settings(settings, self.options)
         return settings
 
     def _create_torch_solver(self, device: str):
@@ -555,7 +573,9 @@ class MOREAU_data:
 
         Args:
             solver_args: Optional dict of solver settings to override for this call.
-                Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
+                Supports moreau.Settings fields (max_iter, verbose, time_limit, ...)
+                and moreau.IPMSettings fields (tol_gap_abs, tol_feas,
+                direct_solve_method, ...).
         """
         if torch is None:
             raise ImportError(
@@ -564,10 +584,7 @@ class MOREAU_data:
 
         # Apply per-call solver_args by updating the solver's internal settings
         if solver_args:
-            settings = self.solver._impl._settings
-            for key, value in solver_args.items():
-                if hasattr(settings, key):
-                    setattr(settings, key, value)
+            MOREAU_ctx._apply_settings(self.solver._impl._settings, solver_args)
 
         # Enable gradients on inputs for Moreau's autograd
         q = self.q.requires_grad_(True)
@@ -714,17 +731,16 @@ class MOREAU_data_jax:
 
         Args:
             solver_args: Optional dict of solver settings to override for this call.
-                Supports 'verbose', 'max_iter', 'time_limit', and other moreau.Settings fields.
+                Supports moreau.Settings fields (max_iter, verbose, time_limit, ...)
+                and moreau.IPMSettings fields (tol_gap_abs, tol_feas,
+                direct_solve_method, ...).
         """
         if jnp is None:
             raise ImportError("JAX interface requires 'jax' package. Install with: pip install jax")
 
         # Apply per-call solver_args by updating the solver's internal settings
         if solver_args:
-            settings = self.solver._settings
-            for key, value in solver_args.items():
-                if hasattr(settings, key):
-                    setattr(settings, key, value)
+            MOREAU_ctx._apply_settings(self.solver._settings, solver_args)
 
         # Always use 4-arg solve for JAX
         if self.batch_size > 1:
