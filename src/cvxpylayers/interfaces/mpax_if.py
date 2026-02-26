@@ -113,7 +113,7 @@ if torch is not None:
         @torch.autograd.function.once_differentiable
         def backward(
             ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _vjp: Any, _: Any
-        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None]:
+        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None, None]:
             raise NotImplementedError(
                 "Backward pass is not implemented for MPAX solver. "
                 "Use solver='DIFFCP' for differentiable optimization layers."

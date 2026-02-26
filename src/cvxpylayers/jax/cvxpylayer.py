@@ -332,12 +332,12 @@ class CvxpyLayer:
         # Cache the Moreau solve functions for JIT compatibility.
         # Must be captured as closure, not looked up dynamically during tracing.
         if self.ctx.solver == "MOREAU":
-            impl = self.ctx.solver_ctx.get_jax_solver()._impl
-            self._moreau_solve_fn = impl.solve
+            self._moreau_jax_impl = self.ctx.solver_ctx.get_jax_solver()._impl
+            self._moreau_solve_fn = self._moreau_jax_impl.solve
             # solve_warm accepts (P, A, q, b, warm_x, warm_z, warm_s) as pure
             # function args — vmap-compatible and avoids the _pending_warm_start
-            # side-channel.
-            self._moreau_solve_warm_fn = impl.solve_warm
+            # side-channel. Only available on CUDA; None on CPU.
+            self._moreau_solve_warm_fn = self._moreau_jax_impl.solve_warm
         self._warm_start_cache = None
 
     def __call__(
@@ -469,6 +469,18 @@ class CvxpyLayer:
         solve_fn = self._moreau_solve_fn
         solve_warm_fn = self._moreau_solve_warm_fn
 
+        # CPU fallback: solve_warm is None on CPU backend.
+        # Use _pending_warm_start side channel with the regular solve function.
+        use_side_channel_warm_start = (
+            warm_start is not None and solve_warm_fn is None
+        )
+        if use_side_channel_warm_start:
+            self._moreau_jax_impl._pending_warm_start = {
+                'warm_x': np.asarray(warm_start.x, dtype=np.float64),
+                'warm_z': np.asarray(warm_start.z, dtype=np.float64),
+                'warm_s': np.asarray(warm_start.s, dtype=np.float64),
+            }
+
         # Cache solver_ctx attributes for closure capture.
         # Parametrization matrices are pre-permuted so matrix multiplication
         # directly produces values in CSR order — no shuffle indexing needed.
@@ -513,8 +525,11 @@ class CvxpyLayer:
             )
             return solution.x, solution.z, solution.s
 
-        # Select solve function and extra args
-        if warm_start is not None:
+        # Select solve function and extra args.
+        # When solve_warm_fn is available (CUDA), pass warm arrays as positional args.
+        # When solve_warm_fn is None (CPU), warm start is already set via
+        # _pending_warm_start side channel above — use the cold solve function.
+        if warm_start is not None and solve_warm_fn is not None:
             solve = extract_and_solve_warm
             extra_args = (warm_x, warm_z, warm_s)
         else:
@@ -532,6 +547,9 @@ class CvxpyLayer:
             # Add batch dimension for _recover_results (which expects it)
             primal = jnp.expand_dims(primal, 0)
             dual = jnp.expand_dims(dual, 0)
+
+        if use_side_channel_warm_start:
+            self._moreau_jax_impl._pending_warm_start = None
 
         # Always update warm start cache (negligible cost).
         # Skip when inside jit/vmap — traced arrays can't be converted to numpy.

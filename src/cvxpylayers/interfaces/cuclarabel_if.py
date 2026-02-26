@@ -84,7 +84,7 @@ if torch is not None:
         @torch.autograd.function.once_differentiable
         def backward(
             ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _vjps: Any, _data: Any
-        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None]:
+        ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None, None]:
             data = ctx.data
 
             dP_batch, dq_batch, dA_batch = _compute_gradients(
@@ -105,7 +105,7 @@ if torch is not None:
                 dq_stacked = dq_stacked.squeeze(1)
                 dA_stacked = dA_stacked.squeeze(1)
 
-            return dP_stacked, dq_stacked, dA_stacked, None, None
+            return dP_stacked, dq_stacked, dA_stacked, None, None, None, None
 
 
 @dataclass
