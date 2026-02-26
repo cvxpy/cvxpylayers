@@ -100,7 +100,7 @@ if _NEEDS_PATCH:
         """extract_quadratic_coeffs with parametric-P support."""
         for var in affine_expr.variables():
             if var.id in quad_forms:
-                if is_param_affine(quad_forms[var.id][2].args[1]):
+                if len(quad_forms[var.id][2].args[1].parameters()) > 0:
                     return _extract_with_param_P(self, affine_expr, quad_forms)
         return _orig_extract_quadratic_coeffs(self, affine_expr, quad_forms)
 
@@ -134,7 +134,7 @@ if _NEEDS_PATCH:
 
                 P_expr = quad_forms[var_id][2].args[1]
 
-                if is_param_affine(P_expr):
+                if len(P_expr.parameters()) > 0:
                     # -- Parametric P path --
                     assert var_size == 1, (
                         "DPP quad_form with parametric P requires a scalar quad_form output."
