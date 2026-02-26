@@ -508,19 +508,23 @@ class CvxpyLayer:
         # Clear pending warm start after solve
         jax_solver._impl._pending_warm_start = None
 
-        # Always update warm start cache (negligible cost)
-        if batch:
-            self._warm_start_cache = BatchedWarmStart(
-                x=np.asarray(primal, dtype=np.float64),
-                z=np.asarray(dual, dtype=np.float64),
-                s=np.asarray(slack, dtype=np.float64),
-            )
-        else:
-            self._warm_start_cache = WarmStart(
-                x=np.asarray(primal.squeeze(0), dtype=np.float64),
-                z=np.asarray(dual.squeeze(0), dtype=np.float64),
-                s=np.asarray(slack, dtype=np.float64),
-            )
+        # Always update warm start cache (negligible cost).
+        # Skip when inside jit/vmap — traced arrays can't be converted to numpy.
+        try:
+            if batch:
+                self._warm_start_cache = BatchedWarmStart(
+                    x=np.asarray(primal, dtype=np.float64),
+                    z=np.asarray(dual, dtype=np.float64),
+                    s=np.asarray(slack, dtype=np.float64),
+                )
+            else:
+                self._warm_start_cache = WarmStart(
+                    x=np.asarray(primal.squeeze(0), dtype=np.float64),
+                    z=np.asarray(dual.squeeze(0), dtype=np.float64),
+                    s=np.asarray(slack, dtype=np.float64),
+                )
+        except jax.errors.TracerArrayConversionError:
+            pass  # Inside jit/vmap — warm start cache not available
 
         return _recover_results(primal, dual, self.ctx, batch)
 

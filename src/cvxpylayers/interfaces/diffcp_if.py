@@ -334,6 +334,7 @@ if torch is not None:
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
             needs_grad: bool = True,
+            warm_start: Any = None,
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
             ctx = cl_ctx.solver_ctx
 

@@ -47,6 +47,8 @@ if torch is not None:
             A_eval: torch.Tensor,
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
+            needs_grad: bool = True,
+            warm_start: Any = None,
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
             # Convert torch to jax and use jax_to_data path
             solver_ctx = cl_ctx.solver_ctx

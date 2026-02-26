@@ -461,10 +461,8 @@ class CvxpyLayer(torch.nn.Module):
             p.requires_grad for p in params
         )
 
-        # Pass warm start cache if using Moreau with warm_start=True
-        ws = self._warm_start_cache if warm_start else None
-
         # Solve optimization problem
+        ws = self._warm_start_cache if warm_start else None
         primal, dual, _, solver_data = _CvxpyLayer.apply(  # type: ignore[misc]
             P_eval,
             q_eval,
