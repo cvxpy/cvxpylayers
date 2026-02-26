@@ -334,6 +334,7 @@ if torch is not None:
             cl_ctx: "pa.LayersContext",
             solver_args: dict[str, Any],
             needs_grad: bool = True,
+            warm_start: Any = None,
         ) -> tuple[torch.Tensor, torch.Tensor, Any, Any]:
             ctx = cl_ctx.solver_ctx
 
@@ -399,4 +400,4 @@ if torch is not None:
                 dq_stacked = dq_stacked.squeeze(1)
                 dA_stacked = dA_stacked.squeeze(1)
 
-            return None, dq_stacked, dA_stacked, None, None, None
+            return None, dq_stacked, dA_stacked, None, None, None, None
