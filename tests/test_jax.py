@@ -567,3 +567,100 @@ def test_gp_without_param_values():
         order=1,
         modes=["rev"],
     )
+
+
+def test_gp_reversed_parameter_order():
+    """Test that GP layers produce correct results regardless of parameter order.
+
+    Regression test for a bug where the GP path in _build_user_order_mapping
+    did not sort by column position, causing parameters to be concatenated
+    in wrong order when user declaration order differed from CVXPY's internal
+    column assignment order.
+    """
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True, name="a")
+    b = cp.Parameter(pos=True, name="b")
+    c = cp.Parameter(name="c")
+
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layers with parameters in different orders
+    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+
+    a_jax = jnp.array(2.0)
+    b_jax = jnp.array(1.0)
+    c_jax = jnp.array(0.5)
+
+    # Forward pass with both orderings
+    x1, y1, z1 = layer_abc(a_jax, b_jax, c_jax)
+    x2, y2, z2 = layer_cba(c_jax, b_jax, a_jax)
+
+    # Both orderings should produce same results
+    assert jnp.allclose(x1, x2, atol=1e-5), f"x mismatch: {x1} vs {x2}"
+    assert jnp.allclose(y1, y2, atol=1e-5), f"y mismatch: {y1} vs {y2}"
+    assert jnp.allclose(z1, z2, atol=1e-5), f"z mismatch: {z1} vs {z2}"
+
+    # Verify against CVXPY ground truth
+    a.value = 2.0
+    b.value = 1.0
+    c.value = 0.5
+    problem.solve(cp.CLARABEL, gp=True)
+
+    assert np.isclose(x.value, float(x1), atol=1e-5)
+    assert np.isclose(y.value, float(y1), atol=1e-5)
+    assert np.isclose(z.value, float(z1), atol=1e-5)
+
+    # Test gradients for reversed order
+    check_grads(
+        lambda c, b, a: jnp.sum(layer_cba(c, b, a)[0]),
+        [c_jax, b_jax, a_jax],
+        order=1,
+        modes=["rev"],
+    )
+
+
+def test_batch_size_one_preserves_batch_dimension():
+    """Test that batch_size=1 is different from unbatched.
+
+    When the input is explicitly batched with batch_size=1 (shape (1, n)),
+    the output should also be batched with shape (1, n), not unbatched (n,).
+    """
+    key = random.PRNGKey(0)
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+
+    # Simple quadratic problem: minimize ||x - b||^2
+    objective = cp.Minimize(cp.sum_squares(x - b))
+    problem = cp.Problem(objective)
+
+    cvxpylayer = CvxpyLayer(problem, parameters=[b], variables=[x])
+
+    # Create explicitly batched input with batch_size=1
+    key, k1 = random.split(key)
+    b_batched = random.normal(k1, shape=(1, n))  # Shape: (1, n)
+
+    # Solve
+    (x_batched,) = cvxpylayer(b_batched)
+
+    # Solution should be batched
+    assert x_batched.shape == (1, n), f"Expected shape (1, {n}), got {x_batched.shape}"
+
+    # Compute gradient
+    def loss_fn(b):
+        (x_sol,) = cvxpylayer(b)
+        return jnp.sum(x_sol)
+
+    grad_b = jax.grad(loss_fn)(b_batched)
+
+    # Gradient should preserve batch dimension
+    assert grad_b.shape == (1, n), (
+        f"Expected gradient shape (1, {n}), got {grad_b.shape}. "
+        "Batch dimension should be preserved for batch_size=1."
+    )

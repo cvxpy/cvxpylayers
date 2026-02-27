@@ -936,3 +936,93 @@ def test_ellipsoid_projection(n):
     _compare(grad_y_A, A_val.grad)
     _compare(grad_y_z, z_val.grad)
     _compare(grad_y_x, x_val.grad)
+
+
+def test_gp_reversed_parameter_order():
+    """Test that GP layers produce correct results regardless of parameter order.
+
+    Regression test for a bug where the GP path in _build_user_order_mapping
+    did not sort by column position, causing parameters to be concatenated
+    in wrong order when user declaration order differed from CVXPY's internal
+    column assignment order.
+    """
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True, name="a")
+    b = cp.Parameter(pos=True, name="b")
+    c = cp.Parameter(name="c")
+
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layers with parameters in different orders
+    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+
+    a_mx = mx.array(2.0, dtype=mx.float32)
+    b_mx = mx.array(1.0, dtype=mx.float32)
+    c_mx = mx.array(0.5, dtype=mx.float32)
+
+    # Forward pass with both orderings
+    x1, y1, z1 = layer_abc(a_mx, b_mx, c_mx)
+    x2, y2, z2 = layer_cba(c_mx, b_mx, a_mx)
+
+    # Both orderings should produce same results
+    assert np.allclose(np.array(x1), np.array(x2), atol=1e-4), f"x mismatch: {x1} vs {x2}"
+    assert np.allclose(np.array(y1), np.array(y2), atol=1e-4), f"y mismatch: {y1} vs {y2}"
+    assert np.allclose(np.array(z1), np.array(z2), atol=1e-4), f"z mismatch: {z1} vs {z2}"
+
+    # Verify against CVXPY ground truth
+    a.value = 2.0
+    b.value = 1.0
+    c.value = 0.5
+    problem.solve(cp.CLARABEL, gp=True)
+
+    assert np.allclose(np.array(x.value), np.array(x1), atol=1e-4)
+    assert np.allclose(np.array(y.value), np.array(y1), atol=1e-4)
+    assert np.allclose(np.array(z.value), np.array(z1), atol=1e-4)
+
+    # Test gradients for reversed order
+    def f_cba(c_, b_, a_):
+        res = layer_cba(c_, b_, a_)
+        return mx.sum(res[0])
+
+    grad_c = mx.grad(lambda c_: f_cba(c_, b_mx, a_mx))(c_mx)
+    grad_b = mx.grad(lambda b_: f_cba(c_mx, b_, a_mx))(b_mx)
+    grad_a = mx.grad(lambda a_: f_cba(c_mx, b_mx, a_))(a_mx)
+    assert grad_c.shape == c_mx.shape
+    assert grad_b.shape == b_mx.shape
+    assert grad_a.shape == a_mx.shape
+
+
+def test_sdp():
+    """Test SDP with symmetric parameters, comparing MLX against PyTorch reference."""
+    n = 3
+    X = cp.Variable((n, n), symmetric=True)
+    C = cp.Parameter((n, n), symmetric=True)
+
+    psd_con = X >> 0
+    trace_con = cp.trace(X) == 1
+    prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
+
+    mlx_layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[C], variables=[X])
+
+    # Use a well-conditioned symmetric matrix
+    C_np = np.array([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], dtype=np.float32)
+    C_mx = mx.array(C_np, dtype=mx.float32)
+    C_torch = torch.tensor(C_np, dtype=torch.float64, requires_grad=True)
+
+    # Forward comparison
+    (X_mx,) = mlx_layer(C_mx)
+    (X_torch,) = torch_layer(C_torch)
+    _compare(X_mx, X_torch, atol=1e-3, rtol=1e-3)
+
+    # Gradient comparison
+    X_torch.sum().backward()
+
+    grad_mx = mx.grad(lambda C_: mx.sum(mlx_layer(C_)[0]))(C_mx)
+    _compare(grad_mx, C_torch.grad, atol=1e-3, rtol=1e-3)

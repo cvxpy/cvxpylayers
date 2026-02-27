@@ -886,6 +886,45 @@ def test_solver_args_actually_used():
     )
 
 
+def test_solver_args_not_permanently_mutated():
+    """Regression: torch_solve must restore solver settings after each call.
+
+    Before the fix, per-call solver_args (e.g. verbose=True) permanently
+    mutated the solver's internal settings, affecting all subsequent solves.
+    """
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
+
+    layer = CvxpyLayer(
+        problem,
+        parameters=[b],
+        variables=[x],
+        solver="MOREAU",
+    )
+
+    b_val = torch.randn(n, dtype=torch.float64)
+
+    # First solve: use default settings to initialize the solver
+    layer(b_val)
+
+    # Read the original max_iter from the solver's settings
+    solver_ctx = layer.ctx.solver_ctx
+    torch_solver = solver_ctx.get_torch_solver("cpu")
+    original_max_iter = torch_solver._impl._settings.max_iter
+
+    # Second solve: override max_iter for this call only
+    layer(b_val, solver_args={"max_iter": 1})
+
+    # Settings must be restored to original after the solve
+    restored_max_iter = torch_solver._impl._settings.max_iter
+    assert restored_max_iter == original_max_iter, (
+        f"solver settings permanently mutated: max_iter={restored_max_iter}, "
+        f"expected {original_max_iter}"
+    )
+
+
 # ============================================================================
 # Setup caching tests (constant P/A optimization)
 # ============================================================================

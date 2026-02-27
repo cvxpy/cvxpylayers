@@ -7,7 +7,7 @@ def _merge_verbose(kwargs, verbose):
         options = kwargs.copy() if kwargs else {}
         options["verbose"] = True
         return options
-    return kwargs
+    return kwargs.copy() if kwargs else kwargs
 
 
 def get_solver_ctx(

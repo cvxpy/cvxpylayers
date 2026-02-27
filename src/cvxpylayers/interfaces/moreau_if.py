@@ -496,13 +496,26 @@ class MOREAU_data:
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
-        # Apply per-call solver_args by updating the solver's internal settings
+        # Apply per-call solver_args by temporarily updating the solver's
+        # internal settings, restoring originals after solve via try/finally.
+        originals = {}
         if solver_args:
             settings = self.solver._impl._settings
             for key, value in solver_args.items():
                 if hasattr(settings, key):
+                    originals[key] = getattr(settings, key)
                     setattr(settings, key, value)
 
+        try:
+            return self._torch_solve_impl(warm_start)
+        finally:
+            if originals:
+                settings = self.solver._impl._settings
+                for key, value in originals.items():
+                    setattr(settings, key, value)
+
+    def _torch_solve_impl(self, warm_start=None):
+        """Inner solve logic, called within try/finally for settings restoration."""
         # Enable gradients on inputs for Moreau's autograd
         q = self.q.requires_grad_(True)
         b = self.b.requires_grad_(True)
