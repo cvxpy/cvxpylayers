@@ -1,3 +1,3 @@
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import cvxpylayers._quad_form_dpp  # noqa: F401  # apply monkey-patches at import time
