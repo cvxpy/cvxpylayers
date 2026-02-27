@@ -157,32 +157,3 @@ def convert_csc_structure_to_csr_structure(structure, extract_last_column):
         return Q_idxs, Q_structure, Q_shape, b_idxs
     else:
         return Q_idxs, Q_structure, Q_shape
-
-
-def JuliaCuVector2CuPyArray(jl, jl_arr):
-    """Taken from https://github.com/cvxgrp/CuClarabel/blob/main/src/python/jl2py.py."""
-    import cupy as cp
-
-    # Get the device pointer from Julia
-    pDevice = jl.Int(jl.pointer(jl_arr))
-
-    # Get array length and element type
-    span = jl.size(jl_arr)
-    dtype = jl.eltype(jl_arr)
-
-    # Map Julia type to CuPy dtype
-    if dtype == jl.Float64:
-        dtype = cp.float64
-    else:
-        dtype = cp.float32
-
-    # Compute memory size in bytes (assuming 1D vector)
-    size_bytes = int(span[0] * cp.dtype(dtype).itemsize)
-
-    # Create CuPy memory view from the Julia pointer
-    mem = cp.cuda.UnownedMemory(pDevice, size_bytes, owner=None)
-    memptr = cp.cuda.MemoryPointer(mem, 0)
-
-    # Wrap into CuPy ndarray
-    arr = cp.ndarray(shape=span, dtype=dtype, memptr=memptr)
-    return arr

@@ -4,6 +4,7 @@ import cvxpy as cp
 import pytest
 import torch
 
+from cvxpylayers.interfaces import _merge_verbose
 from cvxpylayers.utils.parse_args import LayersContext, VariableRecovery, parse_args
 
 
@@ -215,3 +216,33 @@ class TestParseArgs:
         assert var_rec.dual is None
         # Variable x has size 5
         assert var_rec.primal.stop - var_rec.primal.start == 5
+
+
+class TestMergeVerbose:
+    """Test _merge_verbose helper."""
+
+    def test_merge_verbose_does_not_mutate_kwargs(self):
+        """Regression: _merge_verbose must not return the original dict.
+
+        Before the fix, when verbose=False the original kwargs dict was
+        returned, so any downstream mutation (e.g. solver adding keys)
+        would permanently alter the caller's dict.
+        """
+        original = {"eps": 1e-8}
+        result = _merge_verbose(original, verbose=False)
+        # Must be a *copy*, not the same object
+        assert result is not original
+        assert result == original
+
+    def test_merge_verbose_true_copies(self):
+        """verbose=True already returned a copy — verify it still does."""
+        original = {"eps": 1e-8}
+        result = _merge_verbose(original, verbose=True)
+        assert result is not original
+        assert result["verbose"] is True
+        assert "verbose" not in original
+
+    def test_merge_verbose_none_passthrough(self):
+        """None/empty kwargs should be returned as-is (no copy needed)."""
+        assert _merge_verbose(None, verbose=False) is None
+        assert _merge_verbose({}, verbose=False) == {}

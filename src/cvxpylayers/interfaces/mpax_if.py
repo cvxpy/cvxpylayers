@@ -86,19 +86,16 @@ if torch is not None:
 
             solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
 
-            def batched_solver(quad_vals, lin_vals, con_vals):
-                return solve_batched(quad_vals, lin_vals, con_vals)
-
             # Skip computing VJP when gradients aren't needed
             if needs_grad:
                 (primal, dual), vjp_fun = jax.vjp(
-                    batched_solver,
+                    solve_batched,
                     quad_obj_values,
                     lin_obj_values,
                     con_values,
                 )
             else:
-                primal, dual = batched_solver(
+                primal, dual = solve_batched(
                     quad_obj_values,
                     lin_obj_values,
                     con_values,
@@ -125,8 +122,9 @@ if torch is not None:
             )
 
 
-def _initialize_solver(options:
-                       dict[str, Any] | None) -> tuple[Callable, bool]:
+def _initialize_solver(
+    options: dict[str, Any] | None,
+) -> tuple[Callable, bool]:
     """Initialize MPAX solver based on options.
 
     Args:
@@ -145,10 +143,10 @@ def _initialize_solver(options:
     if options is None:
         options = {}
 
-    warm_start = options.pop("warm_start", False)
+    warm_start = options.get("warm_start", False)
     assert warm_start is False
 
-    algorithm = options.pop("algorithm", "raPDHG")
+    algorithm = options.get("algorithm", "raPDHG")
 
     if algorithm == "raPDHG":
         alg = mpax.raPDHG
@@ -157,7 +155,11 @@ def _initialize_solver(options:
     else:
         raise ValueError("Invalid MPAX algorithm")
 
-    solver = alg(warm_start=warm_start, **options)
+    # Filter out keys handled above before forwarding to the algorithm constructor
+    known_keys = {"warm_start", "algorithm"}
+    extra_options = {k: v for k, v in options.items() if k not in known_keys}
+
+    solver = alg(warm_start=warm_start, **extra_options)
     return jax.jit(solver.optimize), warm_start
 
 
@@ -254,7 +256,8 @@ class MPAX_ctx:
             # Add batch dimension for uniform handling
             con_values = jnp.expand_dims(con_values, axis=1)
             lin_obj_values = jnp.expand_dims(lin_obj_values, axis=1)
-            quad_obj_values = jnp.expand_dims(quad_obj_values, axis=1)
+            if quad_obj_values is not None:
+                quad_obj_values = jnp.expand_dims(quad_obj_values, axis=1)
         else:
             originally_unbatched = False
             batch_size = con_values.shape[1]
@@ -288,7 +291,8 @@ class MPAX_ctx:
             # Add batch dimension for uniform handling
             con_values = mx.expand_dims(con_values, axis=1)
             lin_obj_values = mx.expand_dims(lin_obj_values, axis=1)
-            quad_obj_values = mx.expand_dims(quad_obj_values, axis=1)
+            if quad_obj_values is not None:
+                quad_obj_values = mx.expand_dims(quad_obj_values, axis=1)
         else:
             originally_unbatched = False
             batch_size = con_values.shape[1]
@@ -296,7 +300,7 @@ class MPAX_ctx:
         # Convert to JAX arrays for MPAX (MPAX uses JAX internally)
         # MLX arrays can be converted to numpy first, then to JAX
         import jax.numpy as jnp
-        quad_obj_values_jax = jnp.array(np.array(quad_obj_values))
+        quad_obj_values_jax = jnp.array(np.array(quad_obj_values)) if quad_obj_values is not None else None
         lin_obj_values_jax = jnp.array(np.array(lin_obj_values))
         con_values_jax = jnp.array(np.array(con_values))
 
@@ -440,12 +444,7 @@ class MPAX_data:
                 initial_dual,
             )
 
-        solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
-
-        def batched_solver(quad_vals, lin_vals, con_vals):
-            return solve_batched(quad_vals, lin_vals, con_vals)
-
-        return batched_solver
+        return jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
 
     def jax_solve(self, solver_args=None):
         batched_solver = self._batched_solver(solver_args)
@@ -494,24 +493,7 @@ class MPAX_data:
         )
 
     def mlx_derivative(self, primal, dual, adj_batch):
-
-        if mx is None:
-            raise ImportError(
-                "MLX interface requires 'mlx' package to be installed. "
-                "Install with: pip install mlx"
-            )
-
-        # Convert MLX arrays to JAX arrays for derivative computation
-        import jax.numpy as jnp
-        primal_jax = jnp.array(np.array(primal))
-        dual_jax = jnp.array(np.array(dual))
-
-        # Compute derivatives using JAX
-        quad, lin, con = self.jax_derivative(primal_jax, dual_jax, adj_batch)
-
-        # Convert back to MLX
-        quad_mlx = mx.array(np.array(quad), dtype=mx.float64) if quad is not None else None
-        lin_mlx = mx.array(np.array(lin), dtype=mx.float64)
-        con_mlx = mx.array(np.array(con), dtype=mx.float64)
-
-        return quad_mlx, lin_mlx, con_mlx
+        raise NotImplementedError(
+            "Backward pass is not implemented for MPAX solver. "
+            "Use solver='DIFFCP' for differentiable optimization layers."
+        )

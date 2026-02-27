@@ -17,6 +17,7 @@ Limitations:
 - Not thread-safe: solver instances are lazily initialized and cached on MOREAU_ctx.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +57,24 @@ if TYPE_CHECKING:
     TensorLike = torch.Tensor | jnp.ndarray | np.ndarray
 else:
     TensorLike = Any
+
+
+@contextmanager
+def _override_settings(settings, overrides):
+    """Temporarily override fields on a moreau.Settings object."""
+    if not overrides:
+        yield
+        return
+    originals = {}
+    for key, value in overrides.items():
+        if hasattr(settings, key):
+            originals[key] = getattr(settings, key)
+            setattr(settings, key, value)
+    try:
+        yield
+    finally:
+        for key, value in originals.items():
+            setattr(settings, key, value)
 
 
 if torch is not None:
@@ -496,13 +515,11 @@ class MOREAU_data:
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
-        # Apply per-call solver_args by updating the solver's internal settings
-        if solver_args:
-            settings = self.solver._impl._settings
-            for key, value in solver_args.items():
-                if hasattr(settings, key):
-                    setattr(settings, key, value)
+        with _override_settings(self.solver._impl._settings, solver_args):
+            return self._torch_solve_impl(warm_start)
 
+    def _torch_solve_impl(self, warm_start=None):
+        """Inner solve logic, called with settings already overridden."""
         # Enable gradients on inputs for Moreau's autograd
         q = self.q.requires_grad_(True)
         b = self.b.requires_grad_(True)

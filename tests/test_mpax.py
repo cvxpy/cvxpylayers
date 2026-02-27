@@ -514,3 +514,53 @@ def test_jax_interface_batched():
         x_sol_i = np.array(x_sol[i])
         error = np.linalg.norm(x_sol_i - true_sol)
         assert error < 1e-3, f"Batch {i} error: {error:.6e}"
+
+
+def test_solver_args_not_mutated():
+    """Regression: _initialize_solver must not pop() from the user's options dict.
+
+    Before the fix, options.pop("warm_start") / options.pop("algorithm")
+    permanently removed keys from the dict passed by the caller.
+    """
+    n = 3
+    x = cp.Variable(n)
+    b = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)), [x >= 0])
+
+    solver_args = {"algorithm": "raPDHG", "warm_start": False}
+    original_keys = set(solver_args.keys())
+
+    layer = CvxpyLayer(problem, [b], [x], solver="MPAX", solver_args=solver_args)
+
+    # Solve to trigger _initialize_solver
+    b_val = torch.tensor([1.0, 2.0, 3.0])
+    layer(b_val)
+
+    # The original dict must be untouched
+    assert set(solver_args.keys()) == original_keys, (
+        f"solver_args was mutated: remaining keys {set(solver_args.keys())}, "
+        f"expected {original_keys}"
+    )
+
+
+def test_lp_problem_p_none():
+    """Regression: MPAX must handle LP problems where P=None.
+
+    Before the fix, jax_to_data / mlx_to_data would crash with
+    'NoneType has no attribute ndim' when quad_obj_values was None
+    because expand_dims was called unconditionally.
+    """
+    # Pure LP: minimize c^T x subject to x >= 0
+    n = 3
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    problem = cp.Problem(cp.Minimize(c @ x), [x >= 0, x <= 1])
+
+    layer = CvxpyLayer(problem, [c], [x], solver="MPAX")
+
+    c_val = torch.tensor([1.0, -1.0, 0.5])
+    (x_sol,) = layer(c_val)
+    assert x_sol.shape == (n,)
+
+    # Verify solution: optimal is x=[0,1,0] (minimize 1*x0 - 1*x1 + 0.5*x2)
+    assert np.allclose(x_sol.detach().cpu().numpy(), [0.0, 1.0, 0.0], atol=1e-3)

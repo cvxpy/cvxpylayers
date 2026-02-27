@@ -127,8 +127,8 @@ def _svec_to_symmetric(
 ) -> mx.array:
     """Convert vectorized form to full symmetric matrix.
 
-    MLX doesn't support advanced indexing like torch/jax, so we use numpy
-    for the indexing operations and convert back to MLX.
+    Uses a prebuilt scatter matrix so the operation is a pure MLX matmul,
+    preserving gradient flow (no numpy roundtrip).
 
     Args:
         svec: Vectorized form, shape (*batch, n*(n+1)/2)
@@ -147,29 +147,20 @@ def _svec_to_symmetric(
     else:
         data = svec
 
+    # Build a constant scatter matrix S of shape (k, n*n) where k = len(rows).
+    # data @ S maps each svec element to both (r,c) and (c,r) positions.
+    k = len(rows)
+    S_np = np.zeros((k, n * n), dtype=np.float64)
+    for i in range(k):
+        r, c = int(rows[i]), int(cols[i])
+        S_np[i, r * n + c] = 1.0
+        S_np[i, c * n + r] = 1.0
+    S = mx.array(S_np, dtype=svec.dtype)
+
+    # data shape: (*batch, k) — matmul with S gives (*batch, n*n)
+    flat = data @ S
     out_shape = batch + (n, n)
-    if batch:
-        batch_size = int(np.prod(batch))
-        data_flat = mx.reshape(data, (batch_size, -1))
-        # Build result by iterating (MLX lacks advanced indexing)
-        results = []
-        for b in range(batch_size):
-            data_b = data_flat[b]
-            # Use numpy for indexing, then convert
-            result_np = np.zeros((n, n), dtype=np.float64)
-            data_np = np.array(data_b)
-            result_np[rows, cols] = data_np
-            result_np[cols, rows] = data_np
-            results.append(mx.array(result_np, dtype=svec.dtype))
-        result = mx.stack(results, axis=0)
-        return mx.reshape(result, out_shape)
-    else:
-        # Unbatched: simple approach via numpy
-        data_np = np.array(data)
-        result_np = np.zeros((n, n), dtype=np.float64)
-        result_np[rows, cols] = data_np
-        result_np[cols, rows] = data_np
-        return mx.array(result_np, dtype=svec.dtype)
+    return mx.reshape(flat, out_shape)
 
 
 def _unpack_primal_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
