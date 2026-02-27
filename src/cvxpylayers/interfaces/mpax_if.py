@@ -86,19 +86,16 @@ if torch is not None:
 
             solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
 
-            def batched_solver(quad_vals, lin_vals, con_vals):
-                return solve_batched(quad_vals, lin_vals, con_vals)
-
             # Skip computing VJP when gradients aren't needed
             if needs_grad:
                 (primal, dual), vjp_fun = jax.vjp(
-                    batched_solver,
+                    solve_batched,
                     quad_obj_values,
                     lin_obj_values,
                     con_values,
                 )
             else:
-                primal, dual = batched_solver(
+                primal, dual = solve_batched(
                     quad_obj_values,
                     lin_obj_values,
                     con_values,
@@ -125,8 +122,9 @@ if torch is not None:
             )
 
 
-def _initialize_solver(options:
-                       dict[str, Any] | None) -> tuple[Callable, bool]:
+def _initialize_solver(
+    options: dict[str, Any] | None,
+) -> tuple[Callable, bool]:
     """Initialize MPAX solver based on options.
 
     Args:
@@ -446,12 +444,7 @@ class MPAX_data:
                 initial_dual,
             )
 
-        solve_batched = jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
-
-        def batched_solver(quad_vals, lin_vals, con_vals):
-            return solve_batched(quad_vals, lin_vals, con_vals)
-
-        return batched_solver
+        return jax.vmap(solve_single_batch, in_axes=(1, 1, 1))
 
     def jax_solve(self, solver_args=None):
         batched_solver = self._batched_solver(solver_args)
