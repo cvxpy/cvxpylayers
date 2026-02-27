@@ -564,6 +564,65 @@ def test_gp_without_param_values():
     torch.autograd.gradcheck(f, (a_th, b_th, c_th), atol=1e-4)
 
 
+def test_gp_reversed_parameter_order():
+    """Test that GP layers produce correct results regardless of parameter order.
+
+    Regression test for a bug where the GP path in _build_user_order_mapping
+    did not sort by column position, causing parameters to be concatenated
+    in wrong order when user declaration order differed from CVXPY's internal
+    column assignment order.
+    """
+    _ = set_seed(42)
+    x = cp.Variable(pos=True)
+    y = cp.Variable(pos=True)
+    z = cp.Variable(pos=True)
+
+    a = cp.Parameter(pos=True, name="a")
+    b = cp.Parameter(pos=True, name="b")
+    c = cp.Parameter(name="c")
+
+    objective_fn = 1 / (x * y * z)
+    constraints = [a * (x * y + x * z + y * z) <= b, x >= y**c]
+    problem = cp.Problem(cp.Minimize(objective_fn), constraints)
+
+    # Create layers with parameters in different orders
+    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+
+    a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
+    b_th = torch.tensor([1.0], dtype=torch.float64, requires_grad=True)
+    c_th = torch.tensor([0.5], dtype=torch.float64, requires_grad=True)
+
+    # Forward pass with both orderings
+    x1, y1, z1 = layer_abc(a_th, b_th, c_th)
+    x2, y2, z2 = layer_cba(c_th, b_th, a_th)
+
+    # Both orderings should produce same results
+    assert torch.allclose(x1, x2, atol=1e-5), f"x mismatch: {x1} vs {x2}"
+    assert torch.allclose(y1, y2, atol=1e-5), f"y mismatch: {y1} vs {y2}"
+    assert torch.allclose(z1, z2, atol=1e-5), f"z mismatch: {z1} vs {z2}"
+
+    # Verify against CVXPY ground truth
+    a.value = 2.0
+    b.value = 1.0
+    c.value = 0.5
+    problem.solve(cp.CLARABEL, gp=True)
+
+    assert torch.allclose(torch.tensor(x.value), x1, atol=1e-5)
+    assert torch.allclose(torch.tensor(y.value), y1, atol=1e-5)
+    assert torch.allclose(torch.tensor(z.value), z1, atol=1e-5)
+
+    # Test gradients for reversed order
+    def f_cba(c, b, a):
+        res = layer_cba(c, b, a, solver_args={"acceleration_lookback": 0})
+        return res[0].sum()
+
+    c_th2 = torch.tensor([0.5], dtype=torch.float64, requires_grad=True)
+    b_th2 = torch.tensor([1.0], dtype=torch.float64, requires_grad=True)
+    a_th2 = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
+    torch.autograd.gradcheck(f_cba, (c_th2, b_th2, a_th2), atol=1e-4)
+
+
 def test_no_grad_context():
     n, m = 2, 3
     x = cp.Variable(n)

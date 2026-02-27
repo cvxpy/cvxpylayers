@@ -273,7 +273,7 @@ class CUCLARABEL_ctx:
 
         if device.platform == "cpu":
             gpu_device = (
-                self.options.pop("device", next(d for d in jax.devices() if d.platform == "gpu"))
+                self.options.get("device", next(d for d in jax.devices() if d.platform == "gpu"))
                 if self.options is not None
                 else next(d for d in jax.devices() if d.platform == "gpu")
             )

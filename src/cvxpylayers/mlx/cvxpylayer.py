@@ -59,18 +59,14 @@ def _apply_gp_log_transform(
     Returns:
         Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
     """
-    if not ctx.gp or not ctx.gp_param_to_log_param:
+    if not ctx.gp or ctx.gp_log_mask is None:
         return params
 
-    params_transformed = []
-    for i, param in enumerate(params):
-        cvxpy_param = ctx.parameters[i]
-        if cvxpy_param in ctx.gp_param_to_log_param:
-            # This parameter needs log transformation for GP
-            params_transformed.append(mx.log(param))
-        else:
-            params_transformed.append(param)
-    return tuple(params_transformed)
+    # Use pre-computed mask for consistency with Torch/JAX (no dict lookups)
+    return tuple(
+        mx.log(p) if needs_log else p
+        for p, needs_log in zip(params, ctx.gp_log_mask)
+    )
 
 
 def _flatten_and_batch_params(
@@ -240,33 +236,32 @@ def _recover_results(
         Tuple of recovered variable values
     """
     results = []
+    batch_shape = tuple(primal.shape[:-1])
+
     for var in ctx.var_recover:
-        batch_shape = tuple(primal.shape[:-1])
-        if var.primal is not None:
+        # Use pre-computed source field to select data (consistent with Torch/JAX)
+        if var.source == "primal":
             data = primal[..., var.primal]
-            if var.is_symmetric:
-                # Unpack symmetric primal variable from vectorized form
-                results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
-            else:
-                results.append(_reshape_fortran(data, batch_shape + var.shape))
-        elif var.dual is not None:
+        else:  # var.source == "dual"
             data = dual[..., var.dual]
-            if var.is_psd_dual:
-                # Unpack PSD constraint dual from scaled vectorized form
-                results.append(_unpack_svec(data, var.shape[0], batch_shape))
-            else:
-                results.append(_reshape_fortran(data, batch_shape + var.shape))
+
+        # Use pre-computed unpack_fn field (consistent with Torch/JAX)
+        if var.unpack_fn == "svec_primal":
+            results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
+        elif var.unpack_fn == "svec_dual":
+            results.append(_unpack_svec(data, var.shape[0], batch_shape))
+        elif var.unpack_fn == "reshape":
+            results.append(_reshape_fortran(data, batch_shape + var.shape))
         else:
-            raise RuntimeError(
-                "Invalid VariableRecovery: both primal and dual slices are None. "
-                "At least one must be set to recover variable values."
-            )
+            raise ValueError(f"Unknown variable recovery type: {var.unpack_fn}")
 
     # Apply exp transformation to recover primal variables from log-space for GP
     # (dual variables stay in original space - no transformation needed)
+    # Uses pre-computed source field (consistent with Torch/JAX)
     if ctx.gp:
         results = [
-            mx.exp(r) if var.primal is not None else r for r, var in zip(results, ctx.var_recover)
+            mx.exp(r) if var.source == "primal" else r
+            for r, var in zip(results, ctx.var_recover)
         ]
 
     # Squeeze batch dimension for unbatched inputs

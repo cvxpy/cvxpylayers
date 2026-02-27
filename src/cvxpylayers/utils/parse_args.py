@@ -332,11 +332,23 @@ def _build_user_order_mapping(
     # For GP problems, we need to use the log-space DCP parameter IDs
     if gp and gp_param_to_log_param:
         # Map user order index to column using log-space DCP parameters
+        # Must sort by column position (same as non-GP path) so that
+        # sequential slot indices match the canonical parameter order
         user_order_to_col = {
-            i: param_prob.param_id_to_col[
-                gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id
-            ]
-            for i, p in enumerate(parameters)
+            i: col
+            for col, i in sorted(
+                [
+                    (
+                        param_prob.param_id_to_col[
+                            gp_param_to_log_param[p].id
+                            if p in gp_param_to_log_param
+                            else p.id
+                        ],
+                        i,
+                    )
+                    for i, p in enumerate(parameters)
+                ],
+            )
         }
     else:
         # Standard DCP problem - use original parameters
