@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -8,10 +10,13 @@ try:
     import jax
     import jax.experimental.sparse
     import jax.numpy as jnp
-    import mpax
 except ImportError:
     jax = None  # type: ignore[assignment]
     jnp = None  # type: ignore[assignment]
+
+try:
+    import mpax
+except ImportError:
     mpax = None  # type: ignore[assignment]
 
 try:

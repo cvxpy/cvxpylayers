@@ -26,10 +26,18 @@ from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 # Optional dependencies — each may be absent independently
 try:
     import moreau
+except ImportError:
+    moreau = None  # type: ignore[assignment]
+
+try:
     import moreau.jax as moreau_jax
+except ImportError:
+    moreau_jax = None  # type: ignore[assignment]
+
+try:
     import moreau.torch as moreau_torch
 except ImportError:
-    moreau = moreau_torch = moreau_jax = None  # type: ignore[assignment]
+    moreau_torch = None  # type: ignore[assignment]
 
 try:
     import jax
@@ -304,10 +312,10 @@ class MOREAU_ctx:
         if self.PA_is_constant:
             P_values = torch.tensor(
                 self._P_const_values, dtype=torch.float64, device=device
-            ).unsqueeze(0)
+            )
             A_values = torch.tensor(
                 self._A_const_values, dtype=torch.float64, device=device
-            ).unsqueeze(0)
+            )
             solver.setup(P_values, A_values)
 
         return solver
