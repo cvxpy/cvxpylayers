@@ -26,17 +26,22 @@ print(solution)
 print(A_tch.grad)
 print(b_tch.grad)
 
-# On the GPU:
-device = torch.device("cuda")
-cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CUCLARABEL).to(device)
-A_tch = torch.randn(m, n, requires_grad=True, device=device)
-b_tch = torch.randn(m, requires_grad=True, device=device)
+# On the GPU (requires CuClarabel):
+try:
+    device = torch.device("cuda")
+    cvxpylayer = CvxpyLayer(
+        problem, parameters=[A, b], variables=[x], solver=cp.CUCLARABEL
+    ).to(device)
+    A_tch = torch.randn(m, n, requires_grad=True, device=device)
+    b_tch = torch.randn(m, requires_grad=True, device=device)
 
-# solve the problem
-(solution,) = cvxpylayer(A_tch, b_tch)
+    # solve the problem
+    (solution,) = cvxpylayer(A_tch, b_tch)
 
-# compute the gradient of the sum of the solution with respect to A, b
-solution.sum().backward()
-print(solution)
-print(A_tch.grad)
-print(b_tch.grad)
+    # compute the gradient of the sum of the solution with respect to A, b
+    solution.sum().backward()
+    print(solution)
+    print(A_tch.grad)
+    print(b_tch.grad)
+except Exception as e:
+    print(f"GPU example skipped: {e}")
