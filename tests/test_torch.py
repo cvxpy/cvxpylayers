@@ -614,7 +614,7 @@ def test_gp_reversed_parameter_order():
 
     # Test gradients for reversed order
     def f_cba(c, b, a):
-        res = layer_cba(c, b, a, solver_args={"acceleration_lookback": 0})
+        res = layer_cba(c, b, a)
         return res[0].sum()
 
     c_th2 = torch.tensor([0.5], dtype=torch.float64, requires_grad=True)
