@@ -1349,3 +1349,22 @@ def test_quad_form_nsd_maximize_backward():
     assert torch.all(torch.isfinite(Q_t.grad))
     assert torch.all(torch.isfinite(q_t.grad))
     assert q_t.grad.norm() > 0
+
+
+@requires_moreau
+def test_quad_form_psd_rejects_in_constraints():
+    """quad_form(x, P) with parametric P in a constraint should be rejected.
+
+    Parametric quad_form P is only supported in the objective. In constraints,
+    CVXPY's quad_form_canon bakes in P.value, making the constraint non-parametric
+    and producing silently wrong results on re-solves.
+    """
+    n = 3
+    P = cp.Parameter((n, n), PSD=True)
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize(cp.sum(x)),
+        [cp.quad_form(x, P) <= 1],
+    )
+    with pytest.raises(ValueError, match="only supported in the objective"):
+        CvxpyLayer(prob, parameters=[P], variables=[x], solver="MOREAU")

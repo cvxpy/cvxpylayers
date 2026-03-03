@@ -285,6 +285,25 @@ def _validate_problem(
     if gp:
         if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP for geometric programming.")
+    elif scopes.quad_form_dpp_scope_active():
+        # quad_form_dpp_scope is active (QP-capable solver).
+        # Objective: check WITH scope (parametric quad_form P allowed)
+        if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
+            raise ValueError("Problem must be DPP.")
+        # Constraints: check WITHOUT scope (parametric quad_form P rejected).
+        # Temporarily deactivate the scope so that quad_form(x, P) in
+        # constraints is correctly flagged as non-DPP.
+        prev = scopes._quad_form_dpp_scope_active
+        scopes._quad_form_dpp_scope_active = False
+        try:
+            for c in problem.constraints:
+                if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
+                    raise ValueError(
+                        "Problem must be DPP. Note: quad_form(x, P) with parametric P "
+                        "is only supported in the objective, not in constraints."
+                    )
+        finally:
+            scopes._quad_form_dpp_scope_active = prev
     else:
         if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
