@@ -12,8 +12,6 @@ Uses Moreau's native PyTorch and JAX solvers with built-in automatic differentia
 - JAX: moreau.jax.Solver with custom_vjp for gradients
 
 Limitations:
-- Only 3D second-order cones are supported (Moreau assumes all SOCs have dimension 3).
-- SOC dual variables are not supported; requesting them raises ValueError.
 - Not thread-safe: solver instances are lazily initialized and cached on MOREAU_ctx.
 """
 
@@ -141,33 +139,16 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
 
     Returns:
         moreau.Cones object
-
-    Raises:
-        ValueError: If any second-order cone has dimension != 3. Moreau assumes
-            all SOCs are 3-dimensional (the ``num_so_cones`` API only stores
-            a count, not per-cone sizes).
     """
     if moreau is None:
         raise ImportError(
             "Moreau solver requires 'moreau' package. Install with: pip install moreau"
         )
 
-    # Second-order cones: moreau now uses num_so_cones (count) instead of soc_dims (list)
-    # Each SOC in moreau is assumed to be dimension 3
-    soc_dims = dims.get("q", [])
-    if soc_dims:
-        # Verify all SOCs are dimension 3 (moreau's assumption)
-        for i, dim in enumerate(soc_dims):
-            if dim != 3:
-                raise ValueError(
-                    f"Moreau only supports 3D second-order cones, but SOC {i} has dimension {dim}. "
-                    "Consider using a different solver for problems with non-3D SOCs."
-                )
-
     cones = moreau.Cones(
         num_zero_cones=dims.get("z", 0),
         num_nonneg_cones=dims.get("l", 0),
-        num_so_cones=len(soc_dims),
+        so_cone_dims=list(dims.get("q", [])),
         num_exp_cones=dims.get("ep", 0),
         power_alphas=list(dims.get("p", [])),
     )
@@ -288,13 +269,18 @@ class MOREAU_ctx:
             enable_grad: Whether to enable gradient computation in Moreau.
 
         Accepts any moreau.Settings field names directly (e.g., max_iter,
-        tol_gap_abs, verbose, etc.).
+        tol_gap_abs, verbose, etc.).  ``ipm_settings`` can be a dict or a
+        ``moreau.IPMSettings`` object; dicts are automatically converted.
         """
         settings = moreau.Settings(enable_grad=enable_grad)
 
         # Set any field that exists on moreau.Settings
         for key, value in self.options.items():
-            if hasattr(settings, key):
+            if key == "ipm_settings":
+                if isinstance(value, dict):
+                    value = moreau.IPMSettings(**value)
+                settings.ipm_settings = value
+            elif hasattr(settings, key):
                 setattr(settings, key, value)
 
         return settings
@@ -329,12 +315,8 @@ class MOREAU_ctx:
 
         # If P and A are constant, do setup once now (expensive factorization)
         if self.PA_is_constant:
-            P_values = torch.tensor(
-                self._P_const_values, dtype=torch.float64, device=device
-            )
-            A_values = torch.tensor(
-                self._A_const_values, dtype=torch.float64, device=device
-            )
+            P_values = torch.tensor(self._P_const_values, dtype=torch.float64, device=device)
+            A_values = torch.tensor(self._A_const_values, dtype=torch.float64, device=device)
             solver.setup(P_values, A_values)
 
         return solver
@@ -429,9 +411,9 @@ class MOREAU_ctx:
         b_raw = con_values[self.nnz_A :, :]  # (nb, batch)
         # Scatter into full b tensor (use non-in-place scatter to preserve autograd)
         b_idx_expanded = b_idx_tensor.unsqueeze(1).expand(-1, batch_size)
-        b = torch.zeros(
-            (self.A_shape[0], batch_size), dtype=torch.float64, device=device
-        ).scatter(0, b_idx_expanded, b_raw.to(dtype=torch.float64))
+        b = torch.zeros((self.A_shape[0], batch_size), dtype=torch.float64, device=device).scatter(
+            0, b_idx_expanded, b_raw.to(dtype=torch.float64)
+        )
 
         # Extract q (linear cost)
         q = lin_obj_values[:-1, :]  # (n, batch), exclude constant term
@@ -466,6 +448,7 @@ class MOREAU_ctx:
             # Whether setup() was already called (P/A constant optimization)
             setup_cached=self.PA_is_constant,
         )
+
 
 @dataclass
 class MOREAU_data:
@@ -514,6 +497,13 @@ class MOREAU_data:
             raise ImportError(
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
+
+        # Convert ipm_settings dict to moreau.IPMSettings if needed
+        if solver_args and "ipm_settings" in solver_args:
+            solver_args = dict(solver_args)  # don't mutate caller's dict
+            ipm = solver_args["ipm_settings"]
+            if isinstance(ipm, dict):
+                solver_args["ipm_settings"] = moreau.IPMSettings(**ipm)
 
         with _override_settings(self.solver._impl._settings, solver_args):
             return self._torch_solve_impl(warm_start)

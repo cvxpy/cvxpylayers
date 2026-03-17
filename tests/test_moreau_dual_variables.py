@@ -28,7 +28,9 @@ def get_device_params():
     if HAS_CUDA:
         params.append(pytest.param("cuda", id="cuda"))
     else:
-        params.append(pytest.param("cuda", id="cuda", marks=pytest.mark.skip(reason="CUDA not available")))
+        params.append(
+            pytest.param("cuda", id="cuda", marks=pytest.mark.skip(reason="CUDA not available"))
+        )
     return params
 
 
@@ -69,8 +71,12 @@ def test_equality_constraint_dual_moreau(device):
     b.value = b_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -101,9 +107,14 @@ def test_inequality_constraint_dual_moreau(device):
     c.value = c_t.detach().cpu().numpy()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        ineq_dual.detach().cpu().numpy(),
+        ineq_con.dual_value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
 
 
@@ -138,10 +149,17 @@ def test_multiple_dual_variables_moreau(device):
     b.value = b_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        ineq_dual.detach().cpu().numpy(), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        ineq_dual.detach().cpu().numpy(),
+        ineq_con.dual_value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
 
 
@@ -175,7 +193,9 @@ def test_dual_only_moreau(device):
     b.value = b_t.cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -252,8 +272,12 @@ def test_vector_equality_dual_moreau(device):
     b.value = b_t.detach().cpu().numpy()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        eq_dual.detach().cpu().numpy(), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 # ============================================================================
@@ -427,7 +451,9 @@ def test_exp_cone_constraint_dual_moreau(device):
         prob,
         parameters=[t],
         variables=[
-            x, y, z,
+            x,
+            y,
+            z,
             exp_con.dual_variables[0],
             exp_con.dual_variables[1],
             exp_con.dual_variables[2],
@@ -444,17 +470,32 @@ def test_exp_cone_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        dual0.detach().cpu().numpy(),
+        exp_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        dual1.detach().cpu().numpy(),
+        exp_con.dual_variables[1].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        dual2.detach().cpu().numpy(),
+        exp_con.dual_variables[2].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
 
 
@@ -476,7 +517,9 @@ def test_exp_cone_gradcheck_moreau(device):
         prob,
         parameters=[t],
         variables=[
-            x, y, z,
+            x,
+            y,
+            z,
             exp_con.dual_variables[0],
             exp_con.dual_variables[1],
             exp_con.dual_variables[2],
@@ -511,7 +554,9 @@ def test_pow_cone_constraint_dual_moreau(device):
         prob,
         parameters=[t],
         variables=[
-            x, y, z,
+            x,
+            y,
+            z,
             pow_con.dual_variables[0],
             pow_con.dual_variables[1],
             pow_con.dual_variables[2],
@@ -528,22 +573,37 @@ def test_pow_cone_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
     np.testing.assert_allclose(
-        dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        y_opt.detach().cpu().numpy(), y.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
     )
     np.testing.assert_allclose(
-        dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        z_opt.detach().cpu().numpy(), z.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        dual0.detach().cpu().numpy(),
+        pow_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        dual1.detach().cpu().numpy(),
+        pow_con.dual_variables[1].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        dual2.detach().cpu().numpy(),
+        pow_con.dual_variables[2].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
 
 
 # ============================================================================
-# SOC Tests (Moreau only supports 3D SOCs)
+# SOC Tests
 # ============================================================================
 
 
@@ -576,8 +636,12 @@ def test_soc_constraint_dual_moreau(device):
     t.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(soc_dual.detach().cpu().numpy(), soc_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        soc_dual.detach().cpu().numpy(), soc_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 @pytest.mark.parametrize("device", get_device_params())
@@ -608,8 +672,9 @@ def test_soc_gradcheck_moreau(device):
     torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
-def test_soc_explicit_multi_dual_moreau():
-    """Test that SOC dual variables raise ValueError with Moreau solver."""
+@pytest.mark.parametrize("device", get_device_params())
+def test_soc_explicit_multi_dual_moreau(device):
+    """Test SOC dual variables with multiple components with Moreau solver."""
     n = 2
     x = cp.Variable(n)
     t = cp.Variable()
@@ -619,17 +684,46 @@ def test_soc_explicit_multi_dual_moreau():
     soc_con = cp.SOC(t, x)
     prob = cp.Problem(cp.Minimize(c @ x - t), [soc_con, t <= t_param])
 
-    with pytest.raises(ValueError, match="SOC dual variables are not supported with the Moreau"):
-        CvxpyLayer(
-            prob,
-            parameters=[c, t_param],
-            variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
-            solver="MOREAU",
-        )
+    layer = CvxpyLayer(
+        prob,
+        parameters=[c, t_param],
+        variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
+        solver="MOREAU",
+    )
+
+    c_t = torch.tensor([1.0, 0.5], requires_grad=True, device=device)
+    t_t = torch.tensor(2.0, requires_grad=True, device=device)
+
+    x_opt, t_opt, soc_dual0, soc_dual1 = layer(c_t, t_t)
+
+    # Verify with CVXPY
+    c.value = c_t.detach().cpu().numpy()
+    t_param.value = t_t.detach().cpu().numpy().item()
+    prob.solve(solver=cp.CLARABEL)
+
+    np.testing.assert_allclose(
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        t_opt.detach().cpu().numpy(), t.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        soc_dual0.detach().cpu().numpy(),
+        soc_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        soc_dual1.detach().cpu().numpy().flatten(),
+        soc_con.dual_variables[1].value.flatten(),
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
 
 
-def test_soc_explicit_multi_dual_gradcheck_moreau():
-    """Test that SOC dual variables raise ValueError with Moreau (gradcheck version)."""
+@pytest.mark.parametrize("device", get_device_params())
+def test_soc_explicit_multi_dual_gradcheck_moreau(device):
+    """Rigorous gradient check for SOC with multiple dual variables with Moreau."""
     n = 2
     x = cp.Variable(n)
     t = cp.Variable()
@@ -639,13 +733,87 @@ def test_soc_explicit_multi_dual_gradcheck_moreau():
     soc_con = cp.SOC(t, x)
     prob = cp.Problem(cp.Minimize(c @ x - t + 0.1 * cp.sum_squares(x)), [soc_con, t <= t_param])
 
-    with pytest.raises(ValueError, match="SOC dual variables are not supported with the Moreau"):
-        CvxpyLayer(
-            prob,
-            parameters=[c, t_param],
-            variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
-            solver="MOREAU",
-        )
+    layer = CvxpyLayer(
+        prob,
+        parameters=[c, t_param],
+        variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
+        solver="MOREAU",
+    )
+
+    def f(c_t, t_t):
+        x_opt, t_opt, dual0, dual1 = layer(c_t, t_t)
+        return dual0.sum() + dual1.sum()
+
+    c_t = torch.tensor([0.5, 0.3], requires_grad=True, device=device)
+    t_t = torch.tensor(2.0, requires_grad=True, device=device)
+
+    torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
+
+
+@pytest.mark.parametrize("device", get_device_params())
+def test_soc_variable_dims_moreau(device):
+    """Test SOC constraint with dimension > 3 (variable-length SOC dims)."""
+    n = 5
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    t = cp.Parameter(nonneg=True)
+
+    # SOC constraint: ||x|| <= t, which is a dim-(n+1) SOC
+    soc_con = cp.norm(x) <= t
+    prob = cp.Problem(cp.Minimize(c @ x + 0.1 * cp.sum_squares(x)), [soc_con])
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[c, t],
+        variables=[x, soc_con.dual_variables[0]],
+        solver="MOREAU",
+    )
+
+    c_t = torch.tensor([1.0, 0.5, -0.3, 0.2, -0.1], requires_grad=True, device=device)
+    t_t = torch.tensor(3.0, requires_grad=True, device=device)
+
+    x_opt, soc_dual = layer(c_t, t_t)
+
+    assert x_opt.device.type == device
+
+    c.value = c_t.detach().cpu().numpy()
+    t.value = t_t.detach().cpu().numpy().item()
+    prob.solve(solver=cp.CLARABEL)
+
+    np.testing.assert_allclose(
+        x_opt.detach().cpu().numpy(), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        soc_dual.detach().cpu().numpy(), soc_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+
+
+@pytest.mark.parametrize("device", get_device_params())
+def test_soc_variable_dims_gradcheck_moreau(device):
+    """Gradient check for SOC constraint with dimension > 3."""
+    n = 5
+    x = cp.Variable(n)
+    c = cp.Parameter(n)
+    t = cp.Parameter(nonneg=True)
+
+    soc_con = cp.norm(x) <= t
+    prob = cp.Problem(cp.Minimize(c @ x + 0.1 * cp.sum_squares(x)), [soc_con])
+
+    layer = CvxpyLayer(
+        prob,
+        parameters=[c, t],
+        variables=[x, soc_con.dual_variables[0]],
+        solver="MOREAU",
+    )
+
+    def f(c_t, t_t):
+        x_opt, soc_dual = layer(c_t, t_t)
+        return soc_dual.sum()
+
+    c_t = torch.tensor([0.5, 0.3, -0.2, 0.1, -0.4], requires_grad=True, device=device)
+    t_t = torch.tensor(3.0, requires_grad=True, device=device)
+
+    torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3, nondet_tol=1e-5)
 
 
 # ============================================================================
@@ -686,9 +854,15 @@ def test_mixed_cones_moreau(device):
     prob = cp.Problem(
         cp.Minimize(obj),
         [
-            eq_con, ineq_con, exp_con,
-            y_exp >= 0.1, z_exp <= t_param,
-            pow_con, x_pow >= 0.1, y_pow >= 0.1, x_pow + y_pow <= t_param,
+            eq_con,
+            ineq_con,
+            exp_con,
+            y_exp >= 0.1,
+            z_exp <= t_param,
+            pow_con,
+            x_pow >= 0.1,
+            y_pow >= 0.1,
+            x_pow + y_pow <= t_param,
         ],
     )
 
@@ -696,7 +870,10 @@ def test_mixed_cones_moreau(device):
         prob,
         parameters=[b_eq, ub, t_param],
         variables=[
-            x_eq, x_ineq, z_exp, z_pow,
+            x_eq,
+            x_ineq,
+            z_exp,
+            z_pow,
             eq_con.dual_variables[0],
             ineq_con.dual_variables[0],
             exp_con.dual_variables[0],
@@ -716,10 +893,18 @@ def test_mixed_cones_moreau(device):
     results = layer(b_eq_t, ub_t, t_t)
 
     (
-        x_eq_opt, x_ineq_opt, z_exp_opt, z_pow_opt,
-        eq_dual, ineq_dual,
-        exp_dual0, exp_dual1, exp_dual2,
-        pow_dual0, pow_dual1, pow_dual2,
+        x_eq_opt,
+        x_ineq_opt,
+        z_exp_opt,
+        z_pow_opt,
+        eq_dual,
+        ineq_dual,
+        exp_dual0,
+        exp_dual1,
+        exp_dual2,
+        pow_dual0,
+        pow_dual1,
+        pow_dual2,
     ) = results
 
     assert x_eq_opt.device.type == device
@@ -729,18 +914,66 @@ def test_mixed_cones_moreau(device):
     t_param.value = t_t.detach().cpu().numpy().item()
     prob.solve(solver=cp.CLARABEL)
 
-    np.testing.assert_allclose(x_eq_opt.detach().cpu().numpy(), x_eq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(x_ineq_opt.detach().cpu().numpy(), x_ineq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(z_exp_opt.detach().cpu().numpy(), z_exp.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(z_pow_opt.detach().cpu().numpy(), z_pow.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(eq_dual.detach().cpu().numpy(), eq_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(ineq_dual.detach().cpu().numpy(), ineq_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(exp_dual0.detach().cpu().numpy(), exp_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(exp_dual1.detach().cpu().numpy(), exp_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(exp_dual2.detach().cpu().numpy(), exp_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(pow_dual0.detach().cpu().numpy(), pow_con.dual_variables[0].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(pow_dual1.detach().cpu().numpy(), pow_con.dual_variables[1].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(pow_dual2.detach().cpu().numpy(), pow_con.dual_variables[2].value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        x_eq_opt.detach().cpu().numpy(), x_eq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        x_ineq_opt.detach().cpu().numpy(), x_ineq.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        z_exp_opt.detach().cpu().numpy(), z_exp.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        z_pow_opt.detach().cpu().numpy(), z_pow.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
+    np.testing.assert_allclose(
+        eq_dual.detach().cpu().numpy(),
+        eq_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        ineq_dual.detach().cpu().numpy(),
+        ineq_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        exp_dual0.detach().cpu().numpy(),
+        exp_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        exp_dual1.detach().cpu().numpy(),
+        exp_con.dual_variables[1].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        exp_dual2.detach().cpu().numpy(),
+        exp_con.dual_variables[2].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        pow_dual0.detach().cpu().numpy(),
+        pow_con.dual_variables[0].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        pow_dual1.detach().cpu().numpy(),
+        pow_con.dual_variables[1].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
+    np.testing.assert_allclose(
+        pow_dual2.detach().cpu().numpy(),
+        pow_con.dual_variables[2].value,
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
+    )
 
 
 # ============================================================================
@@ -779,7 +1012,9 @@ def test_jax_equality_dual_moreau():
     prob.solve(solver=cp.CLARABEL)
 
     np.testing.assert_allclose(np.array(x_opt), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(np.array(eq_dual), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        np.array(eq_dual), eq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 def test_jax_dual_gradient_moreau():
@@ -844,7 +1079,9 @@ def test_jax_inequality_dual_moreau():
     prob.solve(solver=cp.CLARABEL)
 
     np.testing.assert_allclose(np.array(x_opt), x.value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
-    np.testing.assert_allclose(np.array(ineq_dual), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL)
+    np.testing.assert_allclose(
+        np.array(ineq_dual), ineq_con.dual_value, rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+    )
 
 
 def test_jax_jit_dual_moreau():
@@ -1022,10 +1259,16 @@ def test_dual_values_match_diffcp(device):
     x_diffcp, dual_diffcp = layer_diffcp(A_t.cpu().clone(), b_t.cpu().clone())
 
     np.testing.assert_allclose(
-        x_moreau.detach().cpu().numpy(), x_diffcp.detach().numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        x_moreau.detach().cpu().numpy(),
+        x_diffcp.detach().numpy(),
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
     np.testing.assert_allclose(
-        dual_moreau.detach().cpu().numpy(), dual_diffcp.detach().numpy(), rtol=SOLUTION_RTOL, atol=SOLUTION_ATOL
+        dual_moreau.detach().cpu().numpy(),
+        dual_diffcp.detach().numpy(),
+        rtol=SOLUTION_RTOL,
+        atol=SOLUTION_ATOL,
     )
 
 

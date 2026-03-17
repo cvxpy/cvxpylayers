@@ -359,9 +359,7 @@ def _build_user_order_mapping(
                 [
                     (
                         param_prob.param_id_to_col[
-                            gp_param_to_log_param[p].id
-                            if p in gp_param_to_log_param
-                            else p.id
+                            gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id
                         ],
                         i,
                     )
@@ -493,14 +491,6 @@ def parse_args(
             var_recover.append(_build_primal_recovery(v, param_prob))
         else:
             parent_con = dual_var_to_constraint[v.id]
-
-            # Check for unsupported SOC duals with Moreau
-            if solver == "MOREAU" and isinstance(parent_con, cvxpy.constraints.SOC):
-                raise ValueError(
-                    f"SOC dual variables are not supported with the Moreau solver. "
-                    f"Constraint: {parent_con}. Use DIFFCP or another solver for SOC duals."
-                )
-
             var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice))
 
     # Pre-compute GP log mask for JIT compatibility
