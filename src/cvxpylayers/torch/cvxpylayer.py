@@ -7,6 +7,7 @@ import scipy.sparse
 import torch
 
 import cvxpylayers.utils.parse_args as pa
+from cvxpylayers.interfaces.base import SolverInterface
 
 
 class _ScipySparseMatmul(torch.autograd.Function):
@@ -314,7 +315,7 @@ class CvxpyLayer(torch.nn.Module):
         problem: cp.Problem,
         parameters: list[cp.Parameter],
         variables: list[cp.Variable],
-        solver: str | None = None,
+        solver: str | SolverInterface | None = None,
         gp: bool = False,
         verbose: bool = False,
         canon_backend: str | None = None,
@@ -329,8 +330,12 @@ class CvxpyLayer(torch.nn.Module):
                 at runtime. Order must match the order of tensors passed to forward().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by forward(). Order determines the order of returned tensors.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
-                If None, uses the default diffcp solver.
+            solver: CVXPY solver string (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+                a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
+                for a custom solver, or ``None`` (uses diffcp by default).
+                When a ``SolverInterface`` is passed, its ``canon_solver`` attribute
+                selects the CVXPY canonicalization solver; the instance itself is
+                called during the forward/backward pass instead of diffcp.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.
@@ -346,15 +351,26 @@ class CvxpyLayer(torch.nn.Module):
         super().__init__()
         if solver_args is None:
             solver_args = {}
+
+        # Detect custom solver object; split off the CVXPY canonicalization name.
+        custom_solver: SolverInterface | None = None
+        canon_solver_str: str | None = None
+        if isinstance(solver, SolverInterface):
+            custom_solver = solver
+            canon_solver_str = None  # parse_args will read custom_solver.canon_solver
+        else:
+            canon_solver_str = solver  # str or None — normal path
+
         self.ctx = pa.parse_args(
             problem,
             variables,
             parameters,
-            solver,
+            canon_solver_str,
             gp=gp,
             verbose=verbose,
             canon_backend=canon_backend,
             solver_args=solver_args,
+            custom_solver=custom_solver,
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
             self.register_buffer(
