@@ -389,6 +389,8 @@ class CvxpyLayer(torch.nn.Module):
         )
         self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
         self._warm_start_cache = None
+        if custom_solver is not None:
+            custom_solver.setup(self.ctx)
 
     def forward(
         self,
@@ -470,6 +472,13 @@ class CvxpyLayer(torch.nn.Module):
         from cvxpylayers.interfaces import get_torch_cvxpylayer
 
         _CvxpyLayer = get_torch_cvxpylayer(self.ctx.solver)
+
+        # Give the custom solver the raw parameter values before the solve.
+        # This allows CVXPYgen-style solvers that work with CVXPY parameter
+        # objects rather than the canonical q/A matrices to capture the values.
+        if self.ctx.custom_solver is not None:
+            params_numpy = [p.detach().cpu().numpy() for p in params]
+            self.ctx.custom_solver.set_params(params_numpy)
 
         # Determine if gradients are needed (must check here, not inside
         # Function.forward() where torch.is_grad_enabled() is always False)

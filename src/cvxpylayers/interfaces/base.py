@@ -258,6 +258,43 @@ class SolverInterface(ABC):
     supports_quad_obj: bool = False
 
     # ------------------------------------------------------------------
+    # Lifecycle hooks (optional overrides — default: no-op)
+    # ------------------------------------------------------------------
+
+    def setup(self, ctx: Any) -> None:
+        """Called once by ``CvxpyLayer.__init__`` after problem canonicalization.
+
+        Receives the fully-populated :class:`~cvxpylayers.utils.parse_args.LayersContext`
+        so the solver can inspect problem structure (cone dimensions, sparse
+        canonical matrices, variable recovery info, etc.) and perform any
+        one-time setup (e.g. load a compiled C extension, pre-factor matrices).
+
+        Args:
+            ctx: The ``LayersContext`` built by
+                :func:`~cvxpylayers.utils.parse_args.parse_args`.
+
+        Default: no-op.
+        """
+
+    def set_params(self, params: list) -> None:
+        """Called by ``CvxpyLayer.forward()`` before each solve.
+
+        Receives the current parameter values as a list of numpy arrays (one
+        per CVXPY ``Parameter``, in the same order as passed to
+        ``CvxpyLayer``).  The shapes match the CVXPY parameter shapes; batched
+        parameters have an extra leading batch dimension.
+
+        Solvers that work with the original CVXPY parameter values (e.g. a
+        CVXPYgen-generated solver) should override this to capture them before
+        :meth:`solve_numpy` is called.
+
+        Args:
+            params: List of ``numpy.ndarray``, one per parameter.
+
+        Default: no-op.
+        """
+
+    # ------------------------------------------------------------------
     # Solve methods — implement at least one
     # ------------------------------------------------------------------
     # Ring order:
