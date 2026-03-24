@@ -352,14 +352,14 @@ class CvxpyLayer(torch.nn.Module):
         if solver_args is None:
             solver_args = {}
 
-        # Detect custom solver object; split off the CVXPY canonicalization name.
-        custom_solver: SolverInterface | None = None
-        canon_solver_str: str | None = None
-        if isinstance(solver, SolverInterface):
-            custom_solver = solver
-            canon_solver_str = None  # parse_args will read custom_solver.canon_solver
-        else:
-            canon_solver_str = solver  # str or None — normal path
+        # When solver is a SolverInterface, split off the CVXPY canonicalization
+        # name (solver.canon_solver) and pass the object through to parse_args.
+        canon_solver_str: str | None = (
+            None if isinstance(solver, SolverInterface) else solver
+        )
+        custom_solver: SolverInterface | None = (
+            solver if isinstance(solver, SolverInterface) else None
+        )
 
         self.ctx = pa.parse_args(
             problem,
@@ -389,8 +389,8 @@ class CvxpyLayer(torch.nn.Module):
         )
         self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
         self._warm_start_cache = None
-        if custom_solver is not None:
-            custom_solver.setup(self.ctx)
+        if isinstance(self.ctx.solver, SolverInterface):
+            self.ctx.solver.setup(self.ctx)
 
     def forward(
         self,
@@ -476,9 +476,9 @@ class CvxpyLayer(torch.nn.Module):
         # Give the custom solver the raw parameter values before the solve.
         # This allows CVXPYgen-style solvers that work with CVXPY parameter
         # objects rather than the canonical q/A matrices to capture the values.
-        if self.ctx.custom_solver is not None:
+        if isinstance(self.ctx.solver, SolverInterface):
             params_numpy = [p.detach().cpu().numpy() for p in params]
-            self.ctx.custom_solver.set_params(params_numpy)
+            self.ctx.solver.set_params(params_numpy)
 
         # Determine if gradients are needed (must check here, not inside
         # Function.forward() where torch.is_grad_enabled() is always False)

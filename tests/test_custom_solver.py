@@ -225,8 +225,8 @@ def test_layer_construction_numpy_mock(problem_and_ref):
     mock = NumpySingleMock(ref.ctx.solver_ctx)
     layer = CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var],
                        solver=mock)
-    assert layer.ctx.solver == "CUSTOM"
-    assert layer.ctx.custom_solver is mock
+    assert isinstance(layer.ctx.solver, SolverInterface)
+    assert layer.ctx.solver is mock
 
 
 def test_layer_construction_torch_mock(problem_and_ref):
@@ -234,8 +234,8 @@ def test_layer_construction_torch_mock(problem_and_ref):
     mock = TorchBatchMock(ref.ctx.solver_ctx)
     layer = CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var],
                        solver=mock)
-    assert layer.ctx.solver == "CUSTOM"
-    assert layer.ctx.custom_solver is mock
+    assert isinstance(layer.ctx.solver, SolverInterface)
+    assert layer.ctx.solver is mock
 
 
 # ---------------------------------------------------------------------------
