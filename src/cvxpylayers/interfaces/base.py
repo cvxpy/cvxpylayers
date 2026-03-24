@@ -35,6 +35,7 @@ from abc import ABC
 from typing import Any
 
 import numpy as np
+from cvxpy.reductions.solvers.solver import Solver as _CvxpySolver
 
 # ---------------------------------------------------------------------------
 # @require_one_of decorator
@@ -212,10 +213,15 @@ class SolverInterface(ABC):
     .. code-block:: python
 
         class MySolver(SolverInterface):
-            canon_solver = "CLARABEL"   # default: "SCS"
-            supports_quad_obj = True    # default: False
+            canon_solver = "CLARABEL"              # string name — default: "SCS"
+            # or equivalently, a CVXPY Solver instance:
+            canon_solver = cp.reductions.solvers.conic_solvers.clarabel_conif.CLARABEL()
+            supports_quad_obj = True               # default: False
 
-    ``canon_solver``: CVXPY solver name used during problem canonicalization.
+    ``canon_solver``: CVXPY solver used during problem canonicalization —
+    either a solver name string (e.g. ``"CLARABEL"``) or a
+    ``cvxpy.reductions.solvers.solver.Solver`` instance.  Use
+    :attr:`canon_solver_name` to get the normalised string in either case.
     Must match the cone format your solver expects.
 
     ``supports_quad_obj``: enable ``quad_form_dpp_scope`` for parametric QP
@@ -251,11 +257,21 @@ class SolverInterface(ABC):
                 return dP, dq, dA       # each (B, n), dP may be None
     """
 
-    #: CVXPY solver name for problem canonicalization.
-    canon_solver: str = "SCS"
+    #: CVXPY solver for problem canonicalization — a name string or a Solver instance.
+    canon_solver: str | _CvxpySolver = "SCS"
 
     #: Set True if your solver handles parametric QP objectives.
     supports_quad_obj: bool = False
+
+    @property
+    def canon_solver_name(self) -> str:
+        """Normalised solver name string.
+
+        Returns ``canon_solver`` as-is when it is already a string, or calls
+        ``.name()`` on it when it is a CVXPY ``Solver`` instance.
+        """
+        raw = self.canon_solver
+        return raw.name() if isinstance(raw, _CvxpySolver) else raw
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (optional overrides — default: no-op)

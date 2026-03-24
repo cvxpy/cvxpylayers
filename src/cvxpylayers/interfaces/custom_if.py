@@ -59,7 +59,7 @@ try:
             q_bf = _to_bf(q_eval)
             A_bf = _to_bf(A_eval)
 
-            primal, dual, adjoint_data = cl_ctx.custom_solver.solve_torch_batch(  # type: ignore[union-attr]
+            primal, dual, adjoint_data = cl_ctx.solver.solve_torch_batch(  # type: ignore[union-attr]
                 P_bf, q_bf, A_bf,
                 cl_ctx.cone_dims,
                 {**solver_args},
@@ -75,7 +75,7 @@ try:
         ) -> None:
             _, _, _, cl_ctx, _, _, _ = inputs
             _, _, adjoint_data, originally_unbatched = outputs
-            ctx.custom_solver = cl_ctx.custom_solver
+            ctx.custom_solver = cl_ctx.solver
             ctx.adjoint_data = adjoint_data
             ctx.originally_unbatched = originally_unbatched
 

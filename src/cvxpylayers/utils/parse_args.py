@@ -10,6 +10,7 @@ from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
+from cvxpylayers.interfaces.base import SolverInterface
 
 if TYPE_CHECKING:
     import torch
@@ -76,8 +77,8 @@ class LayersContext:
     q: scipy.sparse.csr_array | None
     reduced_A: scipy.sparse.csr_array
     cone_dims: dict[str, int | list[int]]
-    solver_ctx: SolverContext | None  # None when custom_solver is provided
-    solver: str
+    solver_ctx: SolverContext | None  # None when a SolverInterface is used
+    solver: str | SolverInterface  # SolverInterface instance for custom solvers
     var_recover: list[VariableRecovery]
     user_order_to_col_order: tuple[int, ...]
     batch_sizes: list[int] | None = (
@@ -90,8 +91,6 @@ class LayersContext:
     gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
     # Pre-computed mask: which params need log() for GP (JIT-compatible)
     gp_log_mask: tuple[bool, ...] | None = None
-    # Custom solver object (set when solver="CUSTOM"; None for built-in solvers)
-    custom_solver: Any = None
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -416,7 +415,7 @@ def parse_args(
         solver_args: Default solver arguments
         custom_solver: A SolverInterface subclass instance.  When provided,
             ``solver`` is used only for CVXPY canonicalization and
-            LayersContext.solver is set to "CUSTOM".
+            LayersContext.solver is set to the SolverInterface object itself.
 
     Returns:
         LayersContext containing canonicalized problem data
@@ -427,7 +426,7 @@ def parse_args(
     # For QP-capable solvers, enter quad_form_dpp_scope so that
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
     if custom_solver is not None:
-        effective_solver = solver or custom_solver.canon_solver
+        effective_solver = solver or custom_solver.canon_solver_name
         use_quad_scope = (
             effective_solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
         )
@@ -445,7 +444,7 @@ def parse_args(
         if custom_solver is not None:
             # Use the custom solver's canon_solver as the CVXPY solver string,
             # falling back to whatever the caller passed in solver.
-            solver = solver or custom_solver.canon_solver
+            solver = solver or custom_solver.canon_solver_name
         elif solver is None:
             solver = "DIFFCP"
 
@@ -483,7 +482,8 @@ def parse_args(
     # Create solver context — skip for custom solvers (no built-in ctx needed)
     if custom_solver is not None:
         solver_ctx = None
-        layer_solver_name = "CUSTOM"
+        # Store the SolverInterface object directly as the solver identifier.
+        layer_solver = custom_solver
     else:
         solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
             solver,
@@ -493,7 +493,7 @@ def parse_args(
             solver_args,
             verbose=verbose,
         )
-        layer_solver_name = solver
+        layer_solver = solver
 
     # Build parameter ordering mapping
     user_order_to_col_order = _build_user_order_mapping(
@@ -526,11 +526,10 @@ def parse_args(
         param_prob.reduced_A,
         cone_dims,
         solver_ctx,  # type: ignore[arg-type]
-        layer_solver_name,
+        layer_solver,
         var_recover=var_recover,
         user_order_to_col_order=user_order_to_col_order,
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,
         gp_log_mask=gp_log_mask,
-        custom_solver=custom_solver,
     )
