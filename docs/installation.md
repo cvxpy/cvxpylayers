@@ -167,14 +167,10 @@ print("Installation successful!")
 :::{admonition} Moreau — Best Performance on CPU & GPU
 :class: tip
 
-[Moreau](https://docs.moreau.so/) is the recommended solver for best performance. Simple pip install with no external dependencies.
+[Moreau](https://docs.moreau.so/) is the recommended solver for best performance. Available by request through a private package index.
 :::
 
-```bash
-pip install moreau
-```
-
-See the [Moreau documentation](https://docs.moreau.so/) for GPU setup and advanced configuration.
+See the [Moreau installation guide](https://docs.moreau.so/installation.html) for access and setup instructions.
 
 ### CuClarabel (Open-Source Alternative)
 

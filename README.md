@@ -55,13 +55,8 @@ Additionally, install one of the following frameworks:
 
 ### GPU-accelerated pathway
 
-For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/):
-
-```bash
-pip install moreau
-```
-
-See the [Moreau documentation](https://docs.moreau.so/) for GPU setup and advanced configuration.
+For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/).
+Moreau is available by request — see the [installation guide](https://docs.moreau.so/installation.html) for access and setup.
 
 As an open-source alternative, you can use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) for GPU acceleration. This requires installing Julia and several additional packages:
 

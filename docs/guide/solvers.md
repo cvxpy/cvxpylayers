@@ -96,11 +96,8 @@ It supports PyTorch and JAX with native autograd integration, warm starts, and `
 
 ### Setup
 
-```bash
-pip install moreau
-```
-
-See the [Moreau documentation](https://docs.moreau.so/) for full installation details including GPU support.
+Moreau is available by request through a private package index.
+See the [Moreau installation guide](https://docs.moreau.so/installation.html) for access and setup instructions.
 
 ### Usage (PyTorch)
 
