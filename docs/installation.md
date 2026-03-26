@@ -162,10 +162,26 @@ print("Installation successful!")
 
 ## GPU Acceleration
 
-:::{admonition} CuClarabel — NVIDIA GPU Support
+### Moreau (Recommended)
+
+:::{admonition} Moreau — Best Performance on CPU & GPU
 :class: tip
 
-For large-scale problems, CuClarabel keeps everything on GPU with no CPU transfers.
+[Moreau](https://docs.moreau.so/) is the recommended solver for best performance. Simple pip install with no external dependencies.
+:::
+
+```bash
+pip install moreau
+```
+
+See the [Moreau documentation](https://docs.moreau.so/) for GPU setup and advanced configuration.
+
+### CuClarabel (Open-Source Alternative)
+
+:::{admonition} CuClarabel — Open-Source NVIDIA GPU Support
+:class: note
+
+CuClarabel is an open-source alternative for GPU acceleration. It requires Julia and several additional dependencies.
 :::
 
 ::::{grid} 1 1 3 3

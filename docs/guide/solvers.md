@@ -6,11 +6,11 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 | Solver | Type | Best For |
 |--------|------|----------|
+| **[Moreau](https://docs.moreau.so/)** | CPU/GPU | Best performance (recommended) |
 | **diffcp w/ SCS** (default) | CPU | General use, most problem types |
 | **diffcp w/ Clarabel** | CPU | Higher accuracy |
-| **Moreau** | CPU/GPU | Best performance |
+| **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
 | **MPAX*** | CPU | LPs/QPs |
-| **CuClarabel w/ diffqcp** | GPU | Large problems on NVIDIA GPUs |
 
 \* Gradient support is currently broken.
 
@@ -89,9 +89,81 @@ If SCS still struggles, try Clarabel:
 layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CLARABEL)
 ```
 
-## GPU Acceleration with CuClarabel
+## Moreau
 
-For NVIDIA GPUs, CuClarabel keeps all data on the GPU:
+[Moreau](https://docs.moreau.so/) is the recommended solver for best performance on both CPU and GPU.
+It supports PyTorch and JAX with native autograd integration, warm starts, and `jax.jit` compatibility.
+
+### Setup
+
+```bash
+pip install moreau
+```
+
+See the [Moreau documentation](https://docs.moreau.so/) for full installation details including GPU support.
+
+### Usage (PyTorch)
+
+```python
+import cvxpy as cp
+import torch
+from cvxpylayers.torch import CvxpyLayer
+
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x],
+    solver="MOREAU"
+)
+
+A_tch = torch.randn(m, n, requires_grad=True)
+b_tch = torch.randn(m, requires_grad=True)
+
+(x_sol,) = layer(A_tch, b_tch)
+x_sol.sum().backward()
+```
+
+### Usage (JAX)
+
+```python
+import cvxpy as cp
+import jax
+from cvxpylayers.jax import CvxpyLayer
+
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x],
+    solver="MOREAU"
+)
+
+A_jax = jax.random.normal(jax.random.PRNGKey(0), shape=(m, n))
+b_jax = jax.random.normal(jax.random.PRNGKey(1), shape=(m,))
+
+(x_sol,) = layer(A_jax, b_jax)
+```
+
+### Warm Starts
+
+Moreau supports warm starting to speed up sequential solves:
+
+```python
+(x_sol,) = layer(A_tch, b_tch, warm_start=True)
+```
+
+### When to Use Moreau
+
+Moreau is beneficial when:
+- You want the best solve + differentiation performance
+- You need `jax.jit` compatibility
+- You're solving sequences of similar problems (warm starts)
+- You want CPU or GPU support without Julia dependencies
+
+---
+
+## CuClarabel (Open-Source Alternative)
+
+[CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) is an open-source GPU solver alternative. It requires Julia and several additional dependencies. For NVIDIA GPUs, it keeps all data on the GPU:
 
 ### Setup
 
