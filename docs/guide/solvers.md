@@ -165,74 +165,7 @@ Moreau is beneficial when:
 
 [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) is an open-source GPU solver alternative. It requires Julia and several additional dependencies. For NVIDIA GPUs, it keeps all data on the GPU:
 
-### Setup
-
-See {doc}`../installation` for CuClarabel installation.
-
-### Usage (PyTorch)
-
-```python
-import cvxpy as cp
-import torch
-from cvxpylayers.torch import CvxpyLayer
-
-device = torch.device("cuda")
-
-layer = CvxpyLayer(
-    problem,
-    parameters=[A, b],
-    variables=[x],
-    solver=cp.CUCLARABEL
-).to(device)
-
-# Parameters must be on GPU
-A_gpu = torch.randn(m, n, device=device, requires_grad=True)
-b_gpu = torch.randn(m, device=device, requires_grad=True)
-
-(x_gpu,) = layer(A_gpu, b_gpu)
-x_gpu.sum().backward()  # Gradients computed on GPU
-```
-
-### When to Use CuClarabel
-
-CuClarabel is beneficial when:
-- Problems are large (1000+ variables/constraints)
-- You're already using GPU tensors
-- Batch sizes are large
-- You want to avoid CPU-GPU transfers
-
-For small problems, CPU solvers may be faster due to GPU overhead.
-
-## Solver Comparison
-
-```python
-import time
-import cvxpy as cp
-import torch
-from cvxpylayers.torch import CvxpyLayer
-
-# Create problem
-n = 100
-x = cp.Variable(n)
-A = cp.Parameter((n, n))
-b = cp.Parameter(n)
-problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
-
-# Benchmark different solvers
-A_t = torch.randn(n, n)
-b_t = torch.randn(n)
-
-for solver in [None, cp.CLARABEL, cp.SCS]:
-    layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=solver)
-
-    start = time.time()
-    for _ in range(10):
-        (x_sol,) = layer(A_t, b_t)
-    elapsed = time.time() - start
-
-    solver_name = solver if solver else "diffcp (default)"
-    print(f"{solver_name}: {elapsed:.3f}s for 10 solves")
-```
+See {doc}`../installation` for CuClarabel setup instructions.
 
 ## Troubleshooting
 
