@@ -6,11 +6,11 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 | Solver | Type | Best For |
 |--------|------|----------|
-| **[Moreau](https://docs.moreau.so/)** | CPU/GPU | Best performance (recommended) |
 | **diffcp w/ SCS** (default) | CPU | General use, most problem types |
 | **diffcp w/ Clarabel** | CPU | Higher accuracy |
-| **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
+| **[Moreau](https://docs.moreau.so/)** | CPU/GPU | Best performance |
 | **MPAX*** | CPU | LPs/QPs |
+| **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
 
 \* Gradient support is currently broken.
 
