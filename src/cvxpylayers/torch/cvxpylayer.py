@@ -7,6 +7,7 @@ import scipy.sparse
 import torch
 
 import cvxpylayers.utils.parse_args as pa
+from cvxpylayers.interfaces.base import SolverInterface
 
 
 class _ScipySparseMatmul(torch.autograd.Function):
@@ -314,7 +315,7 @@ class CvxpyLayer(torch.nn.Module):
         problem: cp.Problem,
         parameters: list[cp.Parameter],
         variables: list[cp.Variable],
-        solver: str | None = None,
+        solver: str | SolverInterface | None = None,
         gp: bool = False,
         verbose: bool = False,
         canon_backend: str | None = None,
@@ -329,8 +330,12 @@ class CvxpyLayer(torch.nn.Module):
                 at runtime. Order must match the order of tensors passed to forward().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by forward(). Order determines the order of returned tensors.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
-                If None, uses the default diffcp solver.
+            solver: CVXPY solver string (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+                a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
+                for a custom solver, or ``None`` (uses diffcp by default).
+                When a ``SolverInterface`` is passed, its ``canon_solver`` attribute
+                selects the CVXPY canonicalization solver; the instance itself is
+                called during the forward/backward pass instead of diffcp.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.
@@ -346,15 +351,26 @@ class CvxpyLayer(torch.nn.Module):
         super().__init__()
         if solver_args is None:
             solver_args = {}
+
+        # When solver is a SolverInterface, split off the CVXPY canonicalization
+        # name (solver.canon_solver) and pass the object through to parse_args.
+        canon_solver_str: str | None = (
+            None if isinstance(solver, SolverInterface) else solver
+        )
+        custom_solver: SolverInterface | None = (
+            solver if isinstance(solver, SolverInterface) else None
+        )
+
         self.ctx = pa.parse_args(
             problem,
             variables,
             parameters,
-            solver,
+            canon_solver_str,
             gp=gp,
             verbose=verbose,
             canon_backend=canon_backend,
             solver_args=solver_args,
+            custom_solver=custom_solver,
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
             self.register_buffer(
@@ -373,6 +389,8 @@ class CvxpyLayer(torch.nn.Module):
         )
         self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
         self._warm_start_cache = None
+        if isinstance(self.ctx.solver, SolverInterface):
+            self.ctx.solver.setup(self.ctx)
 
     def forward(
         self,
@@ -454,6 +472,13 @@ class CvxpyLayer(torch.nn.Module):
         from cvxpylayers.interfaces import get_torch_cvxpylayer
 
         _CvxpyLayer = get_torch_cvxpylayer(self.ctx.solver)
+
+        # Give the custom solver the raw parameter values before the solve.
+        # This allows CVXPYgen-style solvers that work with CVXPY parameter
+        # objects rather than the canonical q/A matrices to capture the values.
+        if isinstance(self.ctx.solver, SolverInterface):
+            params_numpy = [p.detach().cpu().numpy() for p in params]
+            self.ctx.solver.set_params(params_numpy)
 
         # Determine if gradients are needed (must check here, not inside
         # Function.forward() where torch.is_grad_enabled() is always False)
