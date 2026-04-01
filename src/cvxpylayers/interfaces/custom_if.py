@@ -1,13 +1,20 @@
-"""Torch autograd adapters for custom SolverInterface implementations.
+"""Torch autograd adapter for custom SolverInterface implementations.
 
-Two autograd functions live here:
+A single ``_CvxpyLayer`` autograd Function handles both solver kinds:
 
-* ``_CvxpyLayer`` — canonical-matrix-space adapter (receives ``P/q/A`` evals,
-  delegates to ``solve_torch_batch`` / ``derivative_torch_batch``).
-* ``_ParametricLayer`` — parameter-space adapter for ``is_parametric`` solvers
-  (e.g. CVXPYgen).  Takes the raw parameter tensors as inputs, calls the three
-  ``_cpg_*`` functions on ``cl_ctx.problem``, and propagates gradients directly
-  through ``param.gradient`` — no pseudoinverse required.
+* **Canonical-matrix solvers** (``is_parametric=False``): called as
+  ``_CvxpyLayer.apply(P_eval, q_eval, A_eval, cl_ctx, solver_args, needs_grad,
+  warm_start)``.  Receives ``P/q/A`` evals, delegates to
+  ``solve_torch_batch`` / ``derivative_torch_batch``.
+
+* **Parameter-space solvers** (``is_parametric=True``, e.g. CVXPYgen): called as
+  ``_CvxpyLayer.apply(None, None, None, cl_ctx, solver_args, needs_grad, None,
+  *params)``.  Takes the raw parameter tensors as trailing variadic inputs,
+  calls ``_cpg_solve`` / ``_cpg_solve_and_gradient`` / ``_cpg_gradient``, and
+  propagates gradients directly through ``param.gradient`` — no pseudoinverse
+  required.  Because ``*params`` are extra inputs, ``backward`` returns
+  ``(None,) * 7 + tuple(param_grads)`` so autograd matches one gradient per
+  input.
 """
 from __future__ import annotations
 
@@ -54,32 +61,64 @@ try:
     import torch as _torch
 
     class _CvxpyLayer(_torch.autograd.Function):
+        """Unified autograd Function for custom SolverInterface solvers.
+
+        Call signatures
+        ---------------
+        Canonical-matrix path (``is_parametric=False``)::
+
+            _CvxpyLayer.apply(P_eval, q_eval, A_eval, cl_ctx,
+                              solver_args, needs_grad, warm_start)
+
+        Parameter-space path (``is_parametric=True``)::
+
+            _CvxpyLayer.apply(None, None, None, cl_ctx,
+                              solver_args, needs_grad, None, *params)
+
+        The trailing ``*params`` are the user-facing torch tensors.  Adding
+        them as extra inputs lets ``backward`` return per-param gradients
+        directly without changing the fixed-argument interface.
+        """
+
         @staticmethod
         def forward(
             P_eval: _torch.Tensor | None,
-            q_eval: _torch.Tensor,
-            A_eval: _torch.Tensor,
+            q_eval: _torch.Tensor | None,
+            A_eval: _torch.Tensor | None,
             cl_ctx: pa.LayersContext,
             solver_args: dict[str, Any],
             needs_grad: bool = True,
             warm_start: Any = None,
+            *params: _torch.Tensor,
         ) -> tuple[_torch.Tensor, _torch.Tensor, Any, bool]:
-            """Solve via the custom solver and return batched primal/dual.
+            solver = cl_ctx.solver
 
-            Normalises inputs from batch-last ``(n, B)`` / 1-D to
-            batch-first ``(B, n)``, calls ``solve_torch_batch``, and returns
-            the results together with an ``originally_unbatched`` flag so
-            that the backward pass can squeeze the dummy batch dimension back
-            out of the gradients.
+            if getattr(solver, "is_parametric", False):
+                # ----------------------------------------------------------
+                # Parameter-space path (e.g. CVXPYgen)
+                # ----------------------------------------------------------
+                problem = cl_ctx.problem  # param.value already set by CvxpyLayer
 
-            Returns
-            -------
-            primal : Tensor, shape ``(B, n_primal)``
-            dual   : Tensor, shape ``(B, n_dual)``
-            adjoint_data : Any  (opaque; passed straight to derivative)
-            originally_unbatched : bool  (non-tensor; gradient is None)
-            """
-            originally_unbatched = q_eval.dim() == 1
+                if needs_grad and solver._cpg_solve_and_gradient is not None:
+                    _, cpg_grad_primal, cpg_grad_dual = solver._cpg_solve_and_gradient(
+                        problem
+                    )
+                    grad_info = (cpg_grad_primal, cpg_grad_dual)
+                else:
+                    solver._cpg_solve(problem)
+                    grad_info = None
+
+                primal_np, dual_np = _pack_primal_dual(cl_ctx)
+                dtype  = params[0].dtype  if params else _torch.float64
+                device = params[0].device if params else _torch.device("cpu")
+                primal = _torch.tensor(primal_np, dtype=dtype, device=device)
+                dual   = _torch.tensor(dual_np,   dtype=dtype, device=device)
+                return primal, dual, grad_info, False
+
+            # ------------------------------------------------------------------
+            # Canonical-matrix path
+            # ------------------------------------------------------------------
+            originally_unbatched = q_eval.dim() == 1  # type: ignore[union-attr]
 
             # Normalise: (n,) → (1, n)  or  (n, B) → (B, n)
             def _to_bf(x: _torch.Tensor | None) -> _torch.Tensor | None:
@@ -91,7 +130,7 @@ try:
             q_bf = _to_bf(q_eval)
             A_bf = _to_bf(A_eval)
 
-            primal, dual, adjoint_data = cl_ctx.solver.solve_torch_batch(  # type: ignore[union-attr]
+            primal, dual, adjoint_data = solver.solve_torch_batch(  # type: ignore[union-attr]
                 P_bf, q_bf, A_bf,
                 cl_ctx.cone_dims,
                 {**solver_args},
@@ -105,11 +144,22 @@ try:
             inputs: tuple,
             outputs: tuple,
         ) -> None:
-            _, _, _, cl_ctx, _, _, _ = inputs
-            _, _, adjoint_data, originally_unbatched = outputs
-            ctx.custom_solver = cl_ctx.solver
-            ctx.adjoint_data = adjoint_data
-            ctx.originally_unbatched = originally_unbatched
+            P_eval, q_eval, A_eval, cl_ctx, _, _, _, *params = inputs
+            _, _, adjoint_data_or_grad_info, originally_unbatched = outputs
+
+            solver = cl_ctx.solver
+            ctx.is_parametric = getattr(solver, "is_parametric", False)
+
+            if ctx.is_parametric:
+                ctx.cl_ctx        = cl_ctx
+                ctx.grad_info     = adjoint_data_or_grad_info
+                ctx.param_shapes  = [p.shape  for p in params]
+                ctx.param_dtypes  = [p.dtype  for p in params]
+                ctx.param_devices = [p.device for p in params]
+            else:
+                ctx.custom_solver        = solver
+                ctx.adjoint_data         = adjoint_data_or_grad_info
+                ctx.originally_unbatched = originally_unbatched
 
         @staticmethod
         @_torch.autograd.function.once_differentiable
@@ -119,22 +169,51 @@ try:
             ddual: _torch.Tensor,
             _adj: Any,
             _ub: Any,
-        ) -> tuple[
-            _torch.Tensor | None,
-            _torch.Tensor,
-            _torch.Tensor,
-            None, None, None, None,
-        ]:
-            """Propagate gradients via ``derivative_torch_batch``.
+        ) -> tuple:
+            if ctx.is_parametric:
+                # --------------------------------------------------------------
+                # Parameter-space backward
+                # --------------------------------------------------------------
+                cl_ctx = ctx.cl_ctx
+                solver = cl_ctx.solver
+                assert cl_ctx.variables is not None
 
-            ``dprimal``/``ddual`` are ``(B, n)`` — batch first, matching the
-            layout of the primal/dual tensors returned by ``forward``.
+                # Unpack dprimal/ddual into CVXPY variable .gradient attributes.
+                for var_info, cvxpy_var in zip(cl_ctx.var_recover, cl_ctx.variables):
+                    if var_info.source == "primal" and var_info.primal is not None:
+                        g = dprimal[0, var_info.primal].detach().cpu().numpy()
+                        cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
+                    elif var_info.source == "dual" and var_info.dual is not None:
+                        g = ddual[0, var_info.dual].detach().cpu().numpy()
+                        cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
 
-            Returns gradients in batch-**last** ``(n, B)`` format (or 1-D for
-            originally-unbatched inputs) to match what
-            ``_ScipySparseMatmul.backward`` expects.  One ``None`` per
-            non-tensor input to ``forward``.
-            """
+                # Run the solver's backward pass; sets param.gradient for each param.
+                cpg_grad_primal, cpg_grad_dual = (
+                    ctx.grad_info if ctx.grad_info is not None else (None, None)
+                )
+                solver._cpg_gradient(cl_ctx.problem, cpg_grad_primal, cpg_grad_dual)
+
+                # Collect param.gradient → per-input-tensor gradients.
+                param_grads: list[_torch.Tensor] = []
+                for param_obj, shape, dtype, device in zip(
+                    cl_ctx.parameters,
+                    ctx.param_shapes,
+                    ctx.param_dtypes,
+                    ctx.param_devices,
+                ):
+                    g_np = np.asarray(param_obj.gradient)
+                    param_grads.append(
+                        _torch.tensor(g_np.reshape(shape), dtype=dtype, device=device)
+                    )
+
+                # 7 Nones for the fixed inputs (P_eval, q_eval, A_eval,
+                # cl_ctx, solver_args, needs_grad, warm_start), then one
+                # gradient per trailing param tensor.
+                return (None, None, None, None, None, None, None, *param_grads)
+
+            # ------------------------------------------------------------------
+            # Canonical-matrix backward
+            # ------------------------------------------------------------------
             dP_bf, dq_bf, dA_bf = ctx.custom_solver.derivative_torch_batch(
                 dprimal, ddual, ctx.adjoint_data,
             )
@@ -154,104 +233,8 @@ try:
                 None,  # solver_args
                 None,  # needs_grad
                 None,  # warm_start
+                # no trailing param gradients for canonical-matrix path
             )
-
-    # -----------------------------------------------------------------------
-    # _ParametricLayer — autograd Function for is_parametric SolverInterface
-    # -----------------------------------------------------------------------
-
-    class _ParametricLayer(_torch.autograd.Function):
-        """Autograd Function for parameter-space solvers (e.g. CVXPYgen).
-
-        Takes the original parameter tensors (not canonical matrices) as inputs
-        so that :meth:`backward` can return per-parameter gradients directly,
-        without a pseudoinverse.
-
-        Call signature::
-
-            _ParametricLayer.apply(*params, cl_ctx, solver_args, needs_grad)
-
-        where ``*params`` are the user-facing torch tensors in the same order
-        as ``CvxpyLayer``'s ``parameters`` argument.  ``cl_ctx.problem`` must
-        already have ``param.value`` set before ``apply`` is called.
-        """
-
-        @staticmethod
-        def forward(*args: Any) -> tuple[Any, Any, Any, bool]:
-            *param_tensors, cl_ctx, solver_args, needs_grad = args
-            solver = cl_ctx.solver
-            problem = cl_ctx.problem  # param.value already set by CvxpyLayer
-
-            if needs_grad and solver._cpg_solve_and_gradient is not None:
-                _, cpg_grad_primal, cpg_grad_dual = solver._cpg_solve_and_gradient(
-                    problem
-                )
-                grad_info = (cpg_grad_primal, cpg_grad_dual)
-            else:
-                solver._cpg_solve(problem)
-                grad_info = None
-
-            primal_np, dual_np = _pack_primal_dual(cl_ctx)
-            dtype  = param_tensors[0].dtype  if param_tensors else _torch.float64
-            device = param_tensors[0].device if param_tensors else _torch.device("cpu")
-            primal = _torch.tensor(primal_np, dtype=dtype, device=device)
-            dual   = _torch.tensor(dual_np,   dtype=dtype, device=device)
-            return primal, dual, grad_info, False
-
-        @staticmethod
-        def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
-            *param_tensors, cl_ctx, solver_args, needs_grad = inputs
-            _primal, _dual, grad_info, _ub = outputs
-            ctx.cl_ctx        = cl_ctx
-            ctx.grad_info     = grad_info
-            ctx.param_shapes  = [p.shape  for p in param_tensors]
-            ctx.param_dtypes  = [p.dtype  for p in param_tensors]
-            ctx.param_devices = [p.device for p in param_tensors]
-
-        @staticmethod
-        @_torch.autograd.function.once_differentiable
-        def backward(
-            ctx: Any,
-            dprimal: _torch.Tensor,
-            ddual:   _torch.Tensor,
-            _grad_info: Any,
-            _ub: Any,
-        ) -> tuple:
-            cl_ctx = ctx.cl_ctx
-            solver = cl_ctx.solver
-            assert cl_ctx.variables is not None
-
-            # Unpack dprimal/ddual into CVXPY variable .gradient attributes.
-            for var_info, cvxpy_var in zip(cl_ctx.var_recover, cl_ctx.variables):
-                if var_info.source == "primal" and var_info.primal is not None:
-                    g = dprimal[0, var_info.primal].detach().cpu().numpy()
-                    cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
-                elif var_info.source == "dual" and var_info.dual is not None:
-                    g = ddual[0, var_info.dual].detach().cpu().numpy()
-                    cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
-
-            # Run the solver's backward pass; sets param.gradient for each param.
-            cpg_grad_primal, cpg_grad_dual = (
-                ctx.grad_info if ctx.grad_info is not None else (None, None)
-            )
-            solver._cpg_gradient(cl_ctx.problem, cpg_grad_primal, cpg_grad_dual)
-
-            # Collect param.gradient → per-input-tensor gradients.
-            param_grads: list[_torch.Tensor] = []
-            for param_obj, shape, dtype, device in zip(
-                cl_ctx.parameters,
-                ctx.param_shapes,
-                ctx.param_dtypes,
-                ctx.param_devices,
-            ):
-                g_np = np.asarray(param_obj.gradient)
-                param_grads.append(
-                    _torch.tensor(g_np.reshape(shape), dtype=dtype, device=device)
-                )
-
-            # One gradient per input to apply(): *params + cl_ctx/args/ng
-            return (*param_grads, None, None, None)
 
 except ImportError:
-    _CvxpyLayer = None       # type: ignore[assignment,misc]
-    _ParametricLayer = None  # type: ignore[assignment,misc]
+    _CvxpyLayer = None  # type: ignore[assignment,misc]

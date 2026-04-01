@@ -87,10 +87,6 @@ def get_torch_cvxpylayer(solver):
         The _CvxpyLayer class for the specified solver
     """
     match solver:
-        case SolverInterface() if solver.is_parametric:
-            from cvxpylayers.interfaces.custom_if import _ParametricLayer
-
-            return _ParametricLayer
         case SolverInterface():
             from cvxpylayers.interfaces.custom_if import _CvxpyLayer
 
