@@ -438,6 +438,24 @@ class CvxpyLayer(torch.nn.Module):
             )
         batch = self.ctx.validate_params(list(params))
 
+        # Fast path: parameter-space solver (is_parametric=True).
+        # Skip the canonical q @ p_stack / A @ p_stack evaluation entirely;
+        # _ParametricLayer propagates gradients directly to the param tensors.
+        if isinstance(self.ctx.solver, SolverInterface) and self.ctx.solver.is_parametric:
+            from cvxpylayers.interfaces.custom_if import _ParametricLayer
+
+            # Set param.value on the CVXPY Problem directly — CvxpyLayer owns
+            # both the Parameter objects and the current numpy values.
+            for param_obj, p in zip(self.ctx.parameters, params):
+                param_obj.value = p.detach().cpu().numpy()
+            needs_grad = torch.is_grad_enabled() and any(
+                p.requires_grad for p in params
+            )
+            primal, dual, _, _ = _ParametricLayer.apply(  # type: ignore[misc]
+                *params, self.ctx, solver_args, needs_grad
+            )
+            return _recover_results(primal, dual, self.ctx, batch)
+
         # Apply log transformation to GP parameters
         params = _apply_gp_log_transform(params, self.ctx)
 

@@ -84,6 +84,10 @@ class LayersContext:
     batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
+    # Original CVXPY problem and variables — used by CvxpygenInterface to read
+    # var.value / set var.gradient without needing canonical matrix bookkeeping.
+    problem: cp.Problem | None = None
+    variables: list[cp.Variable] | None = None
     # GP (Geometric Programming) support
     gp: bool = False
     # Maps original GP parameters to their log-space DCP parameters
@@ -534,4 +538,6 @@ def parse_args(
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,
         gp_log_mask=gp_log_mask,
+        problem=problem,
+        variables=list(variables),
     )
