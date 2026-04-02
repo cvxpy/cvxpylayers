@@ -130,13 +130,13 @@ try:
             q_bf = _to_bf(q_eval)
             A_bf = _to_bf(A_eval)
 
-            primal, dual, adjoint_data = solver.solve_torch_batch(  # type: ignore[union-attr]
+            primal, dual, saved_state = solver.solve_torch_batch(  # type: ignore[union-attr]
                 P_bf, q_bf, A_bf,
                 cl_ctx.cone_dims,
                 {**solver_args},
                 needs_grad,
             )
-            return primal, dual, adjoint_data, originally_unbatched
+            return primal, dual, saved_state, originally_unbatched
 
         @staticmethod
         def setup_context(
@@ -145,20 +145,20 @@ try:
             outputs: tuple,
         ) -> None:
             P_eval, q_eval, A_eval, cl_ctx, _, _, _, *params = inputs
-            _, _, adjoint_data_or_grad_info, originally_unbatched = outputs
+            _, _, saved_state_or_grad_info, originally_unbatched = outputs
 
             solver = cl_ctx.solver
             ctx.is_parametric = getattr(solver, "is_parametric", False)
 
             if ctx.is_parametric:
                 ctx.cl_ctx        = cl_ctx
-                ctx.grad_info     = adjoint_data_or_grad_info
+                ctx.grad_info     = saved_state_or_grad_info
                 ctx.param_shapes  = [p.shape  for p in params]
                 ctx.param_dtypes  = [p.dtype  for p in params]
                 ctx.param_devices = [p.device for p in params]
             else:
                 ctx.custom_solver        = solver
-                ctx.adjoint_data         = adjoint_data_or_grad_info
+                ctx.saved_state          = saved_state_or_grad_info
                 ctx.originally_unbatched = originally_unbatched
 
         @staticmethod
@@ -215,7 +215,7 @@ try:
             # Canonical-matrix backward
             # ------------------------------------------------------------------
             dP_bf, dq_bf, dA_bf = ctx.custom_solver.derivative_torch_batch(
-                dprimal, ddual, ctx.adjoint_data,
+                dprimal, ddual, ctx.saved_state,
             )
 
             # Transpose (B, n) → (n, B); squeeze trailing dim for unbatched.

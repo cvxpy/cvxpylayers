@@ -3,31 +3,53 @@
 Users subclass ``SolverInterface``, implement at least one solve method and
 one derivative method, and pass the instance as ``solver=`` to ``CvxpyLayer``.
 
-cvxpylayers automatically fills in all missing variants via a **ring of
-default implementations**.  Every method's default calls the next in the ring,
-and ``@require_one_of`` guarantees at least one link is user-overridden,
-breaking the cycle:
+Ring of default implementations
+--------------------------------
+Every method's *default* body delegates to the **next** method in the ring.
+``@require_one_of`` enforces that at least one method is user-overridden.
+Because overrides do **not** call ``super()``, they terminate the chain —
+there is no infinite recursion.
 
-Solve ring::
+Solve ring (each arrow = "default delegates to →")::
 
-    solve_torch_batch → solve_torch → solve_numpy → solve_numpy_batch
-        → solve_jax_batch → solve_jax → solve_mlx → solve_mlx_batch
-        → (back to solve_torch_batch)
+    solve_torch_batch  ──[batch→single]──►  solve_torch
+    solve_torch        ──[single→single]──►  solve_numpy        (torch → numpy)
+    solve_numpy        ──[single→batch]──►  solve_numpy_batch
+    solve_numpy_batch  ──[batch→batch]───►  solve_jax_batch     (numpy → jax)
+    solve_jax_batch    ──[batch→single]──►  solve_jax
+    solve_jax          ──[single→single]──►  solve_mlx           (jax → mlx)
+    solve_mlx          ──[single→batch]──►  solve_mlx_batch
+    solve_mlx_batch    ──[batch→batch]───►  solve_torch_batch   (mlx → torch, closes ring)
 
-Each step is one of:
+Arrow semantics:
 
-* **batch → single**: loops the single-problem method over the batch dim.
-* **single → single**: converts arrays to the next framework.
-* **single → batch**: adds a trivial batch dim of 1, calls batch, strips it.
-* **batch → batch**: converts arrays to the next framework.
+* **batch → single**: strips batch dim, loops single-problem method, re-stacks.
+* **single → batch**: adds a size-1 batch dim, calls batch method, strips it.
+* **single → single** / **batch → batch**: converts arrays to the next framework
+  (all cross-framework conversions go through numpy as a hub).
 
-The same ring structure applies to the derivative methods.
+Example — overriding ``solve_numpy``: a call entering at
+``solve_torch_batch`` walks the chain until it hits the override::
 
-Each framework's layer calls its own entry point directly:
+    solve_torch_batch → solve_torch → ★ solve_numpy   (chain ends here)
+
+The same ring and semantics apply identically to the derivative methods.
+
+Entry points — each framework layer calls its own batch variant directly:
 
 * Torch layer  → ``solve_torch_batch`` / ``derivative_torch_batch``
 * JAX layer    → ``solve_jax_batch``   / ``derivative_jax_batch``
 * MLX layer    → ``solve_mlx_batch``   / ``derivative_mlx_batch``
+
+Choosing what to implement
+--------------------------
+* **Simplest** (CPU, no framework dependency): override ``solve_numpy`` +
+  ``derivative_numpy``.  All three frameworks will work; batching and
+  array conversion are handled automatically.
+* **Native batched**: override the ``*_batch`` variant for your framework to
+  avoid the per-sample Python loop inserted by the batch→single default.
+* **Framework-agnostic batched**: override ``solve_numpy_batch`` +
+  ``derivative_numpy_batch``; all frameworks convert to numpy before calling.
 """
 from __future__ import annotations
 
@@ -126,19 +148,19 @@ def _to_numpy_from_mlx(arr: Any) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Per-item adjoint splitting helper
+# Per-item state splitting helper
 # ---------------------------------------------------------------------------
 
-def _split_adj(adj: Any, batch_size: int) -> list[Any]:
-    """Return a list of per-item adjoints of length *batch_size*.
+def _split_state(state: Any, batch_size: int) -> list[Any]:
+    """Return a list of per-item saved states of length *batch_size*.
 
-    If *adj* is already a list of the right length (produced by looping a
+    If *state* is already a list of the right length (produced by looping a
     single-problem method), return it as-is.  Otherwise broadcast the single
     batch-level object to every item.
     """
-    if isinstance(adj, list) and len(adj) == batch_size:
-        return adj
-    return [adj] * batch_size
+    if isinstance(state, list) and len(state) == batch_size:
+        return state
+    return [state] * batch_size
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +258,48 @@ class SolverInterface(ABC):
 
             def solve_numpy(self, P, q, A, dims, solver_args, needs_grad):
                 primal, dual = my_c_code(q, A, dims)
-                return primal, dual, None
+                return primal, dual, self.save_for_backward(primal, dual)
 
-            def derivative_numpy(self, dprimal, ddual, adjoint_data):
-                dq, dA = my_c_derivative(dprimal, ddual)
+            def derivative_numpy(self, dprimal, ddual, saved_state):
+                primal, dual = saved_state
+                dq, dA = my_c_derivative(dprimal, ddual, primal, dual)
                 return None, dq, dA     # dP=None for LP
+
+    Extra solver state — derivative only needs the factorization, not primal/dual::
+
+        class MySolver(SolverInterface):
+            canon_solver = "CLARABEL"
+
+            def save_for_backward(self, primal, dual):
+                return self._last_kkt_factor   # only the extra; skip primal/dual
+
+            def solve_numpy(self, P, q, A, dims, solver_args, needs_grad):
+                primal, dual, factor = my_factored_solve(q, A, dims)
+                self._last_kkt_factor = factor
+                return primal, dual, self.save_for_backward(primal, dual)
+
+            def derivative_numpy(self, dprimal, ddual, saved_state):
+                factor = saved_state
+                dq, dA = my_derivative(dprimal, ddual, factor)
+                return None, dq, dA
+
+    Extra solver state — derivative needs primal/dual AND a factorization::
+
+        class MySolver(SolverInterface):
+            canon_solver = "CLARABEL"
+
+            def save_for_backward(self, primal, dual):
+                return primal, dual, self._last_kkt_factor   # all three needed
+
+            def solve_numpy(self, P, q, A, dims, solver_args, needs_grad):
+                primal, dual, factor = my_factored_solve(q, A, dims)
+                self._last_kkt_factor = factor
+                return primal, dual, self.save_for_backward(primal, dual)
+
+            def derivative_numpy(self, dprimal, ddual, saved_state):
+                primal, dual, factor = saved_state
+                dq, dA = my_derivative(dprimal, ddual, primal, dual, factor)
+                return None, dq, dA
 
     Torch, native batched (no conversion overhead)::
 
@@ -252,7 +311,7 @@ class SolverInterface(ABC):
                 # P: (B, nnz_P) or None; q: (B, n); A: (B, m)
                 return primal, dual, kkt_state
 
-            def derivative_torch_batch(self, dprimal, ddual, kkt_state):
+            def derivative_torch_batch(self, dprimal, ddual, saved_state):
                 # dprimal/ddual: (B, n)
                 return dP, dq, dA       # each (B, n), dP may be None
     """
@@ -274,6 +333,7 @@ class SolverInterface(ABC):
         solve: Any,
         derivative: Any,
         *,
+        save_for_backward: Any | None = None,
         canon_solver: str | _CvxpySolver = "SCS",
         supports_quad_obj: bool = False,
     ) -> "SolverInterface":
@@ -285,31 +345,65 @@ class SolverInterface(ABC):
         cross-framework conversion automatically.
 
         Args:
-            solve: ``(P, q, A, dims, solver_args, needs_grad) -> (primal, dual, adjoint)``
-                where arrays are 1-D numpy, ``P`` may be ``None`` for LPs.
-            derivative: ``(dprimal, ddual, adjoint) -> (dP, dq, dA)``
+            solve: ``(P, q, A, dims, solver_args, needs_grad) -> (primal, dual)``
+                **or** ``(primal, dual, saved_state)``.  Arrays are 1-D numpy;
+                ``P`` may be ``None`` for LPs.  When only a 2-tuple is returned
+                the saved state is built by calling ``save_for_backward(primal,
+                dual)`` (see below).
+            derivative: ``(dprimal, ddual, saved_state) -> (dP, dq, dA)``
                 where arrays are 1-D numpy, ``dP`` may be ``None``.
+            save_for_backward: Optional ``(primal, dual) -> saved_state``
+                callable.  Called when ``solve`` returns a 2-tuple.  Defaults
+                to ``lambda p, d: (p, d)`` — i.e. saves ``(primal, dual)``.
+                Pass a custom function to attach extra solver state.
             canon_solver: CVXPY solver name or instance for problem canonicalization.
             supports_quad_obj: Whether the solver handles parametric QP objectives.
 
         Returns:
-            A concrete :class:`SolverInterface` instance wrapping the two callables.
+            A concrete :class:`SolverInterface` instance wrapping the callables.
 
-        Example::
+        Simple example (2-tuple solve — saved state defaults to ``(primal, dual)``)::
 
             def my_solve(P, q, A, dims, args, needs_grad):
                 primal, dual = fast_conic_solve(q, A, dims)
-                return primal, dual, (primal, dual)   # adjoint = save for backward
+                return primal, dual                          # no repeated state
 
-            def my_derivative(dprimal, ddual, adj):
-                primal, dual = adj
+            def my_derivative(dprimal, ddual, saved_state):
+                primal, dual = saved_state                   # filled automatically
                 dq, dA = fast_derivative(dprimal, ddual, primal, dual)
-                return None, dq, dA     # dP=None for LP
+                return None, dq, dA
 
             layer = CvxpyLayer(problem, parameters=[A, b], variables=[x],
                                solver=SolverInterface.from_functions(my_solve, my_derivative))
+
+        Custom state example (attach a factorization for cheaper derivatives)::
+
+            def my_solve(P, q, A, dims, args, needs_grad):
+                primal, dual, factor = fast_conic_solve_with_factor(q, A, dims)
+                return primal, dual, (primal, dual, factor)  # explicit 3-tuple
+
+            def my_derivative(dprimal, ddual, saved_state):
+                primal, dual, factor = saved_state
+                dq, dA = fast_derivative_with_factor(dprimal, ddual, factor)
+                return None, dq, dA
         """
         _solve, _derivative = solve, derivative
+        _sfb: Any = save_for_backward if save_for_backward is not None else (
+            lambda p, d: (p, d)
+        )
+
+        def _wrapped_solve(
+            self: Any,
+            P: Any, q: Any, A: Any,
+            dims: Any, args: Any, ng: Any,
+        ) -> tuple[Any, Any, Any]:
+            result = _solve(P, q, A, dims, args, ng)
+            if len(result) == 2:
+                primal, dual = result
+                return primal, dual, _sfb(primal, dual)
+            primal, dual, state = result
+            return primal, dual, state
+
         # Use type() so that @require_one_of sees the overrides at class-creation
         # time (vars() check), avoiding the "must override at least one" error.
         _cls: type[SolverInterface] = type(
@@ -318,12 +412,9 @@ class SolverInterface(ABC):
             {
                 "canon_solver": canon_solver,
                 "supports_quad_obj": supports_quad_obj,
-                "solve_numpy": (
-                    lambda self, P, q, A, dims, args, ng:
-                        _solve(P, q, A, dims, args, ng)
-                ),
+                "solve_numpy": _wrapped_solve,
                 "derivative_numpy": (
-                    lambda self, dp, dd, adj: _derivative(dp, dd, adj)
+                    lambda self, dp, dd, state: _derivative(dp, dd, state)
                 ),
             },
         )
@@ -443,12 +534,49 @@ class SolverInterface(ABC):
         Default: no-op.
         """
 
+    def save_for_backward(self, primal: np.ndarray, dual: np.ndarray) -> Any:
+        """Build the saved state passed to the matching ``derivative_*`` call.
+
+        Returned as the third element of every ``solve_*`` method.  Override
+        to attach extra solver data (factorizations, active sets, residuals,
+        …) that your derivative implementation needs beyond ``(primal, dual)``::
+
+            def save_for_backward(self, primal, dual):
+                return primal, dual, self._last_kkt_factor
+
+            def derivative_numpy(self, dprimal, ddual, saved_state):
+                primal, dual, factor = saved_state
+                ...
+
+        In :meth:`from_functions`, the solve callable may return either
+        ``(primal, dual)`` or ``(primal, dual, saved_state)``.  When only a
+        2-tuple is returned the result of ``save_for_backward(primal, dual)``
+        is used automatically.
+
+        Args:
+            primal: 1-D numpy primal solution from the just-completed solve.
+            dual:   1-D numpy dual solution from the just-completed solve.
+
+        Returns:
+            Anything needed by ``derivative_*``.  Default: ``(primal, dual)``.
+        """
+        return primal, dual
+
     # ------------------------------------------------------------------
-    # Solve methods — implement at least one
+    # Solve methods — implement at least one (see module docstring for details)
     # ------------------------------------------------------------------
-    # Ring order:
-    #   torch_batch → torch → numpy → numpy_batch
-    #               → jax_batch → jax → mlx → mlx_batch → (torch_batch)
+    # Ring order and step type at each arrow:
+    #
+    #   torch_batch  -[batch→single]->  torch
+    #   torch        -[single→single]-> numpy        (torch  → numpy)
+    #   numpy        -[single→batch]->  numpy_batch
+    #   numpy_batch  -[batch→batch]->   jax_batch    (numpy  → jax)
+    #   jax_batch    -[batch→single]->  jax
+    #   jax          -[single→single]-> mlx           (jax   → mlx)
+    #   mlx          -[single→batch]->  mlx_batch
+    #   mlx_batch    -[batch→batch]->   torch_batch  (mlx → torch, closes ring)
+    #
+    # The first user override encountered breaks the chain.
     # ------------------------------------------------------------------
 
     def solve_torch_batch(
@@ -468,25 +596,25 @@ class SolverInterface(ABC):
             A: ``(B, nnz_A)``
             dims: Cone dimensions dict.
             solver_args: Per-call keyword arguments.
-            needs_grad: If ``False`` the adjoint system may be skipped.
+            needs_grad: If ``False`` the saved state may be omitted.
 
         Returns:
-            ``(primal, dual, adjoint_data)`` — torch tensors + opaque adjoint.
+            ``(primal, dual, saved_state)`` — torch tensors + state for backward.
 
         Default: loops :meth:`solve_torch` over the batch dimension.
         """
         import torch
         batch = q.shape[0]
-        primals, duals, adjs = [], [], []
+        primals, duals, states = [], [], []
         for i in range(batch):
-            p_i, d_i, a_i = self.solve_torch(
+            p_i, d_i, state_i = self.solve_torch(
                 P[i] if P is not None else None, q[i], A[i],
                 dims, solver_args, needs_grad,
             )
             primals.append(p_i)
             duals.append(d_i)
-            adjs.append(a_i)
-        return torch.stack(primals, dim=0), torch.stack(duals, dim=0), adjs
+            states.append(state_i)
+        return torch.stack(primals, dim=0), torch.stack(duals, dim=0), states
 
     def solve_torch(
         self,
@@ -499,18 +627,16 @@ class SolverInterface(ABC):
     ) -> tuple[Any, Any, Any]:
         """Solve a **single** problem; inputs/outputs are torch tensors.
 
-        Shapes mirror :meth:`solve_numpy` but using torch tensors.
-
         Default: converts to numpy, calls :meth:`solve_numpy`, converts back.
         """
         P_np = _to_numpy_from_torch(P) if P is not None else None
         q_np = _to_numpy_from_torch(q)
         A_np = _to_numpy_from_torch(A)
-        primal_np, dual_np, adj = self.solve_numpy(P_np, q_np, A_np, dims, solver_args, needs_grad)
+        primal_np, dual_np, state = self.solve_numpy(P_np, q_np, A_np, dims, solver_args, needs_grad)
         return (
             _to_torch_from_numpy(primal_np).to(dtype=q.dtype, device=q.device),
             _to_torch_from_numpy(dual_np).to(dtype=q.dtype, device=q.device),
-            adj,
+            state,
         )
 
     def solve_numpy(
@@ -530,20 +656,20 @@ class SolverInterface(ABC):
             A: ``(nnz_A,)``
             dims: Cone dimensions dict.
             solver_args: Per-call keyword arguments.
-            needs_grad: Skip adjoint construction if ``False``.
+            needs_grad: If ``False``, saved state may be omitted.
 
         Returns:
-            ``(primal, dual, adjoint_data)`` — 1-D numpy arrays + opaque adj.
+            ``(primal, dual, saved_state)`` — 1-D numpy arrays + state for backward.
 
         Default: adds a batch dim of 1, calls :meth:`solve_numpy_batch`,
         strips the batch dim.
         """
         P_b = P[np.newaxis] if P is not None else None
-        primal_b, dual_b, adj = self.solve_numpy_batch(
+        primal_b, dual_b, state = self.solve_numpy_batch(
             P_b, q[np.newaxis], A[np.newaxis], dims, solver_args, needs_grad,
         )
-        adj_item = adj[0] if isinstance(adj, list) and len(adj) == 1 else adj
-        return primal_b[0], dual_b[0], adj_item
+        state_item = state[0] if isinstance(state, list) and len(state) == 1 else state
+        return primal_b[0], dual_b[0], state_item
 
     def solve_numpy_batch(
         self,
@@ -556,22 +682,17 @@ class SolverInterface(ABC):
     ) -> tuple[np.ndarray, np.ndarray, Any]:
         """Solve a **batch** of problems; inputs/outputs are numpy arrays.
 
-        Args:
-            P: ``(B, nnz_P)`` or ``None``.
-            q: ``(B, n_vars + 1)``
-            A: ``(B, nnz_A)``
-
-        Returns:
-            ``(primal, dual, adjoint_data)`` — 2-D numpy arrays + opaque adj.
+        ``P``: ``(B, nnz_P)`` or ``None``; ``q``: ``(B, n_vars+1)``; ``A``: ``(B, nnz_A)``.
+        Returns ``(primal, dual, saved_state)`` as 2-D arrays.
 
         Default: converts to JAX, calls :meth:`solve_jax_batch`, converts back.
         """
         P_jax = _to_jax_from_numpy(P) if P is not None else None
-        primal_jax, dual_jax, adj = self.solve_jax_batch(
+        primal_jax, dual_jax, state = self.solve_jax_batch(
             P_jax, _to_jax_from_numpy(q), _to_jax_from_numpy(A),
             dims, solver_args, needs_grad,
         )
-        return _to_numpy_from_jax(primal_jax), _to_numpy_from_jax(dual_jax), adj
+        return _to_numpy_from_jax(primal_jax), _to_numpy_from_jax(dual_jax), state
 
     def solve_jax_batch(
         self,
@@ -583,21 +704,19 @@ class SolverInterface(ABC):
         needs_grad: bool,
     ) -> tuple[Any, Any, Any]:
         """Solve a **batch** of problems; inputs/outputs are JAX arrays.
-
-        Default: loops :meth:`solve_jax` over the batch dimension.
-        """
+        Default: loops :meth:`solve_jax` over the batch dimension."""
         import jax.numpy as jnp
         batch = q.shape[0]
-        primals, duals, adjs = [], [], []
+        primals, duals, states = [], [], []
         for i in range(batch):
-            p_i, d_i, a_i = self.solve_jax(
+            p_i, d_i, state_i = self.solve_jax(
                 P[i] if P is not None else None, q[i], A[i],
                 dims, solver_args, needs_grad,
             )
             primals.append(p_i)
             duals.append(d_i)
-            adjs.append(a_i)
-        return jnp.stack(primals, axis=0), jnp.stack(duals, axis=0), adjs
+            states.append(state_i)
+        return jnp.stack(primals, axis=0), jnp.stack(duals, axis=0), states
 
     def solve_jax(
         self,
@@ -609,11 +728,9 @@ class SolverInterface(ABC):
         needs_grad: bool,
     ) -> tuple[Any, Any, Any]:
         """Solve a **single** problem; inputs/outputs are JAX arrays.
-
-        Default: converts to MLX, calls :meth:`solve_mlx`, converts back.
-        """
+        Default: converts to MLX, calls :meth:`solve_mlx`, converts back."""
         P_mlx = _to_mlx_from_numpy(_to_numpy_from_jax(P)) if P is not None else None
-        primal_mlx, dual_mlx, adj = self.solve_mlx(
+        primal_mlx, dual_mlx, state = self.solve_mlx(
             P_mlx,
             _to_mlx_from_numpy(_to_numpy_from_jax(q)),
             _to_mlx_from_numpy(_to_numpy_from_jax(A)),
@@ -623,7 +740,7 @@ class SolverInterface(ABC):
         return (
             jnp.array(_to_numpy_from_mlx(primal_mlx)),
             jnp.array(_to_numpy_from_mlx(dual_mlx)),
-            adj,
+            state,
         )
 
     def solve_mlx(
@@ -636,18 +753,15 @@ class SolverInterface(ABC):
         needs_grad: bool,
     ) -> tuple[Any, Any, Any]:
         """Solve a **single** problem; inputs/outputs are MLX arrays.
-
-        Default: adds a batch dim of 1, calls :meth:`solve_mlx_batch`,
-        strips the batch dim.
-        """
+        Default: wraps :meth:`solve_mlx_batch` with a size-1 batch dim."""
         import mlx.core as mx
         P_b = mx.expand_dims(P, 0) if P is not None else None
-        primal_b, dual_b, adj = self.solve_mlx_batch(
+        primal_b, dual_b, state = self.solve_mlx_batch(
             P_b, mx.expand_dims(q, 0), mx.expand_dims(A, 0),
             dims, solver_args, needs_grad,
         )
-        adj_item = adj[0] if isinstance(adj, list) and len(adj) == 1 else adj
-        return primal_b[0], dual_b[0], adj_item
+        state_item = state[0] if isinstance(state, list) and len(state) == 1 else state
+        return primal_b[0], dual_b[0], state_item
 
     def solve_mlx_batch(
         self,
@@ -659,13 +773,10 @@ class SolverInterface(ABC):
         needs_grad: bool,
     ) -> tuple[Any, Any, Any]:
         """Solve a **batch** of problems; inputs/outputs are MLX arrays.
-
-        Default: converts to torch, calls :meth:`solve_torch_batch`,
-        converts back.  Closes the ring.
-        """
+        Default: converts to torch, calls :meth:`solve_torch_batch`. Closes the ring."""
         import mlx.core as mx
         P_t = _to_torch_from_numpy(_to_numpy_from_mlx(P)) if P is not None else None
-        primal_t, dual_t, adj = self.solve_torch_batch(
+        primal_t, dual_t, state = self.solve_torch_batch(
             P_t,
             _to_torch_from_numpy(_to_numpy_from_mlx(q)),
             _to_torch_from_numpy(_to_numpy_from_mlx(A)),
@@ -674,29 +785,26 @@ class SolverInterface(ABC):
         return (
             mx.array(_to_numpy_from_torch(primal_t)),
             mx.array(_to_numpy_from_torch(dual_t)),
-            adj,
+            state,
         )
 
     # ------------------------------------------------------------------
     # Derivative methods — implement at least one
-    # ------------------------------------------------------------------
-    # Same ring order as solve:
-    #   torch_batch → torch → numpy → numpy_batch
-    #               → jax_batch → jax → mlx → mlx_batch → (torch_batch)
+    # Same ring order and step types as the solve methods above.
     # ------------------------------------------------------------------
 
     def derivative_torch_batch(
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **batch** of problems; tensors are torch.
 
         Args:
             dprimal: ``(B, n_primal)``
             ddual:   ``(B, n_dual)``
-            adjoint_data: from the corresponding solve call.
+            saved_state: value returned by the corresponding ``solve_torch_batch``.
 
         Returns:
             ``(dP, dq, dA)`` each ``(B, n)``; ``dP`` may be ``None``.
@@ -705,11 +813,11 @@ class SolverInterface(ABC):
         """
         import torch
         batch = dprimal.shape[0]
-        adj_list = _split_adj(adjoint_data, batch)
+        state_list = _split_state(saved_state, batch)
         dPs, dqs, dAs = [], [], []
         has_dP = False
         for i in range(batch):
-            dP_i, dq_i, dA_i = self.derivative_torch(dprimal[i], ddual[i], adj_list[i])
+            dP_i, dq_i, dA_i = self.derivative_torch(dprimal[i], ddual[i], state_list[i])
             if dP_i is not None:
                 dPs.append(dP_i)
                 has_dP = True
@@ -722,15 +830,13 @@ class SolverInterface(ABC):
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **single** problem; tensors are torch.
-
-        Default: converts to numpy, calls :meth:`derivative_numpy`, converts back.
-        """
+        Default: converts to numpy, calls :meth:`derivative_numpy`, converts back."""
         dp_np = _to_numpy_from_torch(dprimal)
         dd_np = _to_numpy_from_torch(ddual)
-        dP_np, dq_np, dA_np = self.derivative_numpy(dp_np, dd_np, adjoint_data)
+        dP_np, dq_np, dA_np = self.derivative_numpy(dp_np, dd_np, saved_state)
         ref = dprimal
         dP = (
             _to_torch_from_numpy(dP_np).to(dtype=ref.dtype, device=ref.device)
@@ -747,14 +853,14 @@ class SolverInterface(ABC):
         self,
         dprimal: np.ndarray,
         ddual: np.ndarray,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray]:
         """Backward pass for a **single** problem; arrays are numpy.
 
         Args:
             dprimal: ``(n_primal,)``
             ddual:   ``(n_dual,)``
-            adjoint_data: from the corresponding solve call.
+            saved_state: value returned by the corresponding ``solve_numpy``.
 
         Returns:
             ``(dP, dq, dA)`` — 1-D numpy arrays; ``dP`` may be ``None``.
@@ -763,7 +869,7 @@ class SolverInterface(ABC):
         strips the batch dim.
         """
         dP_b, dq_b, dA_b = self.derivative_numpy_batch(
-            dprimal[np.newaxis], ddual[np.newaxis], [adjoint_data],
+            dprimal[np.newaxis], ddual[np.newaxis], [saved_state],
         )
         dP = dP_b[0] if dP_b is not None else None
         return dP, dq_b[0], dA_b[0]
@@ -772,24 +878,19 @@ class SolverInterface(ABC):
         self,
         dprimal: np.ndarray,
         ddual: np.ndarray,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray]:
         """Backward pass for a **batch** of problems; arrays are numpy.
 
-        Args:
-            dprimal: ``(B, n_primal)``
-            ddual:   ``(B, n_dual)``
-            adjoint_data: from the corresponding solve call.
-
-        Returns:
-            ``(dP, dq, dA)`` each ``(B, n)``; ``dP`` may be ``None``.
+        ``dprimal``/``ddual``: ``(B, n)``. Returns ``(dP, dq, dA)`` each ``(B, n)``;
+        ``dP`` may be ``None``.
 
         Default: converts to JAX, calls :meth:`derivative_jax_batch`, converts back.
         """
         dP_jax, dq_jax, dA_jax = self.derivative_jax_batch(
             _to_jax_from_numpy(dprimal),
             _to_jax_from_numpy(ddual),
-            adjoint_data,
+            saved_state,
         )
         dP = _to_numpy_from_jax(dP_jax) if dP_jax is not None else None
         return dP, _to_numpy_from_jax(dq_jax), _to_numpy_from_jax(dA_jax)
@@ -798,19 +899,17 @@ class SolverInterface(ABC):
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **batch** of problems; arrays are JAX arrays.
-
-        Default: loops :meth:`derivative_jax` over the batch dimension.
-        """
+        Default: loops :meth:`derivative_jax` over the batch dimension."""
         import jax.numpy as jnp
         batch = dprimal.shape[0]
-        adj_list = _split_adj(adjoint_data, batch)
+        state_list = _split_state(saved_state, batch)
         dPs, dqs, dAs = [], [], []
         has_dP = False
         for i in range(batch):
-            dP_i, dq_i, dA_i = self.derivative_jax(dprimal[i], ddual[i], adj_list[i])
+            dP_i, dq_i, dA_i = self.derivative_jax(dprimal[i], ddual[i], state_list[i])
             if dP_i is not None:
                 dPs.append(dP_i)
                 has_dP = True
@@ -823,15 +922,13 @@ class SolverInterface(ABC):
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **single** problem; arrays are JAX arrays.
-
-        Default: converts to MLX, calls :meth:`derivative_mlx`, converts back.
-        """
+        Default: converts to MLX, calls :meth:`derivative_mlx`, converts back."""
         dp_mlx = _to_mlx_from_numpy(_to_numpy_from_jax(dprimal))
         dd_mlx = _to_mlx_from_numpy(_to_numpy_from_jax(ddual))
-        dP_mlx, dq_mlx, dA_mlx = self.derivative_mlx(dp_mlx, dd_mlx, adjoint_data)
+        dP_mlx, dq_mlx, dA_mlx = self.derivative_mlx(dp_mlx, dd_mlx, saved_state)
         import jax.numpy as jnp
         dP = jnp.array(_to_numpy_from_mlx(dP_mlx)) if dP_mlx is not None else None
         return dP, jnp.array(_to_numpy_from_mlx(dq_mlx)), jnp.array(_to_numpy_from_mlx(dA_mlx))
@@ -840,18 +937,15 @@ class SolverInterface(ABC):
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **single** problem; arrays are MLX arrays.
-
-        Default: adds a batch dim of 1, calls :meth:`derivative_mlx_batch`,
-        strips the batch dim.
-        """
+        Default: wraps :meth:`derivative_mlx_batch` with a size-1 batch dim."""
         import mlx.core as mx
         dP_b, dq_b, dA_b = self.derivative_mlx_batch(
             mx.expand_dims(dprimal, 0),
             mx.expand_dims(ddual, 0),
-            [adjoint_data],
+            [saved_state],
         )
         dP = dP_b[0] if dP_b is not None else None
         return dP, dq_b[0], dA_b[0]
@@ -860,16 +954,13 @@ class SolverInterface(ABC):
         self,
         dprimal: Any,
         ddual: Any,
-        adjoint_data: Any,
+        saved_state: Any,
     ) -> tuple[Any | None, Any, Any]:
         """Backward pass for a **batch** of problems; arrays are MLX arrays.
-
-        Default: converts to torch, calls :meth:`derivative_torch_batch`,
-        converts back.  Closes the ring.
-        """
+        Default: converts to torch, calls :meth:`derivative_torch_batch`. Closes the ring."""
         import mlx.core as mx
         dp_t = _to_torch_from_numpy(_to_numpy_from_mlx(dprimal))
         dd_t = _to_torch_from_numpy(_to_numpy_from_mlx(ddual))
-        dP_t, dq_t, dA_t = self.derivative_torch_batch(dp_t, dd_t, adjoint_data)
+        dP_t, dq_t, dA_t = self.derivative_torch_batch(dp_t, dd_t, saved_state)
         dP = mx.array(_to_numpy_from_torch(dP_t)) if dP_t is not None else None
         return dP, mx.array(_to_numpy_from_torch(dq_t)), mx.array(_to_numpy_from_torch(dA_t))
