@@ -479,6 +479,11 @@ class Julia_CTX:
         settings.verbose = verbose_flag
         solver   = Clarabel.Solver(settings)
         """)
+        pyext = self.jl.Base.get_extension(self.jl.Clarabel, self.jl.Symbol("PythonExt"))
+        if pyext is not None: # new version
+            self.jl_data_func_m = pyext
+        else:
+            self.jl_data_func_m = self.jl.Clarabel
 
         self.was_solved_once = False
 
@@ -491,9 +496,9 @@ class Julia_CTX:
     ) -> tuple[cupy.ndarray, cupy.ndarray, cupy.ndarray]:
         """Taken from `cvxpy`'s `cuclarabel_conif.py`"""
         nvars = q.size
-        self.jl.q = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(q.data.ptr), nvars)
+        self.jl.q = self.jl_data_func_m.cupy_to_cuvector(self.jl.Float64, int(q.data.ptr), nvars)
         if P.nnz != 0:
-            self.jl.P = self.jl.Clarabel.cupy_to_cucsrmat(
+            self.jl.P = self.jl_data_func_m.cupy_to_cucsrmat(
                 self.jl.Float64,
                 int(P.data.data.ptr),
                 int(P.indices.data.ptr),
@@ -506,7 +511,7 @@ class Julia_CTX:
             P = CuSparseMatrixCSR(sparse(Float64[], Float64[], Float64[], {nvars}, {nvars}))
             """)
 
-        self.jl.A = self.jl.Clarabel.cupy_to_cucsrmat(
+        self.jl.A = self.jl_data_func_m.cupy_to_cucsrmat(
             self.jl.Float64,
             int(A.data.data.ptr),
             int(A.indices.data.ptr),
@@ -514,7 +519,7 @@ class Julia_CTX:
             *A.shape,
             A.nnz,
         )
-        self.jl.b = self.jl.Clarabel.cupy_to_cuvector(self.jl.Float64, int(b.data.ptr), b.size)
+        self.jl.b = self.jl_data_func_m.cupy_to_cuvector(self.jl.Float64, int(b.data.ptr), b.size)
 
         self.jl.seval("""solver = Clarabel.setup!(solver, P,q,A,b,cones)""")
         self.jl.Clarabel.solve_b(self.jl.solver)
