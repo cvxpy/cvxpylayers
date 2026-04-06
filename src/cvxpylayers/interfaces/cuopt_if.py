@@ -98,6 +98,9 @@ def _solve_cuopt_batch(
     """Solve a batch of LPs using cuOpt.
 
     Rows [0, n_eq) encode ``Ax = b``; rows [n_eq, n_eq+n_ineq) encode ``Ax <= b``.
+
+    NOTE: cuOpt's Python API has evolved across releases. The imports and
+    ``set_parameter`` / ``set_*`` calls below are against cuopt-cu13 25.x+.
     """
     try:
         from cuopt.linear_programming.data_model import DataModel
@@ -149,19 +152,24 @@ def _solve_cuopt_batch(
         dm.set_maximize(False)
 
         settings = SolverSettings()
-        try:
-            settings.set_parameter("presolve", 0)
-        except Exception:
-            pass
+        # Disable presolve: cuOpt's PSLP presolver can return an empty primal
+        # vector for LPs with no structural constraints, breaking the
+        # dummy-row workaround above.
+        settings.set_parameter("presolve", 0)
         for k, v in solver_args.items():
             setter = getattr(settings, f"set_{k}", None)
-            if callable(setter):
-                setter(v)
+            if not callable(setter):
+                raise ValueError(
+                    f"Unknown CUOPT solver_args key: {k!r}. "
+                    f"Expected a SolverSettings.set_{k} method."
+                )
+            setter(v)
 
         sol = Solve(dm, settings)
         x = np.asarray(sol.get_primal_solution(), dtype=np.float64)
         y_raw = np.asarray(sol.get_dual_solution(), dtype=np.float64)[:m]
-        # Negate to match cvxpylayers' dual sign convention.
+        # cuOpt returns the multiplier of `lhs <= Ax <= rhs`; cvxpylayers uses
+        # the diffcp convention `Ax + s = b, s ∈ K` with opposite sign.
         xs.append(x)
         ys.append(-y_raw)
 
@@ -282,6 +290,3 @@ class CUOPT_data:
         primal = torch.stack([torch.from_numpy(x) for x in xs_np])
         dual = torch.stack([torch.from_numpy(y) for y in ys_np])
         return primal, dual
-
-    def torch_derivative(self, *args, **kwargs):
-        raise NotImplementedError(_DIFF_HINT)

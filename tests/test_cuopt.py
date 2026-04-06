@@ -233,9 +233,12 @@ def test_solver_args_plumbing():
     layer = CvxpyLayer(problem, [c], [x], solver="CUOPT")
     (sol,) = layer(
         torch.tensor([-1.0, 0.5, -0.3]),
-        solver_args={"time_limit": 10.0},
+        solver_args={"optimality_tolerance": 1e-6},
     )
     assert sol.shape == (n,)
+
+    with pytest.raises(ValueError, match="Unknown CUOPT solver_args"):
+        layer(torch.tensor([-1.0, 0.5, -0.3]), solver_args={"not_a_real_option": 1})
 
 
 def test_equality_dual_value_matches_cvxpy():
