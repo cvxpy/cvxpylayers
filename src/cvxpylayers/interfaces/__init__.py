@@ -33,6 +33,10 @@ def get_solver_ctx(
             from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
 
             ctx_cls = DIFFCP_ctx
+        case "CUOPT":
+            from cvxpylayers.interfaces.cuopt_if import CUOPT_ctx
+
+            ctx_cls = CUOPT_ctx
         case _:
             raise RuntimeError(
                 "Unknown solver. Check if your solver is supported by CVXPYlayers",
@@ -71,6 +75,10 @@ def get_torch_cvxpylayer(solver):
             return _CvxpyLayer
         case "DIFFCP":
             from cvxpylayers.interfaces.diffcp_if import _CvxpyLayer
+
+            return _CvxpyLayer
+        case "CUOPT":
+            from cvxpylayers.interfaces.cuopt_if import _CvxpyLayer
 
             return _CvxpyLayer
         case _:
