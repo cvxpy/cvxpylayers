@@ -1,4 +1,4 @@
-"""test suite for the cuOpt solver backend (LP only)."""
+"""Test suite for the cuOpt solver backend (LP only)."""
 
 import cvxpy as cp
 import numpy as np
@@ -8,19 +8,9 @@ from cvxpy.error import SolverError
 
 from cvxpylayers.torch import CvxpyLayer
 
-# Skip if cuopt or diffqcp not installed.
 pytest.importorskip("cuopt")
-pytest.importorskip("diffqcp")
-jax = pytest.importorskip("jax")
-jax.config.update("jax_enable_x64", True)
-jnp = pytest.importorskip("jax.numpy")
 
 torch.set_default_dtype(torch.double)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def compare_solvers(problem, params, param_vals, variables, atol=1e-3):
@@ -44,34 +34,6 @@ def compare_solvers(problem, params, param_vals, variables, atol=1e-3):
         diffcp_err = np.linalg.norm(s_diffcp.detach().cpu().numpy().squeeze() - s_true)
         assert cuopt_err < atol, f"var {i}: ||CUOPT - true|| = {cuopt_err:.6e}"
         assert diffcp_err < atol, f"var {i}: ||DIFFCP - true|| = {diffcp_err:.6e}"
-
-
-def compare_gradients(problem, params, param_vals, variables, atol=1e-3):
-    """Backward of CUOPT should match DIFFCP on shared problem + upstream grads."""
-    p_diffcp = [torch.tensor(v, requires_grad=True) for v in param_vals]
-    p_cuopt = [torch.tensor(v, requires_grad=True) for v in param_vals]
-
-    layer_diffcp = CvxpyLayer(problem, params, variables, solver="DIFFCP")
-    layer_cuopt = CvxpyLayer(problem, params, variables, solver="CUOPT")
-
-    sols_diffcp = layer_diffcp(*p_diffcp)
-    sols_cuopt = layer_cuopt(*p_cuopt)
-
-    loss_diffcp = sum(s.sum() for s in sols_diffcp)
-    loss_cuopt = sum(s.sum() for s in sols_cuopt)
-    loss_diffcp.backward()
-    loss_cuopt.backward()
-
-    for i, (gd, gc) in enumerate(zip(p_diffcp, p_cuopt, strict=True)):
-        if gd.grad is None and gc.grad is None:
-            continue
-        diff = torch.norm(gd.grad - gc.grad).item()
-        assert diff < atol, f"param {i} grad mismatch: {diff:.6e}"
-
-
-# ---------------------------------------------------------------------------
-# Forward correctness
-# ---------------------------------------------------------------------------
 
 
 def test_small_random_lp():
@@ -121,11 +83,6 @@ def test_pure_inequality_lp():
     compare_solvers(problem, [c], [np.array([-1.0, 0.5, -0.3])], [x])
 
 
-# ---------------------------------------------------------------------------
-# Batching
-# ---------------------------------------------------------------------------
-
-
 def test_batched_lp_forward():
     n = 3
     batch = 3
@@ -166,11 +123,6 @@ def test_mixed_batched_unbatched():
     assert x_sol.shape == (batch, n)
 
 
-# ---------------------------------------------------------------------------
-# Solver routing / errors
-# ---------------------------------------------------------------------------
-
-
 def test_qp_rejected():
     # cuOpt's cvxpy conic interface does not support quadratic objectives,
     # so cvxpy rejects the problem at canonicalization time.
@@ -204,11 +156,6 @@ def test_psd_rejected():
     problem = cp.Problem(cp.Minimize(cp.trace(X)))
     with pytest.raises((ValueError, SolverError)):
         CvxpyLayer(problem, [], [X], solver="CUOPT")
-
-
-# ---------------------------------------------------------------------------
-# Backward smoke / solver args / duals
-# ---------------------------------------------------------------------------
 
 
 def test_backward_raises_with_moreau_hint():

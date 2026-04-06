@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import scipy.sparse as sp
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import (
     dims_to_solver_dict as scs_dims_to_solver_dict,
 )
+
+from cvxpylayers.utils.solver_utils import convert_csc_structure_to_csr_structure
 
 try:
     import torch
@@ -68,9 +69,7 @@ if torch is not None:
             solver_args: dict[str, Any] | None,
         ) -> tuple[Any, Any, Any, Any]:
             solver_ctx: CUOPT_ctx = cl_ctx.solver_ctx  # type: ignore[assignment]
-            data = solver_ctx.torch_to_data(
-                quad_obj_values=None, lin_obj_values=q_eval, con_values=A_eval
-            )
+            data = solver_ctx.torch_to_data(q_eval, A_eval)
             primal, dual = data.torch_solve(solver_args or {})
             in_dev = q_eval.device
             return primal.to(in_dev), dual.to(in_dev), None, None
@@ -85,14 +84,31 @@ if torch is not None:
             raise NotImplementedError(_DIFF_HINT)
 
 
+def _build_solver_settings(
+    solver_args: dict[str, Any],
+) -> Any:
+    """Build a cuOpt SolverSettings with presolve disabled and args applied."""
+    from cuopt.linear_programming.solver_settings import SolverSettings
+
+    settings = SolverSettings()
+    # cuOpt's PSLP presolver can return an empty primal vector for LPs with
+    # no structural constraints, breaking the dummy-row workaround below.
+    settings.set_parameter("presolve", 0)
+    for k, v in solver_args.items():
+        setter = getattr(settings, f"set_{k}", None)
+        if not callable(setter):
+            raise ValueError(
+                f"Unknown CUOPT solver_args key: {k!r}. Expected a SolverSettings.set_{k} method."
+            )
+        setter(v)
+    return settings
+
+
 def _solve_cuopt_batch(
+    ctx: CUOPT_ctx,
     qs: list[np.ndarray],
-    As_csr: list[sp.csr_array],
+    A_datas: list[np.ndarray],
     bs: list[np.ndarray],
-    n_eq: int,
-    n_ineq: int,
-    lower_var: np.ndarray,
-    upper_var: np.ndarray,
     solver_args: dict[str, Any],
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Solve a batch of LPs using cuOpt.
@@ -105,65 +121,37 @@ def _solve_cuopt_batch(
     try:
         from cuopt.linear_programming.data_model import DataModel
         from cuopt.linear_programming.solver import Solve
-        from cuopt.linear_programming.solver_settings import SolverSettings
     except ImportError as e:
         raise ImportError(
             "cuOpt is required for the CUOPT backend. Install via:\n"
             "  pip install --extra-index-url=https://pypi.nvidia.com 'cuopt-cu13'"
         ) from e
 
+    settings = _build_solver_settings(solver_args)
+    m = ctx.n_eq + ctx.n_ineq
+    A_indices = ctx.A_cuopt_indices
+    A_indptr = ctx.A_cuopt_indptr
+    con_lower_tmpl = ctx.con_lower_tmpl
+    con_upper_tmpl = ctx.con_upper_tmpl
+
     xs: list[np.ndarray] = []
     ys: list[np.ndarray] = []
 
-    for q, A_csr, b in zip(qs, As_csr, bs, strict=True):
-        n = q.size
-        m = A_csr.shape[0]
-        assert m == n_eq + n_ineq
-
-        con_lower = np.empty(m, dtype=np.float64)
-        con_upper = np.empty(m, dtype=np.float64)
-        con_lower[:n_eq] = b[:n_eq]
-        con_upper[:n_eq] = b[:n_eq]
-        con_lower[n_eq:] = -np.inf
-        con_upper[n_eq:] = b[n_eq:]
-
-        # cuOpt's PSLP presolver returns an empty primal vector when the
-        # constraint matrix has no structural non-zeros. Augment with a
-        # trivial row so cuOpt keeps the variable mapping.
-        if A_csr.nnz == 0:
-            dummy_row = sp.csr_array(([1e-30], [0], [0, 1]), shape=(1, n))
-            A_cuopt = sp.csr_array(sp.vstack([A_csr, dummy_row], format="csr"))
-            con_lower = np.concatenate([con_lower, [-np.inf]])
-            con_upper = np.concatenate([con_upper, [np.inf]])
-        else:
-            A_cuopt = A_csr
+    for q, A_data, b in zip(qs, A_datas, bs, strict=True):
+        con_lower = con_lower_tmpl.copy()
+        con_upper = con_upper_tmpl.copy()
+        con_lower[: ctx.n_eq] = b[: ctx.n_eq]
+        con_upper[: ctx.n_eq] = b[: ctx.n_eq]
+        con_upper[ctx.n_eq : m] = b[ctx.n_eq :]
 
         dm = DataModel()
-        dm.set_csr_constraint_matrix(
-            A_cuopt.data,
-            A_cuopt.indices.astype(np.int32),
-            A_cuopt.indptr.astype(np.int32),
-        )
+        dm.set_csr_constraint_matrix(A_data, A_indices, A_indptr)
         dm.set_constraint_lower_bounds(con_lower)
         dm.set_constraint_upper_bounds(con_upper)
-        dm.set_variable_lower_bounds(lower_var)
-        dm.set_variable_upper_bounds(upper_var)
+        dm.set_variable_lower_bounds(ctx.lower)
+        dm.set_variable_upper_bounds(ctx.upper)
         dm.set_objective_coefficients(q)
         dm.set_maximize(False)
-
-        settings = SolverSettings()
-        # Disable presolve: cuOpt's PSLP presolver can return an empty primal
-        # vector for LPs with no structural constraints, breaking the
-        # dummy-row workaround above.
-        settings.set_parameter("presolve", 0)
-        for k, v in solver_args.items():
-            setter = getattr(settings, f"set_{k}", None)
-            if not callable(setter):
-                raise ValueError(
-                    f"Unknown CUOPT solver_args key: {k!r}. "
-                    f"Expected a SolverSettings.set_{k} method."
-                )
-            setter(v)
 
         sol = Solve(dm, settings)
         x = np.asarray(sol.get_primal_solution(), dtype=np.float64)
@@ -188,105 +176,90 @@ class CUOPT_ctx:
         upper_bounds: np.ndarray | None,
         options: dict | None = None,
     ):
-        self.dims = cone_dims
-        self.options = options or {}
         self.n_eq, self.n_ineq = _validate_cones(cone_dims)
 
-        con_indices, con_ptr, (m, np1) = constraint_structure
-        n = np1 - 1
+        A_csr_idxs, (A_indices, A_indptr), (m, n), b_idxs = convert_csc_structure_to_csr_structure(
+            constraint_structure, extract_last_column=True
+        )
         self.A_shape = (m, n)
-        self.b_idxs_np = con_indices[con_ptr[-2] : con_ptr[-1]]
+        self.b_idxs_np = b_idxs
+        self.A_csr_idxs_np = A_csr_idxs.astype(np.intp)
+        A_indices_i32 = A_indices.astype(np.int32)
+        A_indptr_i32 = A_indptr.astype(np.int32)
 
-        con_csr = sp.csc_array(
-            (np.arange(con_indices.size), con_indices, con_ptr[:-1]),
-            shape=(m, n),
-        ).tocsr()
-        self.A_csr_idxs_np = con_csr.data.astype(np.intp)
-        self.A_csr_indices_i32 = con_csr.indices.astype(np.int32)
-        self.A_csr_indptr_i32 = con_csr.indptr.astype(np.int32)
+        # Precompute constraint-bound templates and the cuOpt CSR structure.
+        # When the parametric A has no structural non-zeros, cuOpt's PSLP
+        # presolver drops variables; augment with a single trivial row to
+        # preserve the variable mapping. The dummy is invisible to the LP.
+        if A_csr_idxs.size == 0:
+            self.A_cuopt_indices = np.concatenate([A_indices_i32, [np.int32(0)]])
+            self.A_cuopt_indptr = np.concatenate([A_indptr_i32, [A_indptr_i32[-1] + np.int32(1)]])
+            self._A_data_pad = np.array([1e-30], dtype=np.float64)
+            self.con_lower_tmpl = np.concatenate([np.full(m, -np.inf), [-np.inf]])
+            self.con_upper_tmpl = np.concatenate([np.full(m, np.inf), [np.inf]])
+        else:
+            self.A_cuopt_indices = A_indices_i32
+            self.A_cuopt_indptr = A_indptr_i32
+            self._A_data_pad = None
+            self.con_lower_tmpl = np.full(m, -np.inf)
+            self.con_upper_tmpl = np.full(m, np.inf)
 
         self.lower = (
-            np.asarray(lower_bounds, dtype=np.float64)
+            np.ascontiguousarray(lower_bounds, dtype=np.float64)
             if lower_bounds is not None
             else np.full(n, -np.inf, dtype=np.float64)
         )
         self.upper = (
-            np.asarray(upper_bounds, dtype=np.float64)
+            np.ascontiguousarray(upper_bounds, dtype=np.float64)
             if upper_bounds is not None
             else np.full(n, np.inf, dtype=np.float64)
         )
 
-    def torch_to_data(
-        self,
-        quad_obj_values,
-        lin_obj_values,
-        con_values,
-    ) -> "CUOPT_data":
+    def torch_to_data(self, lin_obj_values, con_values) -> "CUOPT_data":
         if con_values.ndim == 1:
-            originally_unbatched = True
             con_values_b = con_values.unsqueeze(1)
             lin_b = lin_obj_values.unsqueeze(1)
         else:
-            originally_unbatched = False
             con_values_b = con_values
             lin_b = lin_obj_values
-
         batch_size = con_values_b.shape[1]
 
+        con_np = np.ascontiguousarray(con_values_b.detach().cpu().numpy(), dtype=np.float64)
+        lin_np = np.ascontiguousarray(lin_b.detach().cpu().numpy(), dtype=np.float64)
+
         qs: list[np.ndarray] = []
-        As_csr: list[sp.csr_array] = []
+        A_datas: list[np.ndarray] = []
         bs: list[np.ndarray] = []
+        m = self.A_shape[0]
+        b_idxs = self.b_idxs_np
 
-        con_np = con_values_b.detach().cpu().numpy().astype(np.float64)
-        lin_np = lin_b.detach().cpu().numpy().astype(np.float64)
-
-        m, n = self.A_shape
         for i in range(batch_size):
             con_i = con_np[:, i]
             # cvxpylayers' parametric A has the opposite sign of cvxpy's static
-            # get_problem_data A; negate to recover ``Ax ⋛ b`` as cuOpt expects.
+            # get_problem_data A; negate so cuOpt sees ``Ax ⋛ b``.
             A_data = -con_i[self.A_csr_idxs_np]
-            A_csr = sp.csr_array(
-                (A_data, self.A_csr_indices_i32, self.A_csr_indptr_i32), shape=(m, n)
-            )
+            if self._A_data_pad is not None:
+                A_data = np.concatenate([A_data, self._A_data_pad])
+
             b_vec = np.zeros(m, dtype=np.float64)
-            b_vec[self.b_idxs_np] = con_i[-self.b_idxs_np.size :]
+            b_vec[b_idxs] = con_i[-b_idxs.size :]
 
             qs.append(lin_np[:-1, i])
-            As_csr.append(A_csr)
+            A_datas.append(A_data)
             bs.append(b_vec)
 
-        return CUOPT_data(
-            ctx=self,
-            qs=qs,
-            As_csr=As_csr,
-            bs=bs,
-            batch_size=batch_size,
-            originally_unbatched=originally_unbatched,
-        )
+        return CUOPT_data(ctx=self, qs=qs, A_datas=A_datas, bs=bs)
 
 
 @dataclass
 class CUOPT_data:
     ctx: CUOPT_ctx
     qs: list
-    As_csr: list
+    A_datas: list
     bs: list
-    batch_size: int
-    originally_unbatched: bool
 
     def torch_solve(self, solver_args: dict[str, Any]):
-        ctx = self.ctx
-        xs_np, ys_np = _solve_cuopt_batch(
-            qs=self.qs,
-            As_csr=self.As_csr,
-            bs=self.bs,
-            n_eq=ctx.n_eq,
-            n_ineq=ctx.n_ineq,
-            lower_var=ctx.lower,
-            upper_var=ctx.upper,
-            solver_args=solver_args,
-        )
-        primal = torch.stack([torch.from_numpy(x) for x in xs_np])
-        dual = torch.stack([torch.from_numpy(y) for y in ys_np])
+        xs_np, ys_np = _solve_cuopt_batch(self.ctx, self.qs, self.A_datas, self.bs, solver_args)
+        primal = torch.from_numpy(np.stack(xs_np))
+        dual = torch.from_numpy(np.stack(ys_np))
         return primal, dual
