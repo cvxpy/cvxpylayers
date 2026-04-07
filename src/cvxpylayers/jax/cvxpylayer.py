@@ -49,10 +49,7 @@ def _apply_gp_log_transform(
         return params
 
     # Use pre-computed mask for JIT compatibility (no dict lookups)
-    return tuple(
-        jnp.log(p) if needs_log else p
-        for p, needs_log in zip(params, ctx.gp_log_mask)
-    )
+    return tuple(jnp.log(p) if needs_log else p for p, needs_log in zip(params, ctx.gp_log_mask))
 
 
 def _flatten_and_batch_params(
@@ -222,8 +219,7 @@ def _recover_results(
     # Uses pre-computed source field (JIT-compatible)
     if ctx.gp:
         results = [
-            jnp.exp(r) if var.source == "primal" else r
-            for r, var in zip(results, ctx.var_recover)
+            jnp.exp(r) if var.source == "primal" else r for r, var in zip(results, ctx.var_recover)
         ]
 
     # Squeeze batch dimension for unbatched inputs
@@ -332,7 +328,7 @@ class CvxpyLayer:
         # Cache the Moreau solve functions for JIT compatibility.
         # Must be captured as closure, not looked up dynamically during tracing.
         if self.ctx.solver == "MOREAU":
-            self._moreau_jax_impl = self.ctx.solver_ctx.get_jax_solver()._impl
+            self._moreau_jax_impl = self.ctx.solver_ctx.get_jax_solver()._impl  # pyright: ignore[reportAttributeAccessIssue]
             self._moreau_solve_fn = self._moreau_jax_impl.solve
             # solve_warm accepts (P, A, q, b, warm_x, warm_z, warm_s) as pure
             # function args — vmap-compatible and avoids the _pending_warm_start
@@ -401,8 +397,7 @@ class CvxpyLayer:
         # If so, bypass the closure-based custom_vjp wrapper and use Moreau's native autodiff
         if self.ctx.solver == "MOREAU":
             ws = self._warm_start_cache if warm_start else None
-            return self._solve_moreau(P_eval, q_eval, A_eval, batch, solver_args,
-                                      warm_start=ws)
+            return self._solve_moreau(P_eval, q_eval, A_eval, batch, solver_args, warm_start=ws)
 
         # Non-Moreau: use existing custom_vjp wrapper (not JIT-compatible)
         return self._solve_with_custom_vjp(P_eval, q_eval, A_eval, batch, solver_args)
@@ -447,11 +442,11 @@ class CvxpyLayer:
                 solve, passed as extra arguments to solve_warm when available.
         """
         solver_ctx = self.ctx.solver_ctx  # type: ignore[attr-defined]
-        jax_solver = solver_ctx.get_jax_solver()
+        jax_solver = solver_ctx.get_jax_solver()  # pyright: ignore[reportAttributeAccessIssue]
 
         # Apply per-call solver_args to solver settings
         if solver_args:
-            settings = jax_solver._impl._settings
+            settings = jax_solver._settings
             for key, value in solver_args.items():
                 if hasattr(settings, key):
                     setattr(settings, key, value)
@@ -471,22 +466,20 @@ class CvxpyLayer:
 
         # CPU fallback: solve_warm is None on CPU backend.
         # Use _pending_warm_start side channel with the regular solve function.
-        use_side_channel_warm_start = (
-            warm_start is not None and solve_warm_fn is None
-        )
+        use_side_channel_warm_start = warm_start is not None and solve_warm_fn is None
         if use_side_channel_warm_start:
             self._moreau_jax_impl._pending_warm_start = {
-                'warm_x': np.asarray(warm_start.x, dtype=np.float64),
-                'warm_z': np.asarray(warm_start.z, dtype=np.float64),
-                'warm_s': np.asarray(warm_start.s, dtype=np.float64),
+                "warm_x": np.asarray(warm_start.x, dtype=np.float64),
+                "warm_z": np.asarray(warm_start.z, dtype=np.float64),
+                "warm_s": np.asarray(warm_start.s, dtype=np.float64),
             }
 
         # Cache solver_ctx attributes for closure capture.
         # Parametrization matrices are pre-permuted so matrix multiplication
         # directly produces values in CSR order — no shuffle indexing needed.
-        b_idx = solver_ctx.b_idx
-        nnz_A = solver_ctx.nnz_A
-        m = solver_ctx.A_shape[0]
+        b_idx = solver_ctx.b_idx  # pyright: ignore[reportAttributeAccessIssue]
+        nnz_A = solver_ctx.nnz_A  # pyright: ignore[reportAttributeAccessIssue]
+        m = solver_ctx.A_shape[0]  # pyright: ignore[reportAttributeAccessIssue]
 
         def _extract_problem_data(
             P_eval_single: jnp.ndarray | None,
@@ -494,7 +487,9 @@ class CvxpyLayer:
             A_eval_single: jnp.ndarray,
         ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
             """Extract P_values, A_values, q, b from parametrized matrices."""
-            P_values = P_eval_single if P_eval_single is not None else jnp.zeros(0, dtype=jnp.float64)
+            P_values = (
+                P_eval_single if P_eval_single is not None else jnp.zeros(0, dtype=jnp.float64)
+            )
             A_values = -A_eval_single[:nnz_A]
             b_raw = A_eval_single[nnz_A:]
             b = jnp.zeros(m, dtype=jnp.float64)
@@ -503,7 +498,9 @@ class CvxpyLayer:
             return P_values, A_values, q, b
 
         def extract_and_solve(
-            P_eval_single, q_eval_single, A_eval_single,
+            P_eval_single,
+            q_eval_single,
+            A_eval_single,
         ):
             """Extract problem data and solve (cold)."""
             P_values, A_values, q, b = _extract_problem_data(
@@ -513,16 +510,18 @@ class CvxpyLayer:
             return solution.x, solution.z, solution.s
 
         def extract_and_solve_warm(
-            P_eval_single, q_eval_single, A_eval_single,
-            ws_x, ws_z, ws_s,
+            P_eval_single,
+            q_eval_single,
+            A_eval_single,
+            ws_x,
+            ws_z,
+            ws_s,
         ):
             """Extract problem data and solve with warm start."""
             P_values, A_values, q, b = _extract_problem_data(
                 P_eval_single, q_eval_single, A_eval_single
             )
-            solution, _info = solve_warm_fn(
-                P_values, A_values, q, b, ws_x, ws_z, ws_s
-            )
+            solution, _info = solve_warm_fn(P_values, A_values, q, b, ws_x, ws_z, ws_s)
             return solution.x, solution.z, solution.s
 
         # Select solve function and extra args.
@@ -539,9 +538,7 @@ class CvxpyLayer:
         if batch:
             P_eval_t = P_eval.T if P_eval is not None else None
             vmapped = jax.vmap(solve, in_axes=(0,) * (3 + len(extra_args)))
-            primal, dual, slack = vmapped(
-                P_eval_t, q_eval.T, A_eval.T, *extra_args
-            )
+            primal, dual, slack = vmapped(P_eval_t, q_eval.T, A_eval.T, *extra_args)
         else:
             primal, dual, slack = solve(P_eval, q_eval, A_eval, *extra_args)
             # Add batch dimension for _recover_results (which expects it)
@@ -636,7 +633,7 @@ def scipy_csr_to_jax_bcsr(
     if num_rows == 0:
         # Create a (1, num_cols) matrix with a single zero at position (0, 0)
         # This will produce a (1, ...) result when multiplied, which we'll slice to (0, ...)
-        return _EmptyBCSRWrapper(num_cols)
+        return _EmptyBCSRWrapper(num_cols)  # pyright: ignore[reportReturnType]
 
     # Get the CSR format components
     values = scipy_csr.data

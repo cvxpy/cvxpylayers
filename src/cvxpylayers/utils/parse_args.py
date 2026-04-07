@@ -222,7 +222,10 @@ def _build_dual_recovery(
     )
 
 
-def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
+def _build_constr_id_to_slice(
+    param_prob: ParamConeProg,
+    user_constraints: list[cp.Constraint] | None = None,
+) -> dict[int, slice]:
     """Build mapping from constraint ID to slice in dual solution vector.
 
     The dual solution vector is ordered by cone type:
@@ -247,8 +250,20 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
         cvxpy.constraints.PowCone3D,
     ]
 
+    # Group user constraints by cone type so we can also map user-constraint
+    # ids to canonical slices. Some reductions (e.g. MOREAU's) rebuild the
+    # cone constraint with a fresh id, so the user's constraint.id no longer
+    # matches the canonical constraint.id; we pair them positionally within
+    # each cone type.
+    user_by_type: dict[type, list[cp.Constraint]] = {}
+    if user_constraints is not None:
+        for uc in user_constraints:
+            user_by_type.setdefault(type(uc), []).append(uc)
+
     for cone_type in cone_types:
-        for c in param_prob.constr_map.get(cone_type, []):
+        canonical = list(param_prob.constr_map.get(cone_type, []))
+        user_list = user_by_type.get(cone_type, [])
+        for i, c in enumerate(canonical):
             # PSD constraints use scaled vectorization (svec) in the dual
             # For an n x n PSD constraint, svec size is n*(n+1)//2
             if cone_type is cvxpy.constraints.PSD:
@@ -256,7 +271,10 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
                 cone_size = n * (n + 1) // 2
             else:
                 cone_size = c.size
-            constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
+            sl = slice(cur_idx, cur_idx + cone_size)
+            constr_id_to_slice[c.id] = sl
+            if i < len(user_list):
+                constr_id_to_slice[user_list[i].id] = sl
             cur_idx += cone_size
 
     return constr_id_to_slice
@@ -285,7 +303,7 @@ def _validate_problem(
     if gp:
         if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP for geometric programming.")
-    elif scopes.quad_form_dpp_scope_active():
+    elif scopes.quad_form_dpp_scope_active():  # pyright: ignore[reportAttributeAccessIssue]
         # quad_form_dpp_scope is active (QP-capable solver).
         # Objective: check WITH scope (parametric quad_form P allowed)
         if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
@@ -293,8 +311,8 @@ def _validate_problem(
         # Constraints: check WITHOUT scope (parametric quad_form P rejected).
         # Temporarily deactivate the scope so that quad_form(x, P) in
         # constraints is correctly flagged as non-DPP.
-        prev = scopes._quad_form_dpp_scope_active
-        scopes._quad_form_dpp_scope_active = False
+        prev = scopes._quad_form_dpp_scope_active  # pyright: ignore[reportAttributeAccessIssue]
+        scopes._quad_form_dpp_scope_active = False  # pyright: ignore[reportAttributeAccessIssue]
         try:
             for c in problem.constraints:
                 if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
@@ -303,7 +321,7 @@ def _validate_problem(
                         "is only supported in the objective, not in constraints."
                     )
         finally:
-            scopes._quad_form_dpp_scope_active = prev
+            scopes._quad_form_dpp_scope_active = prev  # pyright: ignore[reportAttributeAccessIssue]
     else:
         if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
@@ -421,7 +439,7 @@ def parse_args(
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
     effective_solver = solver or "DIFFCP"
     qf_scope = (
-        scopes.quad_form_dpp_scope()
+        scopes.quad_form_dpp_scope()  # pyright: ignore[reportAttributeAccessIssue]
         if effective_solver in SUPPORTS_QUAD_OBJ
         else contextlib.nullcontext()
     )
@@ -482,7 +500,7 @@ def parse_args(
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
 
     # Build variable recovery info for each requested variable
-    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob, problem.constraints)
     primal_vars = set(problem.variables())
 
     var_recover = []
