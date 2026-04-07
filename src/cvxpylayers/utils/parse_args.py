@@ -222,10 +222,7 @@ def _build_dual_recovery(
     )
 
 
-def _build_constr_id_to_slice(
-    param_prob: ParamConeProg,
-    user_constraints: list[cp.Constraint] | None = None,
-) -> dict[int, slice]:
+def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
     """Build mapping from constraint ID to slice in dual solution vector.
 
     The dual solution vector is ordered by cone type:
@@ -250,20 +247,8 @@ def _build_constr_id_to_slice(
         cvxpy.constraints.PowCone3D,
     ]
 
-    # Group user constraints by cone type so we can also map user-constraint
-    # ids to canonical slices. Some reductions (e.g. MOREAU's) rebuild the
-    # cone constraint with a fresh id, so the user's constraint.id no longer
-    # matches the canonical constraint.id; we pair them positionally within
-    # each cone type.
-    user_by_type: dict[type, list[cp.Constraint]] = {}
-    if user_constraints is not None:
-        for uc in user_constraints:
-            user_by_type.setdefault(type(uc), []).append(uc)
-
     for cone_type in cone_types:
-        canonical = list(param_prob.constr_map.get(cone_type, []))
-        user_list = user_by_type.get(cone_type, [])
-        for i, c in enumerate(canonical):
+        for c in param_prob.constr_map.get(cone_type, []):
             # PSD constraints use scaled vectorization (svec) in the dual
             # For an n x n PSD constraint, svec size is n*(n+1)//2
             if cone_type is cvxpy.constraints.PSD:
@@ -271,10 +256,7 @@ def _build_constr_id_to_slice(
                 cone_size = n * (n + 1) // 2
             else:
                 cone_size = c.size
-            sl = slice(cur_idx, cur_idx + cone_size)
-            constr_id_to_slice[c.id] = sl
-            if i < len(user_list):
-                constr_id_to_slice[user_list[i].id] = sl
+            constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
             cur_idx += cone_size
 
     return constr_id_to_slice
@@ -500,7 +482,7 @@ def parse_args(
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
 
     # Build variable recovery info for each requested variable
-    constr_id_to_slice = _build_constr_id_to_slice(param_prob, problem.constraints)
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
     primal_vars = set(problem.variables())
 
     var_recover = []
