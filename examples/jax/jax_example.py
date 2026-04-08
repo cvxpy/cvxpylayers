@@ -1,7 +1,15 @@
+import argparse
+
 import cvxpy as cp
 import jax
 
 from cvxpylayers.jax import CvxpyLayer
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--solver", type=str, default=None, help="DIFFCP, MOREAU, CUCLARABEL, MPAX")
+args = parser.parse_args()
+
+solver = getattr(cp, args.solver) if args.solver else None
 
 n, m = 2, 3
 x = cp.Variable(n)
@@ -12,7 +20,7 @@ objective = cp.Minimize(0.5 * cp.pnorm(A @ x - b, p=1))
 problem = cp.Problem(objective, constraints)
 assert problem.is_dpp()
 
-cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CUCLARABEL)
+cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=solver)
 key = jax.random.PRNGKey(0)
 key, k1, k2 = jax.random.split(key, 3)
 A_jax = jax.random.normal(k1, shape=(m, n))
