@@ -1,9 +1,9 @@
 import argparse
 
 import cvxpy as cp
-import torch
+import jax
 
-from cvxpylayers.torch import CvxpyLayer
+from cvxpylayers.jax import CvxpyLayer
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--solver", type=str, default=None, help="DIFFCP, MOREAU, CUCLARABEL, MPAX")
@@ -21,14 +21,17 @@ problem = cp.Problem(objective, constraints)
 assert problem.is_dpp()
 
 cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=solver)
-A_tch = torch.randn(m, n, requires_grad=True)
-b_tch = torch.randn(m, requires_grad=True)
+key = jax.random.PRNGKey(0)
+key, k1, k2 = jax.random.split(key, 3)
+A_jax = jax.random.normal(k1, shape=(m, n))
+b_jax = jax.random.normal(k2, shape=(m,))
 
-# solve the problem
-(solution,) = cvxpylayer(A_tch, b_tch)
+(solution,) = cvxpylayer(A_jax, b_jax)
 
-# compute the gradient of the sum of the solution with respect to A, b
-solution.sum().backward()
-print(solution)
-print(A_tch.grad)
-print(b_tch.grad)
+# compute the gradient of the summed solution with respect to A, b
+dcvxpylayer = jax.grad(lambda A, b: sum(cvxpylayer(A, b)[0]), argnums=[0, 1])
+gradA, gradb = dcvxpylayer(A_jax, b_jax)
+
+print("solution:", solution)
+print("gradA", gradA)
+print("gradb", gradb)
