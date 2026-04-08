@@ -503,8 +503,14 @@ def scipy_csr_to_torch_csr(
     row_ptr = scipy_csr.indptr
     num_rows, num_cols = scipy_csr.shape  # type: ignore[misc]
 
-    # Create the torch sparse csr_tensor
-    with warnings.catch_warnings():
+    # Create the torch sparse csr_tensor.
+    # Explicitly disable invariant checks for performance — the input
+    # comes from scipy CSR, which already guarantees sorted, deduplicated
+    # indices.  This also silences the PyTorch warning about implicit state.
+    with (
+        torch.sparse.check_sparse_tensor_invariants(enable=False),
+        warnings.catch_warnings(),
+    ):
         warnings.filterwarnings(
             "ignore",
             message="Sparse CSR tensor support is in beta state",
