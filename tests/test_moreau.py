@@ -3,9 +3,13 @@
 import cvxpy as cp
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import torch
+from unittest import mock
 
 from cvxpylayers.torch import CvxpyLayer
+from cvxpylayers.interfaces.moreau_if import MOREAU_ctx, _cvxpy_dims_to_moreau_cones
+from cvxpylayers.utils.solver_utils import CsrProblemData
 
 # Skip all tests in this module if moreau is not installed
 moreau = pytest.importorskip("moreau")
@@ -17,6 +21,101 @@ jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
 torch.set_default_dtype(torch.double)
+
+
+def _make_empty_moreau_ctx():
+    csr = CsrProblemData(
+        P_csr_structure=None,
+        P_shape=(1, 1),
+        nnz_P=0,
+        A_csr_structure=(
+            np.array([], dtype=np.int64),
+            np.array([0, 0, 0, 0, 0], dtype=np.int64),
+        ),
+        A_shape=(4, 1),
+        nnz_A=0,
+        b_idx=np.array([1, 3], dtype=np.int64),
+    )
+    reduced_A_mat = sp.csr_array((2, 1), dtype=np.float64)
+    return MOREAU_ctx(csr, {"z": 0, "l": 0, "q": [], "ep": 0, "s": [2], "p": []}, {},
+                      reduced_A_mat=reduced_A_mat)
+
+
+def _make_non_psd_moreau_ctx():
+    csr = CsrProblemData(
+        P_csr_structure=None,
+        P_shape=(1, 1),
+        nnz_P=0,
+        A_csr_structure=(
+            np.array([], dtype=np.int64),
+            np.array([0, 0, 0, 0, 0], dtype=np.int64),
+        ),
+        A_shape=(4, 1),
+        nnz_A=0,
+        b_idx=np.array([1, 3], dtype=np.int64),
+    )
+    reduced_A_mat = sp.csr_array((2, 1), dtype=np.float64)
+    return MOREAU_ctx(csr, {"z": 0, "l": 4, "q": [], "ep": 0, "s": [], "p": []}, {},
+                      reduced_A_mat=reduced_A_mat)
+
+
+def test_moreau_cones_include_psd_dims():
+    cones = _cvxpy_dims_to_moreau_cones({"z": 0, "l": 0, "q": [], "ep": 0, "s": [3], "p": []})
+    assert list(getattr(cones, "psd_dims", [])) == [3]
+
+
+def test_moreau_ctx_threads_b_sparsity_pattern_to_torch_and_jax():
+    ctx = _make_empty_moreau_ctx()
+    captured = {}
+
+    class DummyTorchSolver:
+        def __init__(self, **kwargs):
+            captured["torch"] = kwargs
+
+        def setup(self, *args, **kwargs):
+            return None
+
+    class DummyJaxSolver:
+        def __init__(self, **kwargs):
+            captured["jax"] = kwargs
+
+    with (
+        mock.patch("cvxpylayers.interfaces.moreau_if.moreau_torch.Solver", DummyTorchSolver),
+        mock.patch("cvxpylayers.interfaces.moreau_if.moreau_jax.Solver", DummyJaxSolver),
+    ):
+        ctx._create_torch_solver("cpu")
+        ctx._create_jax_solver()
+
+    assert ctx.b_sparsity_pattern == [False, True, False, True]
+    assert captured["torch"]["b_sparsity_pattern"] == [False, True, False, True]
+    assert captured["jax"]["b_sparsity_pattern"] == [False, True, False, True]
+
+
+def test_moreau_ctx_skips_b_sparsity_pattern_without_psd():
+    ctx = _make_non_psd_moreau_ctx()
+    captured = {}
+
+    class DummyTorchSolver:
+        def __init__(self, **kwargs):
+            captured["torch"] = kwargs
+
+        def setup(self, *args, **kwargs):
+            return None
+
+    class DummyJaxSolver:
+        def __init__(self, **kwargs):
+            captured["jax"] = kwargs
+
+    with (
+        mock.patch("cvxpylayers.interfaces.moreau_if.moreau_torch.Solver", DummyTorchSolver),
+        mock.patch("cvxpylayers.interfaces.moreau_if.moreau_jax.Solver", DummyJaxSolver),
+    ):
+        ctx._create_torch_solver("cpu")
+        ctx._create_jax_solver()
+
+    assert ctx.b_sparsity_pattern is None
+    assert captured["torch"]["b_sparsity_pattern"] is None
+    assert captured["jax"]["b_sparsity_pattern"] is None
 
 
 def compare_solvers(problem, params, param_vals, variables):
@@ -144,6 +243,29 @@ def compare_solvers_batched(problem, params, param_vals_batch, variables):
             assert primal_diff < 1e-3, (
                 f"Batch {batch_idx}, var {i}: ||Moreau - DIFFCP|| = {primal_diff:.6e}"
             )
+
+
+def test_batched_psd_constraint_rhs_parameter_torch():
+    """Batched SDP with RHS parameter should solve through Moreau's batch path."""
+    X = cp.Variable((2, 2), symmetric=True)
+    b = cp.Parameter(nonneg=True)
+    problem = cp.Problem(cp.Minimize(X[0, 1]), [X >> 0, X[0, 0] == 1.0, X[1, 1] == b])
+
+    layer = CvxpyLayer(problem, [b], [X], solver="MOREAU")
+
+    b_batch = torch.tensor([0.25, 1.0, 4.0], dtype=torch.float64, requires_grad=True)
+    (X_batch,) = layer(b_batch)
+
+    assert X_batch.shape == (3, 2, 2)
+    expected_off_diag = -torch.sqrt(b_batch.detach())
+    assert torch.allclose(X_batch[:, 0, 0], torch.ones(3, dtype=torch.float64), atol=1e-4)
+    assert torch.allclose(X_batch[:, 1, 1], b_batch.detach(), atol=1e-4)
+    assert torch.allclose(X_batch[:, 0, 1], expected_off_diag, atol=5e-4)
+    assert torch.allclose(X_batch[:, 1, 0], expected_off_diag, atol=5e-4)
+
+    X_batch.sum().backward()
+    assert b_batch.grad is not None
+    assert torch.all(torch.isfinite(b_batch.grad))
 
 
 def test_equality_only():

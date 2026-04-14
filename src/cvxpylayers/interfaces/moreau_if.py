@@ -16,10 +16,12 @@ Limitations:
 """
 
 from contextlib import contextmanager
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import cvxpy.constraints
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
 # Optional dependencies — each may be absent independently
@@ -55,6 +57,17 @@ if TYPE_CHECKING:
     TensorLike = torch.Tensor | jnp.ndarray | np.ndarray
 else:
     TensorLike = Any
+
+
+def moreau_supports_psd() -> bool:
+    """Best-effort feature check for PSD cone support in installed Moreau."""
+    if moreau is None:
+        return False
+    try:
+        sig = inspect.signature(moreau.Cones)
+    except (TypeError, ValueError):
+        return False
+    return "psd_dims" in sig.parameters
 
 
 @contextmanager
@@ -146,11 +159,12 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
         )
 
     cones = moreau.Cones(
-        num_zero_cones=dims.get("z", 0),
+        num_zero_cones=dims.get("z", dims.get("f", 0)),
         num_nonneg_cones=dims.get("l", 0),
         so_cone_dims=list(dims.get("q", [])),
         num_exp_cones=dims.get("ep", 0),
         power_alphas=list(dims.get("p", [])),
+        psd_dims=list(dims.get("s", [])),
     )
 
     return cones
@@ -174,9 +188,11 @@ class MOREAU_ctx:
     A_row_offsets: np.ndarray
     A_shape: tuple[int, int]
     b_idx: np.ndarray
+    b_sparsity_pattern: list[bool] | None
 
     cones: Any  # moreau.Cones (unified for NumPy and PyTorch)
     dims: dict
+    solver_dims: dict[str, Any]
 
     def __init__(
         self,
@@ -223,6 +239,9 @@ class MOREAU_ctx:
 
         # Store dimensions
         self.dims = dims
+        self.solver_dims = dims if isinstance(dims, dict) else dims_to_solver_dict(dims)
+        self._has_psd = bool(self.solver_dims.get("s", []))
+        self.b_sparsity_pattern = self._make_b_sparsity_pattern() if self._has_psd else None
         self.options = options or {}
 
         # Create cones and solver lazily
@@ -259,8 +278,13 @@ class MOREAU_ctx:
     def cones(self):
         """Get moreau.Cones (unified for NumPy and PyTorch paths)."""
         if self._cones is None:
-            self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims))
+            self._cones = _cvxpy_dims_to_moreau_cones(self.solver_dims)
         return self._cones
+
+    def _make_b_sparsity_pattern(self) -> list[bool]:
+        b_sparsity_pattern = np.zeros(self.A_shape[0], dtype=bool)
+        b_sparsity_pattern[self.b_idx] = True
+        return b_sparsity_pattern.tolist()
 
     def _get_settings(self, enable_grad: bool = True):
         """Get moreau.Settings configured from self.options.
@@ -311,6 +335,7 @@ class MOREAU_ctx:
             A_col_indices=torch.tensor(self.A_col_indices, dtype=torch.int64),
             cones=self.cones,
             settings=settings,
+            b_sparsity_pattern=self.b_sparsity_pattern,
         )
 
         # If P and A are constant, do setup once now (expensive factorization)
@@ -354,6 +379,7 @@ class MOREAU_ctx:
             A_col_indices=self.A_col_indices,
             cones=self.cones,
             settings=settings,
+            b_sparsity_pattern=self.b_sparsity_pattern,
         )
 
         # For simplicity, we use the 4-arg jax solve in all cases.

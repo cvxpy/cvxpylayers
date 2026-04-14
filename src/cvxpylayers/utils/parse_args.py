@@ -417,6 +417,20 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
+    if solver == "MOREAU":
+        from cvxpylayers.interfaces.moreau_if import moreau_supports_psd
+
+        if moreau_supports_psd():
+            moreau_solver = cp.reductions.solvers.defines.SOLVER_MAP_CONIC.get("MOREAU")
+            if (
+                moreau_solver is not None
+                and cvxpy.constraints.PSD not in moreau_solver.SUPPORTED_CONSTRAINTS
+            ):
+                moreau_solver.SUPPORTED_CONSTRAINTS = [
+                    *moreau_solver.SUPPORTED_CONSTRAINTS,
+                    cvxpy.constraints.PSD,
+                ]
+
     # For QP-capable solvers, enter quad_form_dpp_scope so that
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
     effective_solver = solver or "DIFFCP"
@@ -433,6 +447,15 @@ def parse_args(
         if solver is None:
             solver = "DIFFCP"
 
+        has_psd_cone = any(
+            isinstance(con, cvxpy.constraints.PSD) for con in problem.constraints
+        ) or any(var.is_psd() or var.is_nsd() for var in problem.variables())
+        canonicalize_solver = (
+            "SCS"
+            if solver == "MOREAU" and has_psd_cone
+            else solver
+        )
+
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
         if gp:
@@ -445,7 +468,7 @@ def parse_args(
 
             # Get problem data from the already-transformed DCP problem
             data, _, _ = dcp_problem.get_problem_data(
-                solver=solver,
+                solver=canonicalize_solver,
                 gp=False,
                 verbose=verbose,
                 canon_backend=canon_backend,
@@ -454,7 +477,7 @@ def parse_args(
         else:
             # Standard DCP path
             data, _, _ = problem.get_problem_data(
-                solver=solver,
+                solver=canonicalize_solver,
                 gp=False,
                 verbose=verbose,
                 canon_backend=canon_backend,
