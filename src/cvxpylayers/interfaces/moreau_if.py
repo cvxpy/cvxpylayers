@@ -445,8 +445,6 @@ class MOREAU_ctx:
             P_eval_size=quad_obj_values.shape[0] if quad_obj_values is not None else 0,
             q_eval_size=lin_obj_values.shape[0],
             A_eval_size=con_values.shape[0],
-            # Whether setup() was already called (P/A constant optimization)
-            setup_cached=self.PA_is_constant,
         )
 
 
@@ -476,9 +474,6 @@ class MOREAU_data:
     q_eval_size: int  # Size of q_eval tensor (n+1)
     A_eval_size: int  # Size of A_eval tensor (= nnz_A + nb)
 
-    # Whether setup() was already called in get_torch_solver (P/A constant case)
-    setup_cached: bool = False
-
     def torch_solve(self, solver_args=None, warm_start=None):
         """Solve using moreau.torch.Solver with autograd support.
 
@@ -505,7 +500,7 @@ class MOREAU_data:
             if isinstance(ipm, dict):
                 solver_args["ipm_settings"] = moreau.IPMSettings(**ipm)
 
-        with _override_settings(self.solver._impl._settings, solver_args):
+        with _override_settings(self.solver._settings, solver_args):
             return self._torch_solve_impl(warm_start)
 
     def _torch_solve_impl(self, warm_start=None):
@@ -514,18 +509,13 @@ class MOREAU_data:
         q = self.q.requires_grad_(True)
         b = self.b.requires_grad_(True)
 
-        # Setup is expensive - skip if already done with constant P/A
-        if self.setup_cached:
-            # P and A are constant; setup was called once during solver creation
-            P_values = self.P_values
-            A_values = self.A_values
-        else:
-            # P and/or A depend on parameters; need setup each call
-            P_values = self.P_values.requires_grad_(True)
-            A_values = self.A_values.requires_grad_(True)
-            self.solver.setup(P_values, A_values)
+        # Moreau's solve() is stateless and caches P/A setup internally,
+        # so we always pass P_values/A_values. requires_grad_ is a no-op
+        # for constant P/A (leaf tensors with no upstream graph).
+        P_values = self.P_values.requires_grad_(True)
+        A_values = self.A_values.requires_grad_(True)
 
-        solution = self.solver.solve(q, b, warm_start=warm_start)
+        solution = self.solver.solve(P_values, A_values, q, b, warm_start=warm_start)
 
         # Store solution for warm start extraction
         self._solution = solution

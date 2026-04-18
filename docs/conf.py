@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath("../src"))
 project = "CVXPYlayers"
 copyright = "2024, CVXPYlayers Authors"
 author = "A. Agrawal, B. Amos, S. Barratt, S. Boyd, S. Diamond, Z. Kolter"
-release = "1.0.0"
+release = "1.1.0"
 
 # -- General configuration ---------------------------------------------------
 extensions = [

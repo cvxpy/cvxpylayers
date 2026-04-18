@@ -290,7 +290,7 @@ def _validate_problem(
     if gp:
         if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP for geometric programming.")
-    elif scopes.quad_form_dpp_scope_active():
+    elif scopes.quad_form_dpp_scope_active():  # pyright: ignore[reportAttributeAccessIssue]
         # quad_form_dpp_scope is active (QP-capable solver).
         # Objective: check WITH scope (parametric quad_form P allowed)
         if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
@@ -298,8 +298,8 @@ def _validate_problem(
         # Constraints: check WITHOUT scope (parametric quad_form P rejected).
         # Temporarily deactivate the scope so that quad_form(x, P) in
         # constraints is correctly flagged as non-DPP.
-        prev = scopes._quad_form_dpp_scope_active
-        scopes._quad_form_dpp_scope_active = False
+        prev = scopes._quad_form_dpp_scope_active  # pyright: ignore[reportAttributeAccessIssue]
+        scopes._quad_form_dpp_scope_active = False  # pyright: ignore[reportAttributeAccessIssue]
         try:
             for c in problem.constraints:
                 if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
@@ -308,7 +308,7 @@ def _validate_problem(
                         "is only supported in the objective, not in constraints."
                     )
         finally:
-            scopes._quad_form_dpp_scope_active = prev
+            scopes._quad_form_dpp_scope_active = prev  # pyright: ignore[reportAttributeAccessIssue]
     else:
         if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
@@ -438,7 +438,9 @@ def parse_args(
         effective_solver = solver or "DIFFCP"
         use_quad_scope = effective_solver in SUPPORTS_QUAD_OBJ
     qf_scope = (
-        scopes.quad_form_dpp_scope() if use_quad_scope else contextlib.nullcontext()
+        scopes.quad_form_dpp_scope()  # pyright: ignore[reportAttributeAccessIssue]
+        if effective_solver in SUPPORTS_QUAD_OBJ
+        else contextlib.nullcontext()
     )
 
     with qf_scope:

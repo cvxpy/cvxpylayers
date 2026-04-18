@@ -130,7 +130,7 @@ Inject constraints and structure into your models. Physics, fairness, safety —
 :::{grid-item-card} GPU Accelerated
 :class-card: sd-card-feature
 
-CuClarabel solver keeps everything on GPU. No CPU-GPU transfers for large-scale optimization.
+[Moreau](https://docs.moreau.so/) and CuClarabel solvers keep everything on GPU. No CPU-GPU transfers for large-scale optimization.
 :::
 
 :::{grid-item-card} Batched Solving
@@ -142,7 +142,7 @@ Solve thousands of problem instances in parallel. First dimension is batch — j
 :::{grid-item-card} Multiple Solvers
 :class-card: sd-card-feature
 
-Clarabel, SCS, and CuClarabel. Pick the right solver for your problem structure.
+[Moreau](https://docs.moreau.so/), Clarabel, SCS, and CuClarabel. Pick the right solver for your problem structure.
 :::
 
 ::::

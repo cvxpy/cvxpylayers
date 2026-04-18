@@ -7,7 +7,7 @@ in the forward pass to produce a solution.
 It computes the derivative of the solution with respect to
 the parameters in the backward pass.
 
-**CVXPYlayers 1.0** supports keeping the data on the GPU with the CuClarabel backend.
+**CVXPYlayers 1.0** supports GPU acceleration with the [Moreau](https://docs.moreau.so/) and CuClarabel backends.
 
 This library accompanies our [NeurIPS 2019 paper](https://web.stanford.edu/~boyd/papers/pdf/diff_cvxpy.pdf)
 on differentiable convex optimization layers.
@@ -53,9 +53,12 @@ Additionally, install one of the following frameworks:
 * [JAX](https://github.com/google/jax) >= 0.4.0
 * [MLX](https://github.com/ml-explore/mlx)
 
-### GPU-accelerated pathway (CVXPYlayers 1.0)
+### GPU-accelerated pathway
 
-To use the fully GPU-accelerated pathway, install:
+For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/).
+Moreau is available by request — see the [installation guide](https://docs.moreau.so/installation.html) for access and setup.
+
+As an open-source alternative, you can use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) for GPU acceleration. This requires installing Julia and several additional packages:
 
 - [Julia](https://julialang.org/)
 - [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/)
@@ -216,9 +219,9 @@ sum_of_solution.backward()
 
 ## Solvers
 
-CVXPYlayers supports multiple solvers including [Clarabel](https://github.com/oxfordcontrol/Clarabel.rs)
-and [SCS](https://github.com/cvxgrp/scs).
-For GPU acceleration, use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/).
+CVXPYlayers supports multiple solvers including [Moreau](https://docs.moreau.so/) (recommended),
+[Clarabel](https://github.com/oxfordcontrol/Clarabel.rs),
+[SCS](https://github.com/cvxgrp/scs), and [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/).
 
 ### Passing arguments to the solvers
 One can pass arguments to solvers by adding the argument as a key-value pair

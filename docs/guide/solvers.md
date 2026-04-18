@@ -8,9 +8,9 @@ CVXPYlayers supports multiple solver backends for different use cases.
 |--------|------|----------|
 | **diffcp w/ SCS** (default) | CPU | General use, most problem types |
 | **diffcp w/ Clarabel** | CPU | Higher accuracy |
-| **Moreau** | CPU/GPU | Best performance |
+| **[Moreau](https://docs.moreau.so/)** | CPU/GPU | Best performance |
 | **MPAX*** | CPU | LPs/QPs |
-| **CuClarabel w/ diffqcp** | GPU | Large problems on NVIDIA GPUs |
+| **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
 
 \* Gradient support is currently broken.
 
@@ -89,13 +89,15 @@ If SCS still struggles, try Clarabel:
 layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CLARABEL)
 ```
 
-## GPU Acceleration with CuClarabel
+## Moreau
 
-For NVIDIA GPUs, CuClarabel keeps all data on the GPU:
+[Moreau](https://docs.moreau.so/) is the recommended solver for best performance on both CPU and GPU.
+It supports PyTorch and JAX with native autograd integration, warm starts, and `jax.jit` compatibility.
 
 ### Setup
 
-See {doc}`../installation` for CuClarabel installation.
+Moreau is available by request through a private package index.
+See the [Moreau installation guide](https://docs.moreau.so/installation.html) for access and setup instructions.
 
 ### Usage (PyTorch)
 
@@ -104,63 +106,63 @@ import cvxpy as cp
 import torch
 from cvxpylayers.torch import CvxpyLayer
 
-device = torch.device("cuda")
+layer = CvxpyLayer(
+    problem,
+    parameters=[A, b],
+    variables=[x],
+    solver="MOREAU"
+)
+
+A_tch = torch.randn(m, n, requires_grad=True)
+b_tch = torch.randn(m, requires_grad=True)
+
+(x_sol,) = layer(A_tch, b_tch)
+x_sol.sum().backward()
+```
+
+### Usage (JAX)
+
+```python
+import cvxpy as cp
+import jax
+from cvxpylayers.jax import CvxpyLayer
 
 layer = CvxpyLayer(
     problem,
     parameters=[A, b],
     variables=[x],
-    solver=cp.CUCLARABEL
-).to(device)
+    solver="MOREAU"
+)
 
-# Parameters must be on GPU
-A_gpu = torch.randn(m, n, device=device, requires_grad=True)
-b_gpu = torch.randn(m, device=device, requires_grad=True)
+A_jax = jax.random.normal(jax.random.PRNGKey(0), shape=(m, n))
+b_jax = jax.random.normal(jax.random.PRNGKey(1), shape=(m,))
 
-(x_gpu,) = layer(A_gpu, b_gpu)
-x_gpu.sum().backward()  # Gradients computed on GPU
+(x_sol,) = layer(A_jax, b_jax)
 ```
 
-### When to Use CuClarabel
+### Warm Starts
 
-CuClarabel is beneficial when:
-- Problems are large (1000+ variables/constraints)
-- You're already using GPU tensors
-- Batch sizes are large
-- You want to avoid CPU-GPU transfers
-
-For small problems, CPU solvers may be faster due to GPU overhead.
-
-## Solver Comparison
+Moreau supports warm starting to speed up sequential solves:
 
 ```python
-import time
-import cvxpy as cp
-import torch
-from cvxpylayers.torch import CvxpyLayer
-
-# Create problem
-n = 100
-x = cp.Variable(n)
-A = cp.Parameter((n, n))
-b = cp.Parameter(n)
-problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
-
-# Benchmark different solvers
-A_t = torch.randn(n, n)
-b_t = torch.randn(n)
-
-for solver in [None, cp.CLARABEL, cp.SCS]:
-    layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=solver)
-
-    start = time.time()
-    for _ in range(10):
-        (x_sol,) = layer(A_t, b_t)
-    elapsed = time.time() - start
-
-    solver_name = solver if solver else "diffcp (default)"
-    print(f"{solver_name}: {elapsed:.3f}s for 10 solves")
+(x_sol,) = layer(A_tch, b_tch, warm_start=True)
 ```
+
+### When to Use Moreau
+
+Moreau is beneficial when:
+- You want the best solve + differentiation performance
+- You need `jax.jit` compatibility
+- You're solving sequences of similar problems (warm starts)
+- You want CPU or GPU support without Julia dependencies
+
+---
+
+## CuClarabel (Open-Source Alternative)
+
+[CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) is an open-source GPU solver alternative. It requires Julia and several additional dependencies. For NVIDIA GPUs, it keeps all data on the GPU:
+
+See {doc}`../installation` for CuClarabel setup instructions.
 
 ## Troubleshooting
 

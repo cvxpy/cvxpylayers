@@ -17,7 +17,7 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.11"
 dependencies = [
-    "cvxpy>=1.7.4",
+    "cvxpy>=1.8.2",
     "diffcp>=1.1.0",
     "numpy>=1.22.4",
     "scipy>=1.13.0",
