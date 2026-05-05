@@ -46,7 +46,7 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 
 [project.optional-dependencies]
 torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
-mlx = ["mlx==0.27.1"]
+mlx = ["mlx==0.29.4"]
 metal = ["mlx-metal==0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
 all = [
@@ -54,7 +54,7 @@ all = [
     "diffqcp>=0.4.4",
  "jax>=0.4.0",
  "jaxlib>=0.4.0",
- "mlx==0.27.1",
+ "mlx==0.29.4",
  "mlx-metal==0.27.1",
 ]
 
