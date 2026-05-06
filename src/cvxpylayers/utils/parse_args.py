@@ -521,7 +521,10 @@ def parse_args(
             )
 
             # In newer CVXPY, lowered variables and parameters receive fresh IDs
-            var_id_map = {k: v[0] for k, v in chain.compose_var_id_map().items()}
+            raw_vmap = chain.compose_var_id_map()
+            if any(len(v) > 1 for v in raw_vmap.values()):
+                raise NotImplementedError("Complex variables are not yet supported.")
+            var_id_map = {k: v[0] for k, v in raw_vmap.items()}
             param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
 
         # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
