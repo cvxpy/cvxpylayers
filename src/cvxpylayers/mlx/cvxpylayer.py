@@ -73,6 +73,7 @@ def _flatten_and_batch_params(
     params: tuple[mx.array, ...],
     ctx: pa.LayersContext,
     batch: tuple,
+    param_triu_G: list[mx.array | None],
 ) -> mx.array:
     """Flatten and batch parameters into a single stacked array.
 
@@ -98,14 +99,12 @@ def _flatten_and_batch_params(
         else:
             param_expanded = param
 
-        triu = ctx.param_triu_indices[i] if ctx.param_triu_indices else None
-        if triu is not None:
-            # Symmetric/PSD/NSD parameter: CVXPY canonicalizes to upper triangle.
-            triu_rows = np.array(triu[0])
-            triu_cols = np.array(triu[1])
-            flattened_params[ctx.user_order_to_col_order[i]] = param_expanded[
-                ..., triu_rows, triu_cols
-            ]
+        G = param_triu_G[i]
+        if G is not None:
+            # MLX doesn't support fancy indexing, so we use a precomputed selection
+            # matrix G (shape k times n2) so that upper_tri(C) = G @ C.flatten().
+            param_flat = param_expanded.reshape(param_expanded.shape[:-2] + (-1,))
+            flattened_params[ctx.user_order_to_col_order[i]] = param_flat @ G.T
         else:
             flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param_expanded,
@@ -357,6 +356,20 @@ class CvxpyLayer:
         self._q_np: np.ndarray = _scipy_csr_to_dense(self.ctx.q.tocsr())  # type: ignore[assignment]
         self._A_np: np.ndarray = _scipy_csr_to_dense(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined, assignment]
 
+        # Precompute selection matrices for symmetric/hermitian/PSD/NSD parameters.
+        self._param_triu_G: list[mx.array | None] = []
+        for j, triu in enumerate(self.ctx.param_triu_indices):
+            if triu is not None:
+                triu_rows, triu_cols = triu
+                k = len(triu_rows)
+                n = self.ctx.parameters[j].shape[-1]
+                G_np = np.zeros((k, n * n), dtype=np.float64)
+                for idx, (r, c) in enumerate(zip(triu_rows, triu_cols)):
+                    G_np[idx, r * n + c] = 1.0
+                self._param_triu_G.append(mx.array(G_np))
+            else:
+                self._param_triu_G.append(None)
+
     def __call__(
         self,
         *params: mx.array,
@@ -398,7 +411,7 @@ class CvxpyLayer:
         params = _apply_gp_log_transform(params, self.ctx)
 
         # Flatten and batch parameters
-        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
+        p_stack = _flatten_and_batch_params(params, self.ctx, batch, self._param_triu_G)
 
         # Get dtype from input parameters to ensure type matching
         param_dtype = params[0].dtype

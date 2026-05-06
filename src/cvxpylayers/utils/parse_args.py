@@ -1,6 +1,7 @@
 import contextlib
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Generator, Literal, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
@@ -15,6 +16,29 @@ from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 
 # guard import for backward compatibility with older CVXPY versions without SvecPSD
 _SVEC_PSD = getattr(cvxpy.constraints, "SvecPSD", None)
+
+
+@contextmanager
+def _safe_qf_scope() -> Generator[None, None, None]:
+    """quad_form_dpp_scope with a proper try/finally.
+
+    CVXPY's quad_form_dpp_scope() generator lacks try/finally around its yield,
+    so any exception inside the with-block leaves the scope flag permanently set.
+    This wrapper fixes that by restoring the flag unconditionally.
+    """
+    if hasattr(scopes, "_thread_local"):
+        obj: Any = scopes._thread_local  # type: ignore[attr-defined]
+        attr = "quad_form_dpp_scope_active"
+    else:
+        obj = scopes
+        attr = "_quad_form_dpp_scope_active"
+    prev = getattr(obj, attr, False)
+    setattr(obj, attr, True)
+    try:
+        yield
+    finally:
+        setattr(obj, attr, prev)
+
 
 if TYPE_CHECKING:
     import torch
@@ -474,21 +498,14 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
+    if solver is None:
+        solver = "DIFFCP"
+
     # For QP-capable solvers, enter quad_form_dpp_scope so that
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    effective_solver = solver or "DIFFCP"
-    qf_scope = (
-        scopes.quad_form_dpp_scope()  # pyright: ignore[reportAttributeAccessIssue]
-        if effective_solver in SUPPORTS_QUAD_OBJ
-        else contextlib.nullcontext()
-    )
-
-    with qf_scope:
+    with (_safe_qf_scope() if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
         # Validate problem is DPP (disciplined parametrized programming)
         _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
-
-        if solver is None:
-            solver = "DIFFCP"
 
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
