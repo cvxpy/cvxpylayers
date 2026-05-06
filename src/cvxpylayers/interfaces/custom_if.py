@@ -101,11 +101,11 @@ try:
 
                 if needs_grad and solver._cpg_solve_and_gradient is not None:
                     _, cpg_grad_primal, cpg_grad_dual = solver._cpg_solve_and_gradient(
-                        problem
+                        problem, **solver_args
                     )
                     grad_info = (cpg_grad_primal, cpg_grad_dual)
                 else:
-                    solver._cpg_solve(problem)
+                    solver._cpg_solve(problem, **solver_args)
                     grad_info = None
 
                 primal_np, dual_np = _pack_primal_dual(cl_ctx)

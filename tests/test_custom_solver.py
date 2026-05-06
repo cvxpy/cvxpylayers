@@ -455,24 +455,26 @@ pytestmark_cmake = pytest.mark.skipif(
 )
 
 
-def _generate_cpg_code(problem, code_dir, solver="OSQP"):
-    """Generate CVXPYgen C code, compile it, and import the resulting module."""
-    cpg = pytest.importorskip("cvxpygen").cpg
-    cpg.generate_code(problem, code_dir=code_dir, solver=solver, gradient=True)
-    result = subprocess.run(
-        [sys.executable, "setup.py", "--quiet", "build_ext", "--inplace"],
-        cwd=code_dir, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"CVXPYgen compilation failed: {result.stderr}")
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "cpg_solver", os.path.join(code_dir, "cpg_solver.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["cpg_solver"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+def _generate_cpg_code(problem, tmp_path, name, solver="OSQP"):
+    """Generate CVXPYgen C code in tmp_path/name, compile it, and return the module.
+
+    CVXPYgen internally calls importlib.import_module(f'{code_dir}.cpg_solver'),
+    so code_dir must be a plain module name, not an absolute path.  We chdir
+    into tmp_path and pass only the short name so that both the file-system
+    writes and the import resolve correctly.
+    """
+    import importlib
+    cpg = pytest.importorskip("cvxpygen.cpg")
+    parent_str = str(tmp_path)
+    if parent_str not in sys.path:
+        sys.path.insert(0, parent_str)
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(parent_str)
+        cpg.generate_code(problem, code_dir=name, solver=solver, gradient=True, prefix=name)
+    finally:
+        os.chdir(old_cwd)
+    return importlib.import_module(f"{name}.cpg_solver")
 
 
 @pytestmark_cmake
@@ -480,7 +482,7 @@ def test_cvxpygen_forward(problem_and_ref, tmp_path):
     """from_parametric_functions forward solution matches the reference diffcp solution."""
     problem, A_param, b_param, x_var, ref = problem_and_ref
     n, m = 2, 3
-    cpg_mod = _generate_cpg_code(problem, str(tmp_path / "cpg_fwd"), solver="OSQP")
+    cpg_mod = _generate_cpg_code(problem, tmp_path, "cpg_fwd", solver="OSQP")
 
     layer = CvxpyLayer(
         problem, parameters=[A_param, b_param], variables=[x_var],
@@ -504,7 +506,7 @@ def test_cvxpygen_backward(problem_and_ref, tmp_path):
     """from_parametric_functions backward gradients match the reference diffcp gradients."""
     problem, A_param, b_param, x_var, ref = problem_and_ref
     n, m = 2, 3
-    cpg_mod = _generate_cpg_code(problem, str(tmp_path / "cpg_bwd"), solver="OSQP")
+    cpg_mod = _generate_cpg_code(problem, tmp_path, "cpg_bwd", solver="OSQP")
 
     layer = CvxpyLayer(
         problem, parameters=[A_param, b_param], variables=[x_var],
@@ -529,3 +531,28 @@ def test_cvxpygen_backward(problem_and_ref, tmp_path):
 
     assert torch.allclose(A_t2.grad, dA_ref, atol=1e-3)
     assert torch.allclose(b_t2.grad, db_ref, atol=1e-3)
+
+
+@pytestmark_cmake
+def test_cvxpygen_updated_params(problem_and_ref, tmp_path):
+    """updated_params passed via solver_args flows through to the cpg functions."""
+    problem, A_param, b_param, x_var, ref = problem_and_ref
+    n, m = 2, 3
+    cpg_mod = _generate_cpg_code(problem, tmp_path, "cpg_upd", solver="OSQP")
+
+    layer = CvxpyLayer(
+        problem, parameters=[A_param, b_param], variables=[x_var],
+        solver=SolverInterface.from_parametric_functions(
+            solve               = cpg_mod.cpg_solve,
+            solve_and_gradient  = cpg_mod.cpg_solve_and_gradient_info,
+            gradient            = cpg_mod.cpg_gradient,
+        ),
+    )
+
+    A_t, b_t = _random_inputs(m, n)
+    (x_ref,) = ref(A_t, b_t)
+    # updated_params=None signals that all parameters were updated (same as omitting it).
+    (x_custom,) = layer(A_t, b_t, solver_args={"updated_params": None})
+
+    assert x_custom.shape == x_ref.shape
+    assert torch.allclose(x_custom, x_ref, atol=1e-4)
