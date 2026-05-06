@@ -16,12 +16,15 @@ from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 
 
 @contextmanager
-def _safe_qf_scope() -> Generator[None, None, None]:
-    """quad_form_dpp_scope with a proper try/finally.
+def _qf_scope(active: bool) -> Generator[None, None, None]:
+    """Set quad_form_dpp_scope_active to `active` for the duration of the block.
 
     CVXPY's quad_form_dpp_scope() generator lacks try/finally around its yield,
     so any exception inside the with-block leaves the scope flag permanently set.
     This wrapper fixes that by restoring the flag unconditionally.
+
+    Use active=True  to enter the scope (parametric quad_form P allowed).
+    Use active=False to suspend it (e.g. during constraint DPP checks).
     """
     if hasattr(scopes, "_thread_local"):
         obj: Any = scopes._thread_local  # type: ignore[attr-defined]
@@ -30,7 +33,7 @@ def _safe_qf_scope() -> Generator[None, None, None]:
         obj = scopes
         attr = "_quad_form_dpp_scope_active"
     prev = getattr(obj, attr, False)
-    setattr(obj, attr, True)
+    setattr(obj, attr, active)
     try:
         yield
     finally:
@@ -349,27 +352,13 @@ def _validate_problem(
         if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
         # Constraints: check WITHOUT scope (parametric quad_form P rejected).
-        # Temporarily deactivate the scope so that quad_form(x, P) in
-        # constraints is correctly flagged as non-DPP.
-        # Newer CVXPY stores the flag in a thread-local while older versions use
-        # a plain module attribute.
-        if hasattr(scopes, "_thread_local"):
-            _scope_obj: Any = scopes._thread_local  # type: ignore[attr-defined]
-            _scope_attr = "quad_form_dpp_scope_active"
-        else:
-            _scope_obj = scopes
-            _scope_attr = "_quad_form_dpp_scope_active"
-        prev = getattr(_scope_obj, _scope_attr, False)
-        setattr(_scope_obj, _scope_attr, False)
-        try:
+        with _qf_scope(False):
             for c in problem.constraints:
                 if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
                     raise ValueError(
                         "Problem must be DPP. Note: quad_form(x, P) with parametric P "
                         "is only supported in the objective, not in constraints."
                     )
-        finally:
-            setattr(_scope_obj, _scope_attr, prev)
     else:
         if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
@@ -491,7 +480,7 @@ def parse_args(
 
     # For QP-capable solvers, enter quad_form_dpp_scope so that
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    with (_safe_qf_scope() if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
+    with (_qf_scope(True) if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
         # Validate problem is DPP (disciplined parametrized programming)
         _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
 
