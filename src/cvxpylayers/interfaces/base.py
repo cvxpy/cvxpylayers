@@ -480,9 +480,9 @@ class SolverInterface(ABC):
                 # Satisfy @require_one_of — never reached on the parametric path.
                 "solve_numpy":             _not_impl,
                 "derivative_numpy":        _not_impl,
-                "_cpg_solve":              solve,
-                "_cpg_solve_and_gradient": solve_and_gradient,
-                "_cpg_gradient":           gradient,
+                "_cpg_solve":              staticmethod(solve),
+                "_cpg_solve_and_gradient": staticmethod(solve_and_gradient) if solve_and_gradient is not None else None,
+                "_cpg_gradient":           staticmethod(gradient) if gradient is not None else None,
             },
         )
         return _cls()
