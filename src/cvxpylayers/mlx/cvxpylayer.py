@@ -95,15 +95,20 @@ def _flatten_and_batch_params(
         if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
             # Unbatched parameter - expand to match batch size
             param_expanded = mx.broadcast_to(mx.expand_dims(param, axis=0), batch + param.shape)
+        else:
+            param_expanded = param
+
+        triu = ctx.param_triu_indices[i] if ctx.param_triu_indices else None
+        if triu is not None:
+            # Symmetric/PSD/NSD parameter: CVXPY canonicalizes to upper triangle.
+            triu_rows, triu_cols = triu
+            flattened_params[ctx.user_order_to_col_order[i]] = param_expanded[
+                ..., triu_rows, triu_cols
+            ]
+        else:
             flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param_expanded,
-                batch + (-1,),
-            )
-        else:
-            # Already batched or no batch dimension needed
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param,
-                batch + (-1,),
+                batch + (-1,) if batch else (-1,),
             )
 
     # Add constant 1.0 column for offset terms in canonical form
