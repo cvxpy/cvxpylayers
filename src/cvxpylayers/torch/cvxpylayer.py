@@ -112,14 +112,20 @@ def _flatten_and_batch_params(
         if ctx.batch_sizes[i] == 0:  # type: ignore[index]
             # Unbatched parameter - expand to match batch size
             param_expanded = param.unsqueeze(0).expand(effective_batch + param.shape)
+        else:
+            param_expanded = param
+
+        triu = ctx.param_triu_indices[i] if ctx.param_triu_indices else None
+        if triu is not None:
+            # Symmetric/PSD/NSD parameter: CVXPY canonicalizes to upper triangle.
+            # Extract it so p_stack matches the canonical form's column count.
+            triu_rows, triu_cols = triu
+            flattened_params[ctx.user_order_to_col_order[i]] = param_expanded[
+                ..., triu_rows, triu_cols
+            ]
+        else:
             flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
                 param_expanded,
-                effective_batch + (-1,),
-            )
-        else:
-            # Already batched
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param,
                 effective_batch + (-1,),
             )
 
