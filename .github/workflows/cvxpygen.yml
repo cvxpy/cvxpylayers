@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv
-          uv pip install -e "." "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
+          uv pip install -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
           git clone --recurse-submodules https://github.com/cvxgrp/cvxpygen.git
           cd cvxpygen
           uv pip install ".[dev]"
