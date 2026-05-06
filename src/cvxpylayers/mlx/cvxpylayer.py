@@ -101,7 +101,8 @@ def _flatten_and_batch_params(
         triu = ctx.param_triu_indices[i] if ctx.param_triu_indices else None
         if triu is not None:
             # Symmetric/PSD/NSD parameter: CVXPY canonicalizes to upper triangle.
-            triu_rows, triu_cols = triu
+            triu_rows = np.array(triu[0])
+            triu_cols = np.array(triu[1])
             flattened_params[ctx.user_order_to_col_order[i]] = param_expanded[
                 ..., triu_rows, triu_cols
             ]

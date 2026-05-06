@@ -570,12 +570,12 @@ def parse_args(
     if gp and gp_param_to_log_param:
         gp_log_mask = tuple(p in gp_param_to_log_param for p in parameters)
 
-    # Pre-compute upper-triangle indices for (symmetric/hermitian attributes) parameters
-    # that CVXPY lowered to their upper-tri vector form
+    # Pre-compute upper-triangle indices for (symmetric/hermitian/PSD/NSD attributes)
+    # parameters that CVXPY lowered to their upper-tri vector form
     triu_list: list[tuple[tuple[int, ...], tuple[int, ...]] | None] = []
     for p in parameters:
         if getattr(p, "_has_dim_reducing_attr", False) and p.id in param_id_map:
-            if p.attributes.get("symmetric") or p.attributes.get("hermitian"):
+            if any(p.attributes.get(a) for a in ("symmetric", "hermitian", "PSD", "NSD")):
                 n = p.shape[-1]
                 rows, cols = np.triu_indices(n)
                 triu_list.append((tuple(rows.tolist()), tuple(cols.tolist())))
