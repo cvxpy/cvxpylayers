@@ -14,9 +14,6 @@ from cvxpy.utilities import scopes
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 
-# guard import for backward compatibility with older CVXPY versions without SvecPSD
-_SVEC_PSD = getattr(cvxpy.constraints, "SvecPSD", None)
-
 
 @contextmanager
 def _safe_qf_scope() -> Generator[None, None, None]:
@@ -298,24 +295,15 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
     cur_idx = 0
 
     # Process each cone type in canonical order
-    if _SVEC_PSD is not None:
-        cone_types = [
-            cvxpy.constraints.Zero,
-            cvxpy.constraints.NonNeg,
-            cvxpy.constraints.SOC,
-            _SVEC_PSD,
-            cvxpy.constraints.ExpCone,
-            cvxpy.constraints.PowCone3D,
-        ]
-    else:
-        cone_types = [
-            cvxpy.constraints.Zero,
-            cvxpy.constraints.NonNeg,
-            cvxpy.constraints.SOC,
-            cvxpy.constraints.PSD,
-            cvxpy.constraints.ExpCone,
-            cvxpy.constraints.PowCone3D,
-        ]
+    cone_types = [
+        cvxpy.constraints.Zero,
+        cvxpy.constraints.NonNeg,
+        cvxpy.constraints.SOC,
+        cvxpy.constraints.PSD,
+        cvxpy.constraints.SvecPSD,
+        cvxpy.constraints.ExpCone,
+        cvxpy.constraints.PowCone3D,
+    ]
 
     for cone_type in cone_types:
         for c in param_prob.constr_map.get(cone_type, []):
