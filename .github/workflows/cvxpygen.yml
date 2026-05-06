@@ -23,7 +23,7 @@ jobs:
           sudo apt install libeigen3-dev
       - name: Install dependencies
         run: |
-          uv venv
+          uv venv --seed
           uv pip install -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
           git clone --recurse-submodules https://github.com/cvxgrp/cvxpygen.git
           cd cvxpygen
