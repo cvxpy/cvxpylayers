@@ -30,5 +30,4 @@ jobs:
           uv pip install ".[dev]"
       - name: Run CVXPYgen tests
         run: |
-          cd tests
-          uv run --no-sync pytest test_cvxpygen.py
+          uv run --no-sync pytest tests/test_cvxpygen.py
