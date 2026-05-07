@@ -1,7 +1,6 @@
 import contextlib
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generator, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
@@ -12,31 +11,6 @@ from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
-
-
-@contextmanager
-def _qf_scope(active: bool) -> Generator[None, None, None]:
-    """Set quad_form_dpp_scope_active to `active` for the duration of the block.
-
-    CVXPY's quad_form_dpp_scope() generator lacks try/finally around its yield,
-    so any exception inside the with-block leaves the scope flag permanently set.
-    This wrapper fixes that by restoring the flag unconditionally.
-
-    Use active=True  to enter the scope (parametric quad_form P allowed).
-    Use active=False to suspend it (e.g. during constraint DPP checks).
-    """
-    if hasattr(scopes, "_thread_local"):
-        obj: Any = scopes._thread_local  # type: ignore[attr-defined]
-        attr = "quad_form_dpp_scope_active"
-    else:
-        obj = scopes
-        attr = "_quad_form_dpp_scope_active"
-    prev = getattr(obj, attr, False)
-    setattr(obj, attr, active)
-    try:
-        yield
-    finally:
-        setattr(obj, attr, prev)
 
 
 if TYPE_CHECKING:
@@ -330,7 +304,7 @@ def _validate_problem(
         if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
             raise ValueError("Problem must be DPP.")
         # Constraints: check WITHOUT scope (parametric quad_form P rejected).
-        with _qf_scope(False):
+        with scopes.suspend_quad_form_dpp_scope():
             for c in problem.constraints:
                 if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
                     raise ValueError(
@@ -458,7 +432,7 @@ def parse_args(
 
     # For QP-capable solvers, enter quad_form_dpp_scope so that
     # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    with (_qf_scope(True) if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
+    with (scopes.quad_form_dpp_scope() if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
         # Validate problem is DPP (disciplined parametrized programming)
         _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
 
