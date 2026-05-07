@@ -281,6 +281,7 @@ def _validate_problem(
     parameters: list[cp.Parameter],
     gp: bool,
     dual_var_to_constraint: dict[int, cp.Constraint],
+    qp_solver: bool,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
@@ -290,29 +291,24 @@ def _validate_problem(
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
         dual_var_to_constraint: Mapping from dual variable ID to parent constraint
+        qp_solver: Whether the solver handles quadratic objectives directly.
+            When True, quad_form(x, P) with parametric P is allowed in the
+            objective but rejected in constraints.
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
     """
-    # Check if problem follows disciplined parametrized programming (DPP) rules
     if gp:
-        if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp('dgp'):
             raise ValueError("Problem must be DPP for geometric programming.")
-    elif scopes.quad_form_dpp_scope_active():  # pyright: ignore[reportAttributeAccessIssue]
-        # quad_form_dpp_scope is active (QP-capable solver).
-        # Objective: check WITH scope (parametric quad_form P allowed)
-        if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
-            raise ValueError("Problem must be DPP.")
-        # Constraints: check WITHOUT scope (parametric quad_form P rejected).
-        with scopes.suspend_quad_form_dpp_scope():
-            for c in problem.constraints:
-                if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
-                    raise ValueError(
-                        "Problem must be DPP. Note: quad_form(x, P) with parametric P "
-                        "is only supported in the objective, not in constraints."
-                    )
+    elif qp_solver:
+        if not problem.is_dpp(quad_form_dpp='qp'):  # type: ignore[call-arg]
+            raise ValueError(
+                "Problem must be DPP. Note: quad_form(x, P) with parametric P "
+                "is only supported in the objective, not in constraints."
+            )
     else:
-        if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp():
             raise ValueError("Problem must be DPP.")
 
     # Validate parameters match problem definition
@@ -429,12 +425,13 @@ def parse_args(
 
     if solver is None:
         solver = "DIFFCP"
+        
+    qp_solver = solver in SUPPORTS_QUAD_OBJ
+    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint, qp_solver)
 
-    # For QP-capable solvers, enter quad_form_dpp_scope so that
-    # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    with (scopes.quad_form_dpp_scope() if solver in SUPPORTS_QUAD_OBJ else contextlib.nullcontext()):
-        # Validate problem is DPP (disciplined parametrized programming)
-        _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
+    # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
+    # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
+    with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
 
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
