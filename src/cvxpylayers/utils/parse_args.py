@@ -7,7 +7,6 @@ import cvxpy as cp
 import cvxpy.constraints
 import numpy as np
 import scipy.sparse
-from cvxpy.reductions.cvx_attr2constr import CvxAttr2Constr
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 from cvxpy.utilities import scopes
 
@@ -175,27 +174,6 @@ class LayersContext:
         self.batch_sizes = batch_sizes
         return ()
 
-
-def _compose_constr_id_map(chain: Any, inverse_data: list) -> dict[int, int]:
-    """Compose constraint ID maps across all reduction steps.
-
-    Each reduction step may assign fresh IDs. This traces each original
-    constraint ID through every step's cons_id_map and returns {orig_id: final_id}.
-    """
-    result: dict[int, int] = {}
-    for reduction, inv in zip(chain.reductions, inverse_data):
-        step_map: dict[int, int] = {}
-        if isinstance(reduction, CvxAttr2Constr) and len(inv) == 3:
-            # CvxAttr2Constr stores (id2new_var, id2old_var, cons_id_map) or () when it was a no-op.
-            _, _, step_map = inv
-        elif hasattr(inv, "cons_id_map") and isinstance(inv.cons_id_map, dict):
-            step_map = inv.cons_id_map
-        if step_map:
-            result = {orig: step_map.get(cur, cur) for orig, cur in result.items()}
-            for orig_id, new_id in step_map.items():
-                if orig_id not in result:
-                    result[orig_id] = new_id
-    return result
 
 
 def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
@@ -528,7 +506,7 @@ def parse_args(
             param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
 
         # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
-        constr_id_map = _compose_constr_id_map(chain, inverse_data)
+        constr_id_map = chain.compose_constr_id_map(inverse_data)
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
