@@ -506,7 +506,7 @@ def parse_args(
             param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
 
         # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
-        constr_id_map = chain.compose_constr_id_map(inverse_data)
+        constr_id_map = chain.compose_constr_id_map()
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
