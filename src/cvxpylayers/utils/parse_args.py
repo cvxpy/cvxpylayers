@@ -473,7 +473,7 @@ def parse_args(
             gp_param_to_log_param = dgp2dcp.canon_methods._parameters
 
             # Get problem data from the already-transformed DCP problem
-            data, chain, inverse_data = dcp_problem.get_problem_data(
+            data, chain, _ = dcp_problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
