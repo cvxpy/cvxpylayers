@@ -101,7 +101,7 @@ def test_cvxpygen_forward(problem_and_ref, tmp_path):
         problem, parameters=[A_param, b_param], variables=[x_var],
         solver=SolverInterface.from_parametric_functions(
             solve               = cpg_mod.cpg_solve,
-            solve_and_gradient  = cpg_mod.cpg_solve_and_gradient_info,
+            solve_and_state     = cpg_mod.cpg_solve_and_state,
             gradient            = cpg_mod.cpg_gradient,
         ),
     )
@@ -125,7 +125,7 @@ def test_cvxpygen_backward(problem_and_ref, tmp_path):
         problem, parameters=[A_param, b_param], variables=[x_var],
         solver=SolverInterface.from_parametric_functions(
             solve               = cpg_mod.cpg_solve,
-            solve_and_gradient  = cpg_mod.cpg_solve_and_gradient_info,
+            solve_and_state     = cpg_mod.cpg_solve_and_state,
             gradient            = cpg_mod.cpg_gradient,
         ),
     )
@@ -157,7 +157,7 @@ def test_cvxpygen_updated_params(problem_and_ref, tmp_path):
         problem, parameters=[A_param, b_param], variables=[x_var],
         solver=SolverInterface.from_parametric_functions(
             solve               = cpg_mod.cpg_solve,
-            solve_and_gradient  = cpg_mod.cpg_solve_and_gradient_info,
+            solve_and_state     = cpg_mod.cpg_solve_and_state,
             gradient            = cpg_mod.cpg_gradient,
         ),
     )

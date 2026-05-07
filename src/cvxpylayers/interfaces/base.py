@@ -324,7 +324,7 @@ class SolverInterface(ABC):
 
     #: Set True for parameter-space solvers (e.g. CVXPYgen).
     #: ``CvxpyLayer`` will skip canonical-matrix evaluation and call
-    #: ``_cpg_solve`` / ``_cpg_solve_and_gradient`` / ``_cpg_gradient`` directly.
+    #: ``_cpg_solve`` / ``_cpg_solve_and_state`` / ``_cpg_gradient`` directly.
     is_parametric: bool = False
 
     @classmethod
@@ -424,7 +424,7 @@ class SolverInterface(ABC):
     def from_parametric_functions(
         cls,
         solve: Any,
-        solve_and_gradient: Any = None,
+        solve_and_state: Any = None,
         gradient: Any = None,
     ) -> "SolverInterface":
         """Create a parameter-space :class:`SolverInterface` from CVXPYgen functions.
@@ -438,7 +438,7 @@ class SolverInterface(ABC):
                 problem, parameters=[A, b], variables=[x],
                 solver=SolverInterface.from_parametric_functions(
                     solve               = cpg_solver.cpg_solve,
-                    solve_and_gradient  = cpg_solver.cpg_solve_and_gradient_info,
+                    solve_and_state     = cpg_solver.cpg_solve_and_state,
                     gradient            = cpg_solver.cpg_gradient,
                 ),
             )
@@ -455,7 +455,7 @@ class SolverInterface(ABC):
         Args:
             solve: ``cpg_solve(problem)`` — runs the compiled solver, sets
                 ``var.value``.
-            solve_and_gradient: ``cpg_solve_and_gradient_info(problem) ->
+            solve_and_state: ``cpg_solve_and_state(problem) ->
                 (cpg_var, gp, gd)`` — runs the solver *and* captures
                 intermediate data for the backward pass.  Optional; falls back
                 to ``solve`` when absent.
@@ -481,7 +481,7 @@ class SolverInterface(ABC):
                 "solve_numpy":             _not_impl,
                 "derivative_numpy":        _not_impl,
                 "_cpg_solve":              staticmethod(solve),
-                "_cpg_solve_and_gradient": staticmethod(solve_and_gradient) if solve_and_gradient is not None else None,
+                "_cpg_solve_and_state":    staticmethod(solve_and_state) if solve_and_state is not None else None,
                 "_cpg_gradient":           staticmethod(gradient) if gradient is not None else None,
             },
         )
