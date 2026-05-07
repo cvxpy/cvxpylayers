@@ -490,7 +490,7 @@ def parse_args(
             param_id_map: dict[int, int] = {}  # GP params handled via gp_param_to_log_param
         else:
             # Standard DCP path
-            data, chain, inverse_data = problem.get_problem_data(
+            data, chain, _ = problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
