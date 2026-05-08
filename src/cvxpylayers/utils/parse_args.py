@@ -1,44 +1,17 @@
 import contextlib
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generator, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
 import numpy as np
 import scipy.sparse
-from cvxpy.reductions.cvx_attr2constr import CvxAttr2Constr
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 from cvxpylayers.interfaces.base import SolverInterface
-
-
-@contextmanager
-def _qf_scope(active: bool) -> Generator[None, None, None]:
-    """Set quad_form_dpp_scope_active to `active` for the duration of the block.
-
-    CVXPY's quad_form_dpp_scope() generator lacks try/finally around its yield,
-    so any exception inside the with-block leaves the scope flag permanently set.
-    This wrapper fixes that by restoring the flag unconditionally.
-
-    Use active=True  to enter the scope (parametric quad_form P allowed).
-    Use active=False to suspend it (e.g. during constraint DPP checks).
-    """
-    if hasattr(scopes, "_thread_local"):
-        obj: Any = scopes._thread_local  # type: ignore[attr-defined]
-        attr = "quad_form_dpp_scope_active"
-    else:
-        obj = scopes
-        attr = "_quad_form_dpp_scope_active"
-    prev = getattr(obj, attr, False)
-    setattr(obj, attr, active)
-    try:
-        yield
-    finally:
-        setattr(obj, attr, prev)
 
 
 if TYPE_CHECKING:
@@ -181,27 +154,6 @@ class LayersContext:
         return ()
 
 
-def _compose_constr_id_map(chain: Any, inverse_data: list) -> dict[int, int]:
-    """Compose constraint ID maps across all reduction steps.
-
-    Each reduction step may assign fresh IDs. This traces each original
-    constraint ID through every step's cons_id_map and returns {orig_id: final_id}.
-    """
-    result: dict[int, int] = {}
-    for reduction, inv in zip(chain.reductions, inverse_data):
-        step_map: dict[int, int] = {}
-        if isinstance(reduction, CvxAttr2Constr) and len(inv) == 3:
-            # CvxAttr2Constr stores (id2new_var, id2old_var, cons_id_map) or () when it was a no-op.
-            _, _, step_map = inv
-        elif hasattr(inv, "cons_id_map") and isinstance(inv.cons_id_map, dict):
-            step_map = inv.cons_id_map
-        if step_map:
-            result = {orig: step_map.get(cur, cur) for orig, cur in result.items()}
-            for orig_id, new_id in step_map.items():
-                if orig_id not in result:
-                    result[orig_id] = new_id
-    return result
-
 
 def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
     """Build mapping from dual variable ID to parent constraint.
@@ -334,6 +286,7 @@ def _validate_problem(
     parameters: list[cp.Parameter],
     gp: bool,
     dual_var_to_constraint: dict[int, cp.Constraint],
+    qp_solver: bool,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
@@ -343,29 +296,24 @@ def _validate_problem(
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
         dual_var_to_constraint: Mapping from dual variable ID to parent constraint
+        qp_solver: Whether the solver handles quadratic objectives directly.
+            When True, quad_form(x, P) with parametric P is allowed in the
+            objective but rejected in constraints.
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
     """
-    # Check if problem follows disciplined parametrized programming (DPP) rules
     if gp:
-        if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp('dgp'):
             raise ValueError("Problem must be DPP for geometric programming.")
-    elif scopes.quad_form_dpp_scope_active():  # pyright: ignore[reportAttributeAccessIssue]
-        # quad_form_dpp_scope is active (QP-capable solver).
-        # Objective: check WITH scope (parametric quad_form P allowed)
-        if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
-            raise ValueError("Problem must be DPP.")
-        # Constraints: check WITHOUT scope (parametric quad_form P rejected).
-        with _qf_scope(False):
-            for c in problem.constraints:
-                if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
-                    raise ValueError(
-                        "Problem must be DPP. Note: quad_form(x, P) with parametric P "
-                        "is only supported in the objective, not in constraints."
-                    )
+    elif qp_solver:
+        if not problem.is_dpp(quad_form_dpp='qp'):  # type: ignore[call-arg]
+            raise ValueError(
+                "Problem must be DPP. Note: quad_form(x, P) with parametric P "
+                "is only supported in the objective, not in constraints."
+            )
     else:
-        if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp():
             raise ValueError("Problem must be DPP.")
 
     # Validate parameters match problem definition
@@ -493,15 +441,15 @@ def parse_args(
         solver = "DIFFCP"
         
     if custom_solver is not None:
-        use_quad_scope = solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
+        qp_solver = solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
     else:
-        use_quad_scope = solver in SUPPORTS_QUAD_OBJ
+        qp_solver = solver in SUPPORTS_QUAD_OBJ
 
-    # For QP-capable solvers, enter quad_form_dpp_scope so that
-    # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    with (_qf_scope(True) if use_quad_scope else contextlib.nullcontext()):
-        # Validate problem is DPP (disciplined parametrized programming)
-        _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
+    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint, qp_solver)
+
+    # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
+    # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
+    with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
 
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
@@ -514,7 +462,7 @@ def parse_args(
             gp_param_to_log_param = dgp2dcp.canon_methods._parameters
 
             # Get problem data from the already-transformed DCP problem
-            data, chain, inverse_data = dcp_problem.get_problem_data(
+            data, chain, _ = dcp_problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
@@ -531,7 +479,7 @@ def parse_args(
             param_id_map: dict[int, int] = {}  # GP params handled via gp_param_to_log_param
         else:
             # Standard DCP path
-            data, chain, inverse_data = problem.get_problem_data(
+            data, chain, _ = problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
@@ -547,7 +495,7 @@ def parse_args(
             param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
 
         # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
-        constr_id_map = _compose_constr_id_map(chain, inverse_data)
+        constr_id_map = chain.compose_constr_id_map()
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
