@@ -607,17 +607,17 @@ class CvxpyLayer:
         def solve_parametric(*params):
             for param_obj, p in zip(self.ctx.parameters, params):
                 param_obj.value = np.asarray(p)
-            solver._cpg_solve(self.ctx.problem, **solver_args)
+            solver._solve(self.ctx.problem, **solver_args)
             primal_np, dual_np = _pack_primal_dual(self.ctx)
             return jnp.array(primal_np), jnp.array(dual_np)
 
         def solve_parametric_fwd(*params):
             for param_obj, p in zip(self.ctx.parameters, params):
                 param_obj.value = np.asarray(p)
-            if solver._cpg_solve_and_state is not None:
-                _, state = solver._cpg_solve_and_state(self.ctx.problem, **solver_args)
+            if solver._solve_and_state is not None:
+                _, state = solver._solve_and_state(self.ctx.problem, **solver_args)
             else:
-                solver._cpg_solve(self.ctx.problem, **solver_args)
+                solver._solve(self.ctx.problem, **solver_args)
                 state = None
             state_container["state"] = state
             primal_np, dual_np = _pack_primal_dual(self.ctx)
@@ -633,7 +633,7 @@ class CvxpyLayer:
                 elif var_info.source == "dual" and var_info.dual is not None:
                     g_np = np.asarray(ddual[0, var_info.dual])
                     cvxpy_var.gradient = g_np.reshape(cvxpy_var.shape, order="F")
-            solver._cpg_gradient(self.ctx.problem, state)
+            solver._gradient(self.ctx.problem, state)
             return tuple(
                 jnp.array(np.asarray(p.gradient)) for p in self.ctx.parameters
             )

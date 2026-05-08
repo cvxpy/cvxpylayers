@@ -10,7 +10,7 @@ A single ``_CvxpyLayer`` autograd Function handles both solver kinds:
 * **Parameter-space solvers** (``is_parametric=True``, e.g. CVXPYgen): called as
   ``_CvxpyLayer.apply(None, None, None, cl_ctx, solver_args, needs_grad, None,
   *params)``.  Takes the raw parameter tensors as trailing variadic inputs,
-  calls ``_cpg_solve`` / ``_cpg_solve_and_state`` / ``_cpg_gradient``, and
+  calls ``_solve`` / ``_solve_and_state`` / ``_gradient``, and
   propagates gradients directly through ``param.gradient`` — no pseudoinverse
   required.  Because ``*params`` are extra inputs, ``backward`` returns
   ``(None,) * 7 + tuple(param_grads)`` so autograd matches one gradient per
@@ -99,10 +99,10 @@ try:
                 # ----------------------------------------------------------
                 problem = cl_ctx.problem  # param.value already set by CvxpyLayer
 
-                if needs_grad and solver._cpg_solve_and_state is not None:
-                    _, state = solver._cpg_solve_and_state(problem, **solver_args)
+                if needs_grad and solver._solve_and_state is not None:
+                    _, state = solver._solve_and_state(problem, **solver_args)
                 else:
-                    solver._cpg_solve(problem, **solver_args)
+                    solver._solve(problem, **solver_args)
                     state = None
 
                 primal_np, dual_np = _pack_primal_dual(cl_ctx)
@@ -141,21 +141,20 @@ try:
             inputs: tuple,
             outputs: tuple,
         ) -> None:
-            P_eval, q_eval, A_eval, cl_ctx, _, _, _, *params = inputs
+            _, _, _, cl_ctx, _, _, _, *params = inputs
             _, _, saved_state_or_grad_info, originally_unbatched = outputs
 
             solver = cl_ctx.solver
             ctx.is_parametric = getattr(solver, "is_parametric", False)
+            ctx.state = saved_state_or_grad_info
 
             if ctx.is_parametric:
                 ctx.cl_ctx        = cl_ctx
-                ctx.cpg_state     = saved_state_or_grad_info
                 ctx.param_shapes  = [p.shape  for p in params]
                 ctx.param_dtypes  = [p.dtype  for p in params]
                 ctx.param_devices = [p.device for p in params]
             else:
                 ctx.custom_solver        = solver
-                ctx.saved_state          = saved_state_or_grad_info
                 ctx.originally_unbatched = originally_unbatched
 
         @staticmethod
@@ -185,7 +184,7 @@ try:
                         cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
 
                 # Run the solver's backward pass; sets param.gradient for each param.
-                solver._cpg_gradient(cl_ctx.problem, ctx.cpg_state)
+                solver._gradient(cl_ctx.problem, ctx.state)
 
                 # Collect param.gradient → per-input-tensor gradients.
                 param_grads: list[_torch.Tensor] = []
@@ -209,7 +208,7 @@ try:
             # Canonical-matrix backward
             # ------------------------------------------------------------------
             dP_bf, dq_bf, dA_bf = ctx.custom_solver.derivative_torch_batch(
-                dprimal, ddual, ctx.saved_state,
+                dprimal, ddual, ctx.state,
             )
 
             # Transpose (B, n) → (n, B); squeeze trailing dim for unbatched.
