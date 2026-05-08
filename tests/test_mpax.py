@@ -405,7 +405,7 @@ def test_soc_problem_rejected():
     x = cp.Variable(3)
     problem = cp.Problem(cp.Minimize(cp.norm(x, 2)), [x >= 0])
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
+    with pytest.raises(SolverError, match="cannot solve this problem"):
         CvxpyLayer(problem, [], [x], solver="MPAX")
 
 
@@ -415,7 +415,7 @@ def test_exponential_cone_rejected():
     x = cp.Variable()
     problem = cp.Problem(cp.Minimize(-cp.log(x)), [x >= 0.1])
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
+    with pytest.raises(SolverError, match="cannot solve this problem"):
         CvxpyLayer(problem, [], [x], solver="MPAX")
 
 
@@ -425,7 +425,7 @@ def test_sdp_rejected():
     X = cp.Variable((3, 3), PSD=True)
     problem = cp.Problem(cp.Minimize(cp.trace(X)))
 
-    with pytest.raises(SolverError, match="could not be reduced to a QP"):
+    with pytest.raises(SolverError, match="cannot solve this problem"):
         CvxpyLayer(problem, [], [X], solver="MPAX")
 
 

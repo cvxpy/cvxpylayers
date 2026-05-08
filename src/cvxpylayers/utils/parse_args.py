@@ -4,12 +4,14 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import cvxpy as cp
 import cvxpy.constraints
+import numpy as np
 import scipy.sparse
 from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
+
 
 if TYPE_CHECKING:
     import torch
@@ -90,6 +92,10 @@ class LayersContext:
     gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
     # Pre-computed mask: which params need log() for GP (JIT-compatible)
     gp_log_mask: tuple[bool, ...] | None = None
+    # Pre-computed upper-triangle indices for symmetric/PSD/NSD parameters.
+    # Entry i is (row_indices, col_indices) if parameter i needs upper-tri
+    # extraction before building p_stack, or None if it doesn't.
+    param_triu_indices: tuple[tuple[tuple[int, ...], tuple[int, ...]] | None, ...] = ()
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -143,6 +149,7 @@ class LayersContext:
         return ()
 
 
+
 def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
     """Build mapping from dual variable ID to parent constraint.
 
@@ -169,9 +176,13 @@ def _dual_var_offset(var: cp.Variable, constraint: cp.Constraint) -> int:
     raise ValueError(f"Variable {var} not found in constraint {constraint}")
 
 
-def _build_primal_recovery(var: cp.Variable, param_prob: ParamConeProg) -> VariableRecovery:
+def _build_primal_recovery(
+    var: cp.Variable,
+    param_prob: ParamConeProg,
+    var_id_map: dict[int, int],
+) -> VariableRecovery:
     """Build recovery info for a primal variable."""
-    start = param_prob.var_id_to_col[var.id]
+    start = param_prob.var_id_to_col[var_id_map.get(var.id, var.id)]
     is_sym = hasattr(var, "is_symmetric") and var.is_symmetric() and len(var.shape) >= 2
 
     if is_sym:
@@ -198,9 +209,10 @@ def _build_dual_recovery(
     var: cp.Variable,
     parent_con: cp.Constraint,
     constr_id_to_slice: dict[int, slice],
+    constr_id_map: dict[int, int],
 ) -> VariableRecovery:
     """Build recovery info for a dual variable."""
-    constr_slice = constr_id_to_slice[parent_con.id]
+    constr_slice = constr_id_to_slice[constr_id_map.get(parent_con.id, parent_con.id)]
     offset = _dual_var_offset(var, parent_con)
     dual_start = constr_slice.start + offset
 
@@ -226,7 +238,7 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
     """Build mapping from constraint ID to slice in dual solution vector.
 
     The dual solution vector is ordered by cone type:
-    Zero (equalities) -> NonNeg (inequalities) -> SOC -> ExpCone -> PSD -> PowCone3D
+    Zero (equalities) -> NonNeg (inequalities) -> SOC -> PSD/SvecPSD -> ExpCone -> PowCone3D
 
     Args:
         param_prob: CVXPY's parametrized cone program
@@ -242,8 +254,9 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
         cvxpy.constraints.Zero,
         cvxpy.constraints.NonNeg,
         cvxpy.constraints.SOC,
-        cvxpy.constraints.ExpCone,
         cvxpy.constraints.PSD,
+        cvxpy.constraints.SvecPSD,
+        cvxpy.constraints.ExpCone,
         cvxpy.constraints.PowCone3D,
     ]
 
@@ -268,6 +281,7 @@ def _validate_problem(
     parameters: list[cp.Parameter],
     gp: bool,
     dual_var_to_constraint: dict[int, cp.Constraint],
+    qp_solver: bool,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
 
@@ -277,35 +291,24 @@ def _validate_problem(
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
         dual_var_to_constraint: Mapping from dual variable ID to parent constraint
+        qp_solver: Whether the solver handles quadratic objectives directly.
+            When True, quad_form(x, P) with parametric P is allowed in the
+            objective but rejected in constraints.
 
     Raises:
         ValueError: If problem is not DPP-compliant or inputs are invalid
     """
-    # Check if problem follows disciplined parametrized programming (DPP) rules
     if gp:
-        if not problem.is_dgp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp('dgp'):
             raise ValueError("Problem must be DPP for geometric programming.")
-    elif scopes.quad_form_dpp_scope_active():  # pyright: ignore[reportAttributeAccessIssue]
-        # quad_form_dpp_scope is active (QP-capable solver).
-        # Objective: check WITH scope (parametric quad_form P allowed)
-        if not problem.objective.is_dcp(dpp=True):  # type: ignore[call-arg]
-            raise ValueError("Problem must be DPP.")
-        # Constraints: check WITHOUT scope (parametric quad_form P rejected).
-        # Temporarily deactivate the scope so that quad_form(x, P) in
-        # constraints is correctly flagged as non-DPP.
-        prev = scopes._quad_form_dpp_scope_active  # pyright: ignore[reportAttributeAccessIssue]
-        scopes._quad_form_dpp_scope_active = False  # pyright: ignore[reportAttributeAccessIssue]
-        try:
-            for c in problem.constraints:
-                if not c.is_dcp(dpp=True):  # type: ignore[call-arg]
-                    raise ValueError(
-                        "Problem must be DPP. Note: quad_form(x, P) with parametric P "
-                        "is only supported in the objective, not in constraints."
-                    )
-        finally:
-            scopes._quad_form_dpp_scope_active = prev  # pyright: ignore[reportAttributeAccessIssue]
+    elif qp_solver:
+        if not problem.is_dpp(quad_form_dpp='qp'):  # type: ignore[call-arg]
+            raise ValueError(
+                "Problem must be DPP. Note: quad_form(x, P) with parametric P "
+                "is only supported in the objective, not in constraints."
+            )
     else:
-        if not problem.is_dcp(dpp=True):  # type: ignore[call-arg]
+        if not problem.is_dpp():
             raise ValueError("Problem must be DPP.")
 
     # Validate parameters match problem definition
@@ -330,8 +333,8 @@ def _validate_problem(
 def _build_user_order_mapping(
     parameters: list[cp.Parameter],
     param_prob: ParamConeProg,
-    gp: bool,
     gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None,
+    param_id_map: dict[int, int],
 ) -> tuple[int, ...]:
     """Build mapping from user parameter order to column order.
 
@@ -342,14 +345,17 @@ def _build_user_order_mapping(
     Args:
         parameters: List of CVXPY parameters in user order
         param_prob: CVXPY's parametrized problem object
-        gp: Whether this is a geometric program
-        gp_param_to_log_param: Mapping from GP params to log-space DCP params
+        gp_param_to_log_param: Mapping from GP params to log-space DCP params, or None
+        param_id_map: Flat mapping from original param IDs to final canonical IDs
 
     Returns:
         Tuple mapping user parameter index to column order index (JIT-compatible)
     """
+    def _resolve(raw_id: int) -> int:
+        return param_id_map.get(raw_id, raw_id)
+
     # For GP problems, we need to use the log-space DCP parameter IDs
-    if gp and gp_param_to_log_param:
+    if gp_param_to_log_param:
         # Map user order index to column using log-space DCP parameters
         # Must sort by column position (same as non-GP path) so that
         # sequential slot indices match the canonical parameter order
@@ -359,7 +365,7 @@ def _build_user_order_mapping(
                 [
                     (
                         param_prob.param_id_to_col[
-                            gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id
+                            _resolve(gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id)
                         ],
                         i,
                     )
@@ -372,7 +378,7 @@ def _build_user_order_mapping(
         user_order_to_col = {
             i: col
             for col, i in sorted(
-                [(param_prob.param_id_to_col[p.id], i) for i, p in enumerate(parameters)],
+                [(param_prob.param_id_to_col[_resolve(p.id)], i) for i, p in enumerate(parameters)],
             )
         }
 
@@ -417,21 +423,15 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
-    # For QP-capable solvers, enter quad_form_dpp_scope so that
-    # parametric quad_form(x, P) passes DPP validation and canonicalization.
-    effective_solver = solver or "DIFFCP"
-    qf_scope = (
-        scopes.quad_form_dpp_scope()  # pyright: ignore[reportAttributeAccessIssue]
-        if effective_solver in SUPPORTS_QUAD_OBJ
-        else contextlib.nullcontext()
-    )
+    if solver is None:
+        solver = "DIFFCP"
+        
+    qp_solver = solver in SUPPORTS_QUAD_OBJ
+    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint, qp_solver)
 
-    with qf_scope:
-        # Validate problem is DPP (disciplined parametrized programming)
-        _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint)
-
-        if solver is None:
-            solver = "DIFFCP"
+    # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
+    # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
+    with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
 
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
@@ -444,22 +444,40 @@ def parse_args(
             gp_param_to_log_param = dgp2dcp.canon_methods._parameters
 
             # Get problem data from the already-transformed DCP problem
-            data, _, _ = dcp_problem.get_problem_data(
+            data, chain, _ = dcp_problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
                 canon_backend=canon_backend,
                 solver_opts=solver_args,
             )
+
+            # In newer CVXPY, Dgp2Dcp gives fresh IDs to log-space variables
+            _dcp_var_map = {k: v[0] for k, v in chain.compose_var_id_map().items()}
+            var_id_map: dict[int, int] = {
+                orig_id: _dcp_var_map.get(log_ids[0], log_ids[0])
+                for orig_id, log_ids in dgp2dcp.var_id_map.items()
+            }
+            param_id_map: dict[int, int] = {}  # GP params handled via gp_param_to_log_param
         else:
             # Standard DCP path
-            data, _, _ = problem.get_problem_data(
+            data, chain, _ = problem.get_problem_data(
                 solver=solver,
                 gp=False,
                 verbose=verbose,
                 canon_backend=canon_backend,
                 solver_opts=solver_args,
             )
+
+            # In newer CVXPY, lowered variables and parameters receive fresh IDs
+            raw_vmap = chain.compose_var_id_map()
+            if any(len(v) > 1 for v in raw_vmap.values()):
+                raise NotImplementedError("Complex variables are not yet supported.")
+            var_id_map = {k: v[0] for k, v in raw_vmap.items()}
+            param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
+
+        # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
+        constr_id_map = chain.compose_constr_id_map()
 
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
@@ -476,7 +494,7 @@ def parse_args(
 
     # Build parameter ordering mapping
     user_order_to_col_order = _build_user_order_mapping(
-        parameters, param_prob, gp, gp_param_to_log_param
+        parameters, param_prob, gp_param_to_log_param, param_id_map
     )
 
     q = getattr(param_prob, "q", getattr(param_prob, "c", None))
@@ -488,15 +506,33 @@ def parse_args(
     var_recover = []
     for v in variables:
         if v in primal_vars:
-            var_recover.append(_build_primal_recovery(v, param_prob))
+            var_recover.append(_build_primal_recovery(v, param_prob, var_id_map))
         else:
             parent_con = dual_var_to_constraint[v.id]
-            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice))
+            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice, constr_id_map))
 
     # Pre-compute GP log mask for JIT compatibility
     gp_log_mask = None
     if gp and gp_param_to_log_param:
         gp_log_mask = tuple(p in gp_param_to_log_param for p in parameters)
+
+    # Pre-compute upper-triangle indices for (symmetric/hermitian/PSD/NSD attributes)
+    # parameters that CVXPY lowered to their upper-tri vector form
+    triu_list: list[tuple[tuple[int, ...], tuple[int, ...]] | None] = []
+    for p in parameters:
+        if getattr(p, "_has_dim_reducing_attr", False) and p.id in param_id_map:
+            if any(p.attributes.get(a) for a in ("symmetric", "hermitian", "PSD", "NSD")):
+                n = p.shape[-1]
+                rows, cols = np.triu_indices(n)
+                triu_list.append((tuple(rows.tolist()), tuple(cols.tolist())))
+            else:
+                raise NotImplementedError(
+                    f"Parameter '{p.name()}' has a dimension-reducing attribute "
+                    f"(diag, sparsity, or similar) that cvxpylayers does not yet handle"
+                )
+        else:
+            triu_list.append(None)
+    param_triu_indices = tuple(triu_list)
 
     return LayersContext(
         parameters,
@@ -511,4 +547,5 @@ def parse_args(
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,
         gp_log_mask=gp_log_mask,
+        param_triu_indices=param_triu_indices,
     )
