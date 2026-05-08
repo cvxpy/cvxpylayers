@@ -14,6 +14,7 @@ from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 from cvxpylayers.interfaces.base import SolverInterface
 
 
+
 if TYPE_CHECKING:
     import torch
 
