@@ -11,6 +11,8 @@ from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
 from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
+from cvxpylayers.interfaces.base import SolverInterface
+
 
 
 if TYPE_CHECKING:
@@ -78,13 +80,17 @@ class LayersContext:
     q: scipy.sparse.csr_array | None
     reduced_A: scipy.sparse.csr_array
     cone_dims: dict[str, int | list[int]]
-    solver_ctx: SolverContext
-    solver: str
+    solver_ctx: SolverContext | None  # None when a SolverInterface is used
+    solver: str | SolverInterface  # SolverInterface instance for custom solvers
     var_recover: list[VariableRecovery]
     user_order_to_col_order: tuple[int, ...]
     batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
+    # Original CVXPY problem and variables — used by CvxpygenInterface to read
+    # var.value / set var.gradient without needing canonical matrix bookkeeping.
+    problem: cp.Problem | None = None
+    variables: list[cp.Variable] | None = None
     # GP (Geometric Programming) support
     gp: bool = False
     # Maps original GP parameters to their log-space DCP parameters
@@ -400,6 +406,7 @@ def parse_args(
     verbose: bool = False,
     canon_backend: str | None = None,
     solver_args: dict[str, Any] | None = None,
+    custom_solver: Any = None,
 ) -> LayersContext:
     """Parse and canonicalize a CVXPY problem for use in differentiable layers.
 
@@ -411,11 +418,15 @@ def parse_args(
         problem: CVXPY problem to canonicalize
         variables: List of variables to return from forward pass
         parameters: List of parameters that will be provided at runtime
-        solver: Solver backend to use (DIFFCP, MOREAU, CUCLARABEL, MPAX)
+        solver: Solver backend to use (DIFFCP, MOREAU, CUCLARABEL, MPAX), or
+            the CVXPY canonicalization solver string when custom_solver is set.
         gp: Whether this is a geometric program
         verbose: Whether to print solver output
         canon_backend: Backend for canonicalization
         solver_args: Default solver arguments
+        custom_solver: A SolverInterface subclass instance.  When provided,
+            ``solver`` is used only for CVXPY canonicalization and
+            LayersContext.solver is set to the SolverInterface object itself.
 
     Returns:
         LayersContext containing canonicalized problem data
@@ -423,10 +434,18 @@ def parse_args(
     # Build dual variable map for O(1) constraint lookup
     dual_var_to_constraint = _build_dual_var_map(problem)
 
-    if solver is None:
+    if custom_solver is not None:
+        # Use the custom solver's canon_solver as the CVXPY solver string,
+        # falling back to whatever the caller passed in solver.
+        solver = solver or custom_solver.canon_solver_name
+    elif solver is None:
         solver = "DIFFCP"
         
-    qp_solver = solver in SUPPORTS_QUAD_OBJ
+    if custom_solver is not None:
+        qp_solver = solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
+    else:
+        qp_solver = solver in SUPPORTS_QUAD_OBJ
+
     _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint, qp_solver)
 
     # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
@@ -482,15 +501,21 @@ def parse_args(
     param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
     cone_dims = data["dims"]
 
-    # Create solver context
-    solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
-        solver,
-        param_prob,
-        cone_dims,
-        data,
-        solver_args,
-        verbose=verbose,
-    )
+    # Create solver context — skip for custom solvers (no built-in ctx needed)
+    if custom_solver is not None:
+        solver_ctx = None
+        # Store the SolverInterface object directly as the solver identifier.
+        layer_solver = custom_solver
+    else:
+        solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
+            solver,
+            param_prob,
+            cone_dims,
+            data,
+            solver_args,
+            verbose=verbose,
+        )
+        layer_solver = solver
 
     # Build parameter ordering mapping
     user_order_to_col_order = _build_user_order_mapping(
@@ -541,11 +566,13 @@ def parse_args(
         param_prob.reduced_A,
         cone_dims,
         solver_ctx,  # type: ignore[arg-type]
-        solver,
+        layer_solver,
         var_recover=var_recover,
         user_order_to_col_order=user_order_to_col_order,
         gp=gp,
         gp_param_to_log_param=gp_param_to_log_param,
         gp_log_mask=gp_log_mask,
+        problem=problem,
+        variables=list(variables),
         param_triu_indices=param_triu_indices,
     )

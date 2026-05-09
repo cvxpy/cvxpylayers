@@ -1,0 +1,33 @@
+name: test_cvxpygen
+
+on:
+    pull_request:
+    push:
+        branches:
+            - master
+        tags:
+          - '*'
+jobs:
+  test_cvxpygen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install libeigen3-dev
+      - name: Install dependencies
+        run: |
+          uv venv --seed
+          uv pip install -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
+          git clone --recurse-submodules https://github.com/cvxgrp/cvxpygen.git
+          cd cvxpygen
+          uv pip install ".[dev]"
+      - name: Run CVXPYgen tests
+        run: |
+          uv run --no-sync pytest cvxpygen/tests/test_diff.py

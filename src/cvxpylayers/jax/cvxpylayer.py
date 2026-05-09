@@ -14,6 +14,7 @@ except ImportError:
     BatchedWarmStart = None  # type: ignore[assignment,misc]
 
 import cvxpylayers.utils.parse_args as pa
+from cvxpylayers.interfaces.base import SolverInterface
 
 
 def _reshape_fortran(array: jnp.ndarray, shape: tuple) -> jnp.ndarray:
@@ -282,7 +283,7 @@ class CvxpyLayer:
         problem: cp.Problem,
         parameters: list[cp.Parameter],
         variables: list[cp.Variable],
-        solver: str | None = None,
+        solver: str | SolverInterface | None = None,
         gp: bool = False,
         verbose: bool = False,
         canon_backend: str | None = None,
@@ -297,8 +298,10 @@ class CvxpyLayer:
                 at runtime. Order must match the order of arrays passed to __call__().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by __call__(). Order determines the order of returned arrays.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
-                If None, uses the default diffcp solver.
+            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+                a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
+                for a custom solver (e.g. CVXPYgen), or ``None`` (uses diffcp
+                by default).
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.
@@ -313,15 +316,24 @@ class CvxpyLayer:
         """
         if solver_args is None:
             solver_args = {}
+
+        canon_solver_str: str | None = (
+            None if isinstance(solver, SolverInterface) else solver
+        )
+        custom_solver: SolverInterface | None = (
+            solver if isinstance(solver, SolverInterface) else None
+        )
+
         self.ctx = pa.parse_args(
             problem,
             variables,
             parameters,
-            solver,
+            canon_solver_str,
             gp=gp,
             verbose=verbose,
             canon_backend=canon_backend,
             solver_args=solver_args,
+            custom_solver=custom_solver,
         )
         if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
             self.P = scipy_csr_to_jax_bcsr(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
@@ -329,6 +341,9 @@ class CvxpyLayer:
             self.P = None
         self.q: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.q.tocsr())  # type: ignore[assignment]
         self.A: jax.experimental.sparse.BCSR = scipy_csr_to_jax_bcsr(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined,assignment]
+
+        if isinstance(self.ctx.solver, SolverInterface):
+            self.ctx.solver.setup(self.ctx)
 
         # Cache the Moreau solve functions for JIT compatibility.
         # Must be captured as closure, not looked up dynamically during tracing.
@@ -386,6 +401,9 @@ class CvxpyLayer:
                 f"Current solver is '{self.ctx.solver}'."
             )
         batch = self.ctx.validate_params(list(params))
+
+        if isinstance(self.ctx.solver, SolverInterface) and self.ctx.solver.is_parametric:
+            return self._solve_parametric(params, solver_args, batch)
 
         # Apply log transformation to GP parameters
         params = _apply_gp_log_transform(params, self.ctx)
@@ -571,6 +589,57 @@ class CvxpyLayer:
         except jax.errors.TracerArrayConversionError:
             pass  # Inside jit/vmap — warm start cache not available
 
+        return _recover_results(primal, dual, self.ctx, batch)
+
+    def _solve_parametric(
+        self,
+        params: tuple[jnp.ndarray, ...],
+        solver_args: dict[str, Any],
+        batch: tuple,
+    ) -> tuple[jnp.ndarray, ...]:
+        """Parametric custom-solver path (e.g. CVXPYgen). Not JIT-compatible."""
+        from cvxpylayers.interfaces.custom_if import _pack_primal_dual
+
+        solver = self.ctx.solver
+        state_container: dict[str, Any] = {}
+
+        @jax.custom_vjp
+        def solve_parametric(*params):
+            for param_obj, p in zip(self.ctx.parameters, params):
+                param_obj.value = np.asarray(p)
+            solver._solve(self.ctx.problem, **solver_args)
+            primal_np, dual_np = _pack_primal_dual(self.ctx)
+            return jnp.array(primal_np), jnp.array(dual_np)
+
+        def solve_parametric_fwd(*params):
+            for param_obj, p in zip(self.ctx.parameters, params):
+                param_obj.value = np.asarray(p)
+            if solver._solve_and_state is not None:
+                _, state = solver._solve_and_state(self.ctx.problem, **solver_args)
+            else:
+                solver._solve(self.ctx.problem, **solver_args)
+                state = None
+            state_container["state"] = state
+            primal_np, dual_np = _pack_primal_dual(self.ctx)
+            return (jnp.array(primal_np), jnp.array(dual_np)), ()
+
+        def solve_parametric_bwd(_, g):
+            dprimal, ddual = g
+            state = state_container["state"]
+            for var_info, cvxpy_var in zip(self.ctx.var_recover, self.ctx.variables):
+                if var_info.source == "primal" and var_info.primal is not None:
+                    g_np = np.asarray(dprimal[0, var_info.primal])
+                    cvxpy_var.gradient = g_np.reshape(cvxpy_var.shape, order="F")
+                elif var_info.source == "dual" and var_info.dual is not None:
+                    g_np = np.asarray(ddual[0, var_info.dual])
+                    cvxpy_var.gradient = g_np.reshape(cvxpy_var.shape, order="F")
+            solver._gradient(self.ctx.problem, state)
+            return tuple(
+                jnp.array(np.asarray(p.gradient)) for p in self.ctx.parameters
+            )
+
+        solve_parametric.defvjp(solve_parametric_fwd, solve_parametric_bwd)
+        primal, dual = solve_parametric(*params)
         return _recover_results(primal, dual, self.ctx, batch)
 
     def _solve_with_custom_vjp(

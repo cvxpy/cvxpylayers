@@ -25,9 +25,7 @@ jobs:
           uv pip install --system -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
           uv pip install --system "mlx[cpu]" mpax pytest
       - name: Install Moreau
-        run: uv pip install --system moreau --extra-index-url https://${FURY_TOKEN}:@pypi.fury.io/optimalintellect/
-        env:
-          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
+        run: uv pip install --system moreau
       - name: Run tests
         run: pytest
         env:

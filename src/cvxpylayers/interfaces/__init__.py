@@ -1,3 +1,4 @@
+from cvxpylayers.interfaces.base import SolverInterface
 from cvxpylayers.utils.solver_utils import convert_to_csr
 
 
@@ -19,6 +20,12 @@ def get_solver_ctx(
     verbose=False,
 ):
     options = _merge_verbose(kwargs, verbose)
+
+    match solver:
+        case SolverInterface():
+            # Custom solver object is stored directly on LayersContext.solver;
+            # no separate solver context is needed.
+            return None
 
     if solver == "DIFFCP":
         from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
@@ -74,11 +81,16 @@ def get_torch_cvxpylayer(solver):
 
     Args:
         solver: Solver name string (e.g., "DIFFCP", "MOREAU", "CUCLARABEL", "MPAX")
+                or a SolverInterface instance for custom solvers.
 
     Returns:
         The _CvxpyLayer class for the specified solver
     """
     match solver:
+        case SolverInterface():
+            from cvxpylayers.interfaces.custom_if import _CvxpyLayer
+
+            return _CvxpyLayer
         case "MPAX":
             from cvxpylayers.interfaces.mpax_if import _CvxpyLayer
 
