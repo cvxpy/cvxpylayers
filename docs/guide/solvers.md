@@ -63,7 +63,7 @@ layer = CvxpyLayer(
 )
 ```
 
-Here, `P`, `q`, and `A` are flat NumPy arrays containing the canonical problem data,
+Here, `P`, `q`, and `A` are flattened NumPy arrays containing the canonical problem data,
 `dims` describes the cone dimensions, `needs_grad` signals whether the backward pass
 will run; `state` is whatever your `solve` wants to hand to `derivative` (can be
 skipped if `needs_grad=False`); `dprimal`, `ddual` are upstream cotangents for the
