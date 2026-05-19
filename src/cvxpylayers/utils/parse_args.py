@@ -10,8 +10,13 @@ from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
 from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
-from cvxpylayers._quad_form_dpp import SUPPORTS_QUAD_OBJ
 from cvxpylayers.interfaces.base import SolverInterface
+
+# Solvers whose cvxpylayers interface supports quadratic objectives directly.
+# For these solvers, quad_form_dpp_scope is entered during canonicalization
+# so that quad_form(x, P) with parametric P is accepted as DPP.
+# DIFFCP decomposes quad_form to SOC and cannot handle parametric P.
+SUPPORTS_QUAD_OBJ = frozenset({"MOREAU", "CUCLARABEL", "MPAX"})
 
 
 
@@ -189,7 +194,7 @@ def _build_primal_recovery(
 ) -> VariableRecovery:
     """Build recovery info for a primal variable."""
     start = param_prob.var_id_to_col[var_id_map.get(var.id, var.id)]
-    is_sym = hasattr(var, "is_symmetric") and var.is_symmetric() and len(var.shape) >= 2
+    is_sym = var.is_symmetric() and len(var.shape) >= 2
 
     if is_sym:
         n = var.shape[0]  # type: ignore[index]
@@ -522,7 +527,7 @@ def parse_args(
         parameters, param_prob, gp_param_to_log_param, param_id_map
     )
 
-    q = getattr(param_prob, "q", getattr(param_prob, "c", None))
+    q = param_prob.q
 
     # Build variable recovery info for each requested variable
     constr_id_to_slice = _build_constr_id_to_slice(param_prob)

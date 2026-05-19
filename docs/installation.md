@@ -167,10 +167,22 @@ print("Installation successful!")
 :::{admonition} Moreau — Best Performance on CPU & GPU
 :class: tip
 
-[Moreau](https://docs.moreau.so/) is the recommended solver for best performance. Available by request through a private package index.
+[Moreau](https://docs.moreau.so/) is the recommended solver for best performance.
 :::
 
-See the [Moreau installation guide](https://docs.moreau.so/installation.html) for access and setup instructions.
+Before installing, review the [Moreau installation guide](https://docs.moreau.so/installation.html)
+for license terms and access requirements.
+
+```bash
+pip install cvxpylayers[moreau]
+```
+
+For GPU acceleration, install the matching Moreau CUDA wheel
+(see the [Moreau installation guide](https://docs.moreau.so/installation.html) for details):
+
+```bash
+pip install "moreau[cuda12]"   # or moreau[cuda13]
+```
 
 ### CuClarabel (Open-Source Alternative)
 
@@ -234,7 +246,7 @@ b_gpu = b_t.cuda()
 |---------|---------|---------|
 | Python | >= 3.11 | Runtime |
 | NumPy | >= 1.22.4 | Array operations |
-| CVXPY | >= 1.7.4 | Problem specification |
+| CVXPY | >= 1.9.0 | Problem specification |
 | diffcp | >= 1.1.0 | Differentiable cone programming |
 :::
 
@@ -244,6 +256,7 @@ b_gpu = b_t.cuda()
 | PyTorch | >= 2.0 |
 | JAX | >= 0.4.0 |
 | MLX | >= 0.27.1 |
+| Moreau | >= 0.3.0 |
 :::
 
 ---

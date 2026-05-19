@@ -45,7 +45,7 @@ separately, which can be done by following the instructions on their websites.
 CVXPYlayers has the following dependencies:
 * Python >= 3.11
 * [NumPy](https://pypi.org/project/numpy/) >= 1.22.4
-* [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.7.4
+* [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.9.0
 * [diffcp](https://github.com/cvxgrp/diffcp) >= 1.1.0
 
 Additionally, install one of the following frameworks:
@@ -55,8 +55,21 @@ Additionally, install one of the following frameworks:
 
 ### GPU-accelerated pathway
 
-For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/).
-Moreau is available by request — see the [installation guide](https://docs.moreau.so/installation.html) for access and setup.
+For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/)
+via the `moreau` extra. Before installing, review the
+[Moreau installation guide](https://docs.moreau.so/installation.html) for license
+terms and access requirements.
+
+```bash
+pip install cvxpylayers[moreau]
+```
+
+For GPU support, install the matching Moreau CUDA wheel (see the
+[Moreau installation guide](https://docs.moreau.so/installation.html) for details):
+
+```bash
+pip install "moreau[cuda12]"   # or moreau[cuda13]
+```
 
 As an open-source alternative, you can use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) for GPU acceleration. This requires installing Julia and several additional packages:
 
