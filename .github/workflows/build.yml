@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - 'release/**'
     tags:
       - '*'
 
@@ -15,6 +16,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs needs full history + tags to derive version
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

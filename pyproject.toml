@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -173,4 +173,7 @@ known-first-party = ["cvxpylayers"]
 max-complexity = 25
 
 [tool.hatch.version]
-path = "src/cvxpylayers/__init__.py"
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/cvxpylayers/_version.py"
