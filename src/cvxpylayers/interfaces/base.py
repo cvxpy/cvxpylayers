@@ -489,8 +489,8 @@ class SolverInterface(ABC):
             layer = CvxpyLayer(
                 problem, parameters=[A, b], variables=[x],
                 solver=SolverInterface.from_codegen(
-                    solve_and_state = cpg_solver.cpg_solve_and_state,
-                    gradient = cpg_solver.cpg_gradient,
+                    solve_and_state = cpg_solver.forward,
+                    gradient = cpg_solver.backward,
                 ),
             )
             

@@ -12,7 +12,7 @@ objective = cp.Minimize(0.5 * cp.pnorm(A @ x - b, p=1))
 problem = cp.Problem(objective, constraints)
 assert problem.is_dpp()
 
-cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CUCLARABEL)
+cvxpylayer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
 key = jax.random.PRNGKey(0)
 key, k1, k2 = jax.random.split(key, 3)
 A_jax = jax.random.normal(k1, shape=(m, n))

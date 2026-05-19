@@ -17,7 +17,7 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.11"
 dependencies = [
-    "cvxpy>=1.9",
+    "cvxpy>=1.9.0",
     "diffcp>=1.1.0",
     "numpy>=1.22.4",
     "scipy>=1.13.0",
@@ -46,16 +46,18 @@ Documentation = "https://github.com/cvxpy/cvxpylayers"
 
 [project.optional-dependencies]
 torch = ["torch>=2.0.0", "diffcp>=1.1.0"]
-mlx = ["mlx==0.27.1"]
-metal = ["mlx-metal==0.27.1"]
+mlx = ["mlx>=0.27.1"]
+metal = ["mlx-metal>=0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
+moreau = ["moreau>=0.3.0"]
 all = [
     "torch>=2.0.0",
     "diffqcp>=0.4.4",
- "jax>=0.4.0",
- "jaxlib>=0.4.0",
- "mlx==0.27.1",
- "mlx-metal==0.27.1",
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+    "mlx>=0.27.1",
+    "mlx-metal>=0.27.1",
+    "moreau>=0.3.0",
 ]
 
 [tool.hatch.metadata]
@@ -69,18 +71,18 @@ include = ["/src", "/examples", "/README.md", "/LICENSE"]
 
 [dependency-groups]
 dev = [
-    "codespell==2.4.1",
-    "covdefaults==2.3.0",
-    "coverage[toml]==7.6.12",
-    "pre-commit==4.2.0",
-    "pre-commit-hooks==5.0.0",
-    "pylint==3.3.4",
-    "pytest==8.4.1",
-    "pytest-cov==6.2.1",
-    "ruff==0.12.7",
-    "ty==0.0.1a16",
-    "yamllint==1.35.1",
-    "ipykernel==6.30.0",
+    "codespell>=2.4.1",
+    "covdefaults>=2.3.0",
+    "coverage[toml]>=7.6.12",
+    "pre-commit>=4.2.0",
+    "pre-commit-hooks>=5.0.0",
+    "pylint>=3.3.4",
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "ruff>=0.12.7",
+    "ty>=0.0.1a16",
+    "yamllint>=1.35.1",
+    "ipykernel>=6.30.0",
 ]
 doc = [
     "sphinx >= 8.0.0",

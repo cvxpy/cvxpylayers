@@ -96,6 +96,6 @@ Key test patterns:
 ## Dependencies
 
 - Python >= 3.11
-- CVXPY >= 1.7.4 (for native DGP→DCP reduction)
+- CVXPY >= 1.9.0 (provides `quad_form_dpp_scope` for parametric quad_form, native DGP→DCP reduction)
 - diffcp >= 1.1.0 (default solver backend)
 - Framework: PyTorch >= 2.0, JAX >= 0.4.0, or MLX
