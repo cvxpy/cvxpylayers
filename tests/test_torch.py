@@ -245,7 +245,10 @@ def test_sdp():
     # Use a well-conditioned symmetric matrix
     C_t = torch.tensor([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], requires_grad=True)
 
-    torch.autograd.gradcheck(layer, (C_t,), atol=1e-4, rtol=1e-3)
+    torch.autograd.gradcheck(
+        lambda C: layer(C, solver_args={"eps": 1e-10}),
+        (C_t,), atol=1e-4, rtol=1e-3,
+    )
 
 
 def test_not_enough_parameters():
