@@ -250,7 +250,7 @@ def test_dual_gradcheck_inequality():
 
     # Function that returns dual variable for gradcheck
     def f(c_t):
-        x_opt, ineq_dual = layer(c_t)
+        x_opt, ineq_dual = layer(c_t, solver_args={"eps": 1e-10})
         return ineq_dual
 
     c_t = torch.tensor([1.0, -1.0], requires_grad=True)
@@ -303,7 +303,7 @@ def test_dual_gradcheck_vector_equality():
     )
 
     def f(A_t, b_t):
-        x_opt, eq_dual = layer(A_t, b_t)
+        x_opt, eq_dual = layer(A_t, b_t, solver_args={"eps": 1e-10})
         return eq_dual.sum()
 
     torch.manual_seed(42)
