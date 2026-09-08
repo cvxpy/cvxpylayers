@@ -15,6 +15,14 @@ from cvxpylayers.torch import CvxpyLayer  # noqa: E402
 
 torch.set_default_dtype(torch.double)
 
+# ``gradcheck`` compares the analytic derivative against a finite difference with a step
+# of ~1e-6, so the forward solve has to be accurate to well below that or the difference
+# quotient is dominated by solver noise rather than by curvature. SCS's default tolerance
+# is not enough: it caps the accuracy of both the finite difference *and* the implicit
+# derivative at ~1e-4, which is the tolerance these tests assert. Ask for a tight solve
+# instead of loosening the assertions - see issue #244.
+GRADCHECK_SOLVER_ARGS = {"eps": 1e-10}
+
 
 def set_seed(x: int) -> np.random.Generator:
     """Set the random seed for torch and return a numpy random generator.
@@ -77,7 +85,7 @@ def test_simple_batch_socp():
     constraints = [A @ x == b, cp.norm(x) <= 1]
     prob = cp.Problem(cp.Minimize(objective), constraints)
 
-    prob_tch = CvxpyLayer(prob, [P_sqrt, q, A, b], [x])
+    prob_tch = CvxpyLayer(prob, [P_sqrt, q, A, b], [x], solver_args=GRADCHECK_SOLVER_ARGS)
 
     P_sqrt_tch = torch.randn(batch_size, n, n, requires_grad=True)
     q_tch = torch.randn(batch_size, n, 1, requires_grad=True)
@@ -182,7 +190,7 @@ def test_logistic_regression():
     )
     prob = cp.Problem(cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
 
-    fit_logreg = CvxpyLayer(prob, [X, lam], [a])
+    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver_args=GRADCHECK_SOLVER_ARGS)
 
     torch.autograd.gradcheck(fit_logreg, (X_th, lam_th), atol=1e-4)
 
@@ -206,7 +214,7 @@ def test_entropy_maximization():
     obj = cp.Maximize(cp.sum(cp.entr(x)) - 0.01 * cp.sum_squares(x))
     constraints = [A @ x == b, F @ x <= g]
     prob = cp.Problem(obj, constraints)
-    layer = CvxpyLayer(prob, [A, b, F, g], [x])
+    layer = CvxpyLayer(prob, [A, b, F, g], [x], solver_args=GRADCHECK_SOLVER_ARGS)
 
     A_th, b_th, F_th, g_th = map(
         lambda x: torch.from_numpy(x).requires_grad_(),
@@ -224,7 +232,7 @@ def test_lml():
     obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
-    lml = CvxpyLayer(prob, [x], [y])
+    lml = CvxpyLayer(prob, [x], [y], solver_args=GRADCHECK_SOLVER_ARGS)
 
     x_th = torch.tensor([1.0, -1.0, -1.0, -1.0]).requires_grad_()
     torch.autograd.gradcheck(lml, (x_th,), atol=1e-3)
@@ -240,12 +248,16 @@ def test_sdp():
     trace_con = cp.trace(X) == 1
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
-    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver_args=GRADCHECK_SOLVER_ARGS)
 
     # Use a well-conditioned symmetric matrix
     C_t = torch.tensor([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], requires_grad=True)
 
-    torch.autograd.gradcheck(layer, (C_t,), atol=1e-4, rtol=1e-3)
+    # The optimum is the rank-one projector onto the smallest eigenvector of C, so most
+    # entries of dX/dC are near zero and are compared against ``atol`` alone. Even with a
+    # tight solve, the default 1e-6 step leaves those entries at the finite-difference
+    # floor (~1e-4); a larger step trades truncation error for noise and gives real margin.
+    torch.autograd.gradcheck(layer, (C_t,), eps=1e-4, atol=1e-4, rtol=1e-3)
 
 
 def test_not_enough_parameters():
@@ -419,7 +431,7 @@ def test_equality():
     x = cp.Variable(n)
     b = cp.Parameter(n)
     prob = cp.Problem(cp.Minimize(cp.sum_squares(x)), [A @ x == b])
-    layer = CvxpyLayer(prob, parameters=[b], variables=[x])
+    layer = CvxpyLayer(prob, parameters=[b], variables=[x], solver_args=GRADCHECK_SOLVER_ARGS)
 
     b_th = torch.randn(n).double().requires_grad_()
 
@@ -441,7 +453,13 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem,
+        parameters=[a, b, c],
+        variables=[x, y, z],
+        gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
     a_th = torch.tensor([2.0]).requires_grad_()
     b_th = torch.tensor([1.0]).requires_grad_()
     c_th = torch.tensor([0.5]).requires_grad_()
@@ -476,7 +494,13 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem,
+        parameters=[a, b, c],
+        variables=[x, y, z],
+        gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Batched parameters - test with batch size 4 (double precision)
     # For scalar parameters, batching means 1D tensors
@@ -536,7 +560,13 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem,
+        parameters=[a, b, c],
+        variables=[x, y, z],
+        gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Now use the layer with actual parameter values
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
@@ -586,8 +616,20 @@ def test_gp_reversed_parameter_order():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layers with parameters in different orders
-    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
-    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+    layer_abc = CvxpyLayer(
+        problem,
+        parameters=[a, b, c],
+        variables=[x, y, z],
+        gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
+    layer_cba = CvxpyLayer(
+        problem,
+        parameters=[c, b, a],
+        variables=[x, y, z],
+        gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
     b_th = torch.tensor([1.0], dtype=torch.float64, requires_grad=True)
