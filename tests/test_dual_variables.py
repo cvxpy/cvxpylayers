@@ -10,6 +10,14 @@ from cvxpylayers.torch import CvxpyLayer  # noqa: E402
 
 torch.set_default_dtype(torch.double)
 
+# ``gradcheck`` compares the analytic derivative against a finite difference with a step
+# of ~1e-6, so the forward solve has to be accurate to well below that or the difference
+# quotient is dominated by solver noise rather than by curvature. SCS's default tolerance
+# is not enough: it caps the accuracy of both the finite difference *and* the implicit
+# derivative at ~1e-4, which is the tolerance these tests assert. Ask for a tight solve
+# instead of loosening the assertions - see issue #244.
+GRADCHECK_SOLVER_ARGS = {"eps": 1e-10}
+
 
 def test_equality_constraint_dual():
     """Test returning dual variable for equality constraint."""
@@ -220,6 +228,7 @@ def test_dual_gradcheck_equality():
         prob,
         parameters=[c, b],
         variables=[x, eq_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     # Function that returns dual variable for gradcheck
@@ -246,6 +255,7 @@ def test_dual_gradcheck_inequality():
         prob,
         parameters=[c],
         variables=[x, ineq_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     # Function that returns dual variable for gradcheck
@@ -272,6 +282,7 @@ def test_dual_gradcheck_mixed():
         prob,
         parameters=[c, b],
         variables=[x, eq_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     # Function that returns both primal and dual for gradcheck
@@ -300,6 +311,7 @@ def test_dual_gradcheck_vector_equality():
         prob,
         parameters=[A, b],
         variables=[x, eq_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(A_t, b_t):
@@ -357,6 +369,7 @@ def test_soc_gradcheck():
         prob,
         parameters=[c, t],
         variables=[x, soc_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(c_t, t_t):
@@ -446,6 +459,7 @@ def test_exp_cone_gradcheck():
             exp_con.dual_variables[1],
             exp_con.dual_variables[2],
         ],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(t_t):
@@ -564,6 +578,7 @@ def test_psd_gradcheck():
         prob,
         parameters=[C],
         variables=[X, psd_con.dual_variables[0]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(C_t):
@@ -718,6 +733,7 @@ def test_gp_dual_gradcheck():
         parameters=[a, b],
         variables=[x, y, ineq_con.dual_variables[0]],
         gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(a_t, b_t):
@@ -792,6 +808,7 @@ def test_soc_explicit_multi_dual_gradcheck():
         prob,
         parameters=[c, t_param],
         variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     def f(c_t, t_t):
