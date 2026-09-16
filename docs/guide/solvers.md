@@ -175,6 +175,10 @@ layer = CvxpyLayer(problem, parameters=[A, b], variables=[x],
 [Moreau](https://docs.moreau.so/) is the default backend for PyTorch and JAX on CPU and GPU.
 It supports PyTorch and JAX with native autograd integration, warm starts, and `jax.jit` compatibility.
 
+MLX also supports Moreau via `solver=cp.MOREAU`. Its solve and backward pass use
+the CPU interior-point solver, without Metal or CUDA acceleration. See the
+[MLX API](../api/mlx.rst) for installation and a gradient example.
+
 ### Setup
 
 Moreau >= 0.4.0 is installed with CVXPYlayers. It is open source under the Apache
