@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import cvxpy as cp
 import jax
@@ -15,6 +15,9 @@ except ImportError:
 
 import cvxpylayers.utils.parse_args as pa
 from cvxpylayers.interfaces.base import SolverInterface
+
+if TYPE_CHECKING:
+    from cvxpylayers.interfaces.moreau_if import MOREAU_ctx
 
 
 def _reshape_fortran(array: jnp.ndarray, shape: tuple) -> jnp.ndarray:
@@ -155,7 +158,7 @@ def _unpack_primal_svec(svec: jnp.ndarray, n: int, batch: tuple) -> jnp.ndarray:
     return _svec_to_symmetric(svec, n, batch, rows, cols)
 
 
-def _unpack_svec(svec: jnp.ndarray, n: int, batch: tuple) -> jnp.ndarray:
+def _unpack_svec(svec: jnp.ndarray, n: int, batch: tuple, upper: bool = False) -> jnp.ndarray:
     """Unpack scaled vectorized (svec) form to full symmetric matrix.
 
     The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
@@ -170,7 +173,7 @@ def _unpack_svec(svec: jnp.ndarray, n: int, batch: tuple) -> jnp.ndarray:
     Returns:
         Full symmetric matrix with scaling removed
     """
-    rows_rm, cols_rm = np.tril_indices(n)
+    rows_rm, cols_rm = np.triu_indices(n) if upper else np.tril_indices(n)
     sort_idx = np.lexsort((rows_rm, cols_rm))
     rows = rows_rm[sort_idx]
     cols = cols_rm[sort_idx]
@@ -209,12 +212,14 @@ def _recover_results(
             data = primal[..., var.primal]
         else:  # var.source == "dual"
             data = dual[..., var.dual]
+            if var.dual_indices is not None:
+                data = dual[..., jnp.array(var.dual_indices)]
 
         # Use pre-computed unpack_fn field (JIT-compatible)
         if var.unpack_fn == "svec_primal":
             results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
         elif var.unpack_fn == "svec_dual":
-            results.append(_unpack_svec(data, var.shape[0], batch_shape))
+            results.append(_unpack_svec(data, var.shape[0], batch_shape, var.dual_upper))
         elif var.unpack_fn == "reshape":
             results.append(_reshape_fortran(data, batch_shape + var.shape))
         else:
@@ -298,9 +303,9 @@ class CvxpyLayer:
                 at runtime. Order must match the order of arrays passed to __call__().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by __call__(). Order determines the order of returned arrays.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+            solver: Solver backend (e.g., ``cp.MOREAU``, ``cp.DIFFCP``),
                 a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
-                for a custom solver (e.g. CVXPYgen), or ``None`` (uses diffcp
+                for a custom solver (e.g. CVXPYgen), or ``None`` (uses Moreau
                 by default).
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
@@ -350,7 +355,7 @@ class CvxpyLayer:
         if self.ctx.solver == "MOREAU":
             self._moreau_jax_impl = self.ctx.solver_ctx.get_jax_solver()._impl  # pyright: ignore[reportAttributeAccessIssue]
             self._moreau_solve_fn = self._moreau_jax_impl.solve
-            # solve_warm accepts (P, A, q, b, warm_x, warm_z, warm_s) as pure
+            # solve_warm accepts (P, A, q, b, warm_x, warm_z, warm_s, warm_z_x) as pure
             # function args — vmap-compatible and avoids the _pending_warm_start
             # side-channel. Only available on CUDA; None on CPU.
             self._moreau_solve_warm_fn = self._moreau_jax_impl.solve_warm
@@ -464,7 +469,7 @@ class CvxpyLayer:
             warm_start: Optional WarmStart or BatchedWarmStart from a previous
                 solve, passed as extra arguments to solve_warm when available.
         """
-        solver_ctx = self.ctx.solver_ctx  # type: ignore[attr-defined]
+        solver_ctx = cast("MOREAU_ctx", self.ctx.solver_ctx)
         jax_solver = solver_ctx.get_jax_solver()  # pyright: ignore[reportAttributeAccessIssue]
 
         # Apply per-call solver_args to solver settings
@@ -482,6 +487,7 @@ class CvxpyLayer:
             warm_x = jnp.asarray(warm_start.x, dtype=jnp.float64)
             warm_z = jnp.asarray(warm_start.z, dtype=jnp.float64)
             warm_s = jnp.asarray(warm_start.s, dtype=jnp.float64)
+            warm_z_x = jnp.asarray(warm_start.z_x, dtype=jnp.float64)
 
         # Use cached solve functions (captured as closure, not dynamic lookup)
         solve_fn = self._moreau_solve_fn
@@ -495,6 +501,7 @@ class CvxpyLayer:
                 "warm_x": np.asarray(warm_start.x, dtype=np.float64),
                 "warm_z": np.asarray(warm_start.z, dtype=np.float64),
                 "warm_s": np.asarray(warm_start.s, dtype=np.float64),
+                "warm_z_x": np.asarray(warm_start.z_x, dtype=np.float64),
             }
 
         # Cache solver_ctx attributes for closure capture.
@@ -530,7 +537,7 @@ class CvxpyLayer:
                 P_eval_single, q_eval_single, A_eval_single
             )
             solution, _info = solve_fn(P_values, A_values, q, b)
-            return solution.x, solution.z, solution.s
+            return solution.x, solution.z, solution.s, solution.z_x
 
         def extract_and_solve_warm(
             P_eval_single,
@@ -539,13 +546,14 @@ class CvxpyLayer:
             ws_x,
             ws_z,
             ws_s,
+            ws_z_x,
         ):
             """Extract problem data and solve with warm start."""
             P_values, A_values, q, b = _extract_problem_data(
                 P_eval_single, q_eval_single, A_eval_single
             )
-            solution, _info = solve_warm_fn(P_values, A_values, q, b, ws_x, ws_z, ws_s)
-            return solution.x, solution.z, solution.s
+            solution, _info = solve_warm_fn(P_values, A_values, q, b, ws_x, ws_z, ws_s, ws_z_x)
+            return solution.x, solution.z, solution.s, solution.z_x
 
         # Select solve function and extra args.
         # When solve_warm_fn is available (CUDA), pass warm arrays as positional args.
@@ -553,7 +561,7 @@ class CvxpyLayer:
         # _pending_warm_start side channel above — use the cold solve function.
         if warm_start is not None and solve_warm_fn is not None:
             solve = extract_and_solve_warm
-            extra_args = (warm_x, warm_z, warm_s)
+            extra_args = (warm_x, warm_z, warm_s, warm_z_x)
         else:
             solve = extract_and_solve
             extra_args = ()
@@ -561,9 +569,9 @@ class CvxpyLayer:
         if batch:
             P_eval_t = P_eval.T if P_eval is not None else None
             vmapped = jax.vmap(solve, in_axes=(0,) * (3 + len(extra_args)))
-            primal, dual, slack = vmapped(P_eval_t, q_eval.T, A_eval.T, *extra_args)
+            primal, dual, slack, direct_dual = vmapped(P_eval_t, q_eval.T, A_eval.T, *extra_args)
         else:
-            primal, dual, slack = solve(P_eval, q_eval, A_eval, *extra_args)
+            primal, dual, slack, direct_dual = solve(P_eval, q_eval, A_eval, *extra_args)
             # Add batch dimension for _recover_results (which expects it)
             primal = jnp.expand_dims(primal, 0)
             dual = jnp.expand_dims(dual, 0)
@@ -579,16 +587,23 @@ class CvxpyLayer:
                     x=np.asarray(primal, dtype=np.float64),
                     z=np.asarray(dual, dtype=np.float64),
                     s=np.asarray(slack, dtype=np.float64),
+                    z_x=np.asarray(direct_dual, dtype=np.float64),
                 )
             else:
                 self._warm_start_cache = WarmStart(
                     x=np.asarray(primal.squeeze(0), dtype=np.float64),
                     z=np.asarray(dual.squeeze(0), dtype=np.float64),
                     s=np.asarray(slack, dtype=np.float64),
+                    z_x=np.asarray(direct_dual, dtype=np.float64),
                 )
         except jax.errors.TracerArrayConversionError:
             pass  # Inside jit/vmap — warm start cache not available
 
+        if not batch:
+            direct_dual = jnp.expand_dims(direct_dual, 0)
+        dual = jnp.concatenate((dual, direct_dual), axis=-1)
+        if solver_ctx.has_psd_scaling:
+            primal = primal * jnp.asarray(solver_ctx.primal_scale)
         return _recover_results(primal, dual, self.ctx, batch)
 
     def _solve_parametric(

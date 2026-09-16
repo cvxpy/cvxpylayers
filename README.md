@@ -47,22 +47,18 @@ CVXPYlayers has the following dependencies:
 * [NumPy](https://pypi.org/project/numpy/) >= 1.22.4
 * [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.9.0
 * [diffcp](https://github.com/cvxgrp/diffcp) >= 1.1.0
+* [Moreau](https://docs.moreau.so/) >= 0.4.0
 
 Additionally, install one of the following frameworks:
-* [PyTorch](https://pytorch.org) >= 2.0
+* [PyTorch](https://pytorch.org) >= 2.4
 * [JAX](https://github.com/google/jax) >= 0.4.0
 * [MLX](https://github.com/ml-explore/mlx)
 
 ### GPU-accelerated pathway
 
-For the best performance on CPU and GPU, install [Moreau](https://docs.moreau.so/)
-via the `moreau` extra. Before installing, review the
-[Moreau installation guide](https://docs.moreau.so/installation.html) for license
-terms and access requirements.
-
-```bash
-pip install cvxpylayers[moreau]
-```
+[Moreau](https://docs.moreau.so/) is the default backend for PyTorch and JAX and is
+installed with CVXPYlayers. It is open source under the Apache 2.0 license and
+available on PyPI. MLX uses DIFFCP by default.
 
 For GPU support, install the matching Moreau CUDA wheel (see the
 [Moreau installation guide](https://docs.moreau.so/installation.html) for details):
@@ -71,7 +67,7 @@ For GPU support, install the matching Moreau CUDA wheel (see the
 pip install "moreau[cuda12]"   # or moreau[cuda13]
 ```
 
-As an open-source alternative, you can use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) for GPU acceleration. This requires installing Julia and several additional packages:
+As another GPU backend, you can use [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) for GPU acceleration. This requires installing Julia and several additional packages:
 
 - [Julia](https://julialang.org/)
 - [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/)
@@ -232,21 +228,26 @@ sum_of_solution.backward()
 
 ## Solvers
 
-CVXPYlayers supports multiple solvers including [Moreau](https://docs.moreau.so/) (recommended),
+CVXPYlayers supports multiple solvers including [Moreau](https://docs.moreau.so/) (default for PyTorch and JAX),
 [Clarabel](https://github.com/oxfordcontrol/Clarabel.rs),
 [SCS](https://github.com/cvxgrp/scs), and [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/).
 
 ### Passing arguments to the solvers
-One can pass arguments to solvers by adding the argument as a key-value pair
-in the `solver_args` argument.
-For example, to increase the tolerance of SCS to `1e-8` one would write:
+Pass Moreau settings through `solver_args`:
+
+```python
+layer(*parameters, solver_args={"max_iter": 300, "ipm_settings": {"tol_gap_abs": 1e-8}})
 ```
-layer(*parameters, solver_args={"eps": 1e-8})
+
+To use the previous DIFFCP/SCS backend, select it when constructing the layer:
+
+```python
+layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.DIFFCP)
+layer(A_tch, b_tch, solver_args={"eps": 1e-8, "max_iters": 10000})
 ```
-If SCS is not converging, we highly recommend using the following arguments to `SCS`:
-```
-solver_args={"eps": 1e-8, "max_iters": 10000, "acceleration_lookback": 0}
-```
+
+See the [solver guide](docs/guide/solvers.md) for
+Moreau's direct cones, semidefinite constraints, warm starts, and differentiation settings.
 
 ## Examples
 Our [examples](examples) subdirectory contains simple applications of convex optimization

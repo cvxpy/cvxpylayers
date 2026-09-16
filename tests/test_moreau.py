@@ -1716,7 +1716,7 @@ def test_warm_start_jax_non_moreau_raises():
     b = cp.Parameter(n)
 
     problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
-    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x])
+    layer = JaxCvxpyLayer(problem, parameters=[b], variables=[x], solver="DIFFCP")
 
     b_val = jnp.array(np.random.randn(n))
     with pytest.raises(ValueError, match="warm_start=True is only supported with solver='MOREAU'"):

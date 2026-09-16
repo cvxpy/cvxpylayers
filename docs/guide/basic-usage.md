@@ -9,7 +9,7 @@ CvxpyLayer(
     problem,           # CVXPY Problem object
     parameters,        # List of cp.Parameter objects
     variables,         # List of cp.Variable objects to return
-    solver=None,       # Solver to use (optional)
+    solver=None,       # Moreau for PyTorch/JAX; DIFFCP for MLX
     gp=False,          # True for geometric programs
     verbose=False,     # Print solver output
     solver_args=None,  # Default solver arguments
@@ -137,10 +137,10 @@ Override solver settings per-call:
 ```python
 # Default solver args in constructor
 layer = CvxpyLayer(problem, parameters=[A], variables=[x],
-                   solver_args={"max_iters": 1000})
+                   solver_args={"max_iter": 300})
 
 # Override at call time
-(solution,) = layer(A_tensor, solver_args={"max_iters": 5000, "eps": 1e-8})
+(solution,) = layer(A_tensor, solver_args={"max_iter": 500, "ipm_settings": {"tol_gap_abs": 1e-8}})
 ```
 
 ## Error Handling
@@ -170,6 +170,6 @@ SolverError: Solver 'SCS' failed.
 ```
 
 Try:
-1. Different solver: `solver=cp.CLARABEL`
-2. More iterations: `solver_args={"max_iters": 10000}`
-3. Looser tolerance: `solver_args={"eps": 1e-6}`
+1. Different backend: `solver=cp.DIFFCP` at construction
+2. Moreau iterations: `solver_args={"max_iter": 500}`
+3. Moreau tolerance: `solver_args={"ipm_settings": {"tol_gap_abs": 1e-6, "tol_feas": 1e-6}}`

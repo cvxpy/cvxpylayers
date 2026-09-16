@@ -205,7 +205,7 @@ def _unpack_primal_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tenso
     return _svec_to_symmetric(svec, n, batch, rows, cols)
 
 
-def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
+def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple, upper: bool = False) -> torch.Tensor:
     """Unpack scaled vectorized (svec) form to full symmetric matrix.
 
     The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
@@ -220,7 +220,7 @@ def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
     Returns:
         Full symmetric matrix with scaling removed
     """
-    rows_rm, cols_rm = np.tril_indices(n)
+    rows_rm, cols_rm = np.triu_indices(n) if upper else np.tril_indices(n)
     sort_idx = np.lexsort((rows_rm, cols_rm))
     rows = rows_rm[sort_idx]
     cols = cols_rm[sort_idx]
@@ -262,12 +262,14 @@ def _recover_results(
             data = primal[..., var.primal]
         else:  # var.source == "dual"
             data = dual[..., var.dual]
+            if var.dual_indices is not None:
+                data = dual[..., list(var.dual_indices)]
 
         # Use pre-computed unpack_fn field (JIT-compatible)
         if var.unpack_fn == "svec_primal":
             result = _unpack_primal_svec(data, var.shape[0], internal_batch)
         elif var.unpack_fn == "svec_dual":
-            result = _unpack_svec(data, var.shape[0], internal_batch)
+            result = _unpack_svec(data, var.shape[0], internal_batch, var.dual_upper)
         elif var.unpack_fn == "reshape":
             result = _reshape_fortran(data, internal_batch + var.shape)
         else:
@@ -336,9 +338,9 @@ class CvxpyLayer(torch.nn.Module):
                 at runtime. Order must match the order of tensors passed to forward().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by forward(). Order determines the order of returned tensors.
-            solver: CVXPY solver string (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+            solver: Solver backend (e.g., ``cp.MOREAU``, ``cp.DIFFCP``),
                 a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
-                for a custom solver, or ``None`` (uses diffcp by default).
+                for a custom solver, or ``None`` (uses Moreau by default).
                 When a ``SolverInterface`` is passed, its ``canon_solver`` attribute
                 selects the CVXPY canonicalization solver; the instance itself is
                 called during the forward/backward pass instead of diffcp.

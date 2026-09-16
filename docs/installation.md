@@ -40,7 +40,7 @@ Core only — add framework extras as needed.
 pip install cvxpylayers[torch]
 ```
 
-**Requirements:** PyTorch >= 2.0
+**Requirements:** PyTorch >= 2.4
 
 The most popular choice. Full `torch.nn.Module` integration with autograd support.
 :::
@@ -162,7 +162,7 @@ print("Installation successful!")
 
 ## GPU Acceleration
 
-### Moreau (Recommended)
+### Moreau (Default for PyTorch and JAX)
 
 :::{admonition} Moreau — Best Performance on CPU & GPU
 :class: tip
@@ -170,12 +170,9 @@ print("Installation successful!")
 [Moreau](https://docs.moreau.so/) is the recommended solver for best performance.
 :::
 
-Before installing, review the [Moreau installation guide](https://docs.moreau.so/installation.html)
-for license terms and access requirements.
-
-```bash
-pip install cvxpylayers[moreau]
-```
+Moreau >= 0.4.0 is installed with CVXPYlayers and is the default backend for
+PyTorch and JAX. It is open source under the Apache 2.0 license and available on
+PyPI. MLX continues to use DIFFCP.
 
 For GPU acceleration, install the matching Moreau CUDA wheel
 (see the [Moreau installation guide](https://docs.moreau.so/installation.html) for details):
@@ -184,7 +181,7 @@ For GPU acceleration, install the matching Moreau CUDA wheel
 pip install "moreau[cuda12]"   # or moreau[cuda13]
 ```
 
-### CuClarabel (Open-Source Alternative)
+### CuClarabel
 
 :::{admonition} CuClarabel — Open-Source NVIDIA GPU Support
 :class: note
@@ -248,15 +245,15 @@ b_gpu = b_t.cuda()
 | NumPy | >= 1.22.4 | Array operations |
 | CVXPY | >= 1.9.0 | Problem specification |
 | diffcp | >= 1.1.0 | Differentiable cone programming |
+| Moreau | >= 0.4.0 | Default PyTorch/JAX backend |
 :::
 
 :::{dropdown} Framework Dependencies
 | Framework | Version |
 |-----------|---------|
-| PyTorch | >= 2.0 |
+| PyTorch | >= 2.4 |
 | JAX | >= 0.4.0 |
 | MLX | >= 0.27.1 |
-| Moreau | >= 0.3.0 |
 :::
 
 ---
