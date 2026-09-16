@@ -63,10 +63,7 @@ def _apply_gp_log_transform(
         return params
 
     # Use pre-computed mask for consistency with Torch/JAX (no dict lookups)
-    return tuple(
-        mx.log(p) if needs_log else p
-        for p, needs_log in zip(params, ctx.gp_log_mask)
-    )
+    return tuple(mx.log(p) if needs_log else p for p, needs_log in zip(params, ctx.gp_log_mask))
 
 
 def _flatten_and_batch_params(
@@ -186,7 +183,7 @@ def _unpack_primal_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
     return _svec_to_symmetric(svec, n, batch, rows, cols)
 
 
-def _unpack_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
+def _unpack_svec(svec: mx.array, n: int, batch: tuple, upper: bool = False) -> mx.array:
     """Unpack scaled vectorized (svec) form to full symmetric matrix.
 
     The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
@@ -197,11 +194,12 @@ def _unpack_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
         svec: Scaled vectorized form
         n: Matrix dimension
         batch: Batch dimensions
+        upper: Whether the solver uses upper-triangular column-major svec ordering.
 
     Returns:
         Full symmetric matrix with scaling removed
     """
-    rows_rm, cols_rm = np.tril_indices(n)
+    rows_rm, cols_rm = np.triu_indices(n) if upper else np.tril_indices(n)
     sort_idx = np.lexsort((rows_rm, cols_rm))
     rows = rows_rm[sort_idx]
     cols = cols_rm[sort_idx]
@@ -240,12 +238,14 @@ def _recover_results(
             data = primal[..., var.primal]
         else:  # var.source == "dual"
             data = dual[..., var.dual]
+            if var.dual_indices is not None:
+                data = mx.take(dual, mx.array(var.dual_indices), axis=-1)
 
         # Use pre-computed unpack_fn field (consistent with Torch/JAX)
         if var.unpack_fn == "svec_primal":
             results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
         elif var.unpack_fn == "svec_dual":
-            results.append(_unpack_svec(data, var.shape[0], batch_shape))
+            results.append(_unpack_svec(data, var.shape[0], batch_shape, upper=var.dual_upper))
         elif var.unpack_fn == "reshape":
             results.append(_reshape_fortran(data, batch_shape + var.shape))
         else:
@@ -256,8 +256,7 @@ def _recover_results(
     # Uses pre-computed source field (consistent with Torch/JAX)
     if ctx.gp:
         results = [
-            mx.exp(r) if var.source == "primal" else r
-            for r, var in zip(results, ctx.var_recover)
+            mx.exp(r) if var.source == "primal" else r for r, var in zip(results, ctx.var_recover)
         ]
 
     # Squeeze batch dimension for unbatched inputs
@@ -321,7 +320,8 @@ class CvxpyLayer:
                 at runtime. Order must match the order of arrays passed to __call__().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by __call__(). Order determines the order of returned arrays.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
+            solver: Solver backend to use (``cp.DIFFCP`` or ``cp.MOREAU``).
+                Moreau solves and differentiates on CPU using its IPM solver.
                 If None, uses the default diffcp solver.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
