@@ -38,6 +38,14 @@ class _ScipySparseMatmul(torch.autograd.Function):
         return None, torch.from_numpy(np.asarray(result))
 
 
+@torch.compiler.disable
+def _scipy_sparse_matmul(
+    scipy_csr: scipy.sparse.csr_array, x: torch.Tensor
+) -> torch.Tensor:
+    """Keep SciPy native sparse operations outside the compiled tensor graph."""
+    return _ScipySparseMatmul.apply(scipy_csr, x)
+
+
 def _reshape_fortran(array: torch.Tensor, shape: tuple) -> torch.Tensor:
     """Reshape array using Fortran (column-major) order.
 
@@ -478,12 +486,12 @@ class CvxpyLayer(torch.nn.Module):
         if param_device.type == "cpu":
             # Use scipy sparse matmul on CPU (80-200x faster than torch sparse CSR)
             P_eval = (
-                _ScipySparseMatmul.apply(self._P_scipy, p_stack)
+                _scipy_sparse_matmul(self._P_scipy, p_stack)
                 if self._P_scipy is not None
                 else None
             )
-            q_eval = _ScipySparseMatmul.apply(self._q_scipy, p_stack)
-            A_eval = _ScipySparseMatmul.apply(self._A_scipy, p_stack)
+            q_eval = _scipy_sparse_matmul(self._q_scipy, p_stack)
+            A_eval = _scipy_sparse_matmul(self._A_scipy, p_stack)
         else:
             # Use torch sparse CSR on GPU (fast there)
             P_eval = (

@@ -1063,16 +1063,8 @@ def test_parametrized_PA_not_cached():
 # ============================================================================
 
 
-@pytest.fixture
-def reset_dynamo():
-    """Reset torch.compile cache between tests to avoid cross-test pollution."""
-    torch._dynamo.reset()
-    yield
-    torch._dynamo.reset()
-
-
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_torch_compile_unbatched(device, reset_dynamo):
+def test_torch_compile_unbatched(device, compile_without_fallback):
     """Test that torch.compile works with unbatched inputs.
 
     This verifies that the batch-conditional code paths in cvxpylayer.py
@@ -1089,7 +1081,7 @@ def test_torch_compile_unbatched(device, reset_dynamo):
     layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
 
     # Compile the forward pass
-    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+    compiled_forward = compile_without_fallback(layer.forward)
 
     # Test unbatched
     b_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, device=device, requires_grad=True)
@@ -1114,7 +1106,7 @@ def test_torch_compile_unbatched(device, reset_dynamo):
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_torch_compile_batched(device, reset_dynamo):
+def test_torch_compile_batched(device, compile_without_fallback):
     """Test that torch.compile works with batched inputs.
 
     This verifies that the batch-conditional code paths in cvxpylayer.py
@@ -1132,7 +1124,7 @@ def test_torch_compile_batched(device, reset_dynamo):
     layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
 
     # Compile the forward pass
-    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+    compiled_forward = compile_without_fallback(layer.forward)
 
     # Test batched
     b_val = torch.randn(batch_size, n, dtype=torch.float64, device=device, requires_grad=True)
@@ -1157,7 +1149,7 @@ def test_torch_compile_batched(device, reset_dynamo):
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_torch_compile_batch_size_one(device, reset_dynamo):
+def test_torch_compile_batch_size_one(device, compile_without_fallback):
     """Test that torch.compile preserves batch dimension for batch_size=1.
 
     This is a regression test: batch_size=1 with explicit batch dim (1, n)
@@ -1173,7 +1165,7 @@ def test_torch_compile_batch_size_one(device, reset_dynamo):
     problem = cp.Problem(cp.Minimize(cp.sum_squares(x - b)))
     layer = CvxpyLayer(problem, parameters=[b], variables=[x], solver="MOREAU")
 
-    compiled_forward = torch.compile(layer.forward, fullgraph=False)
+    compiled_forward = compile_without_fallback(layer.forward)
 
     # Explicitly batched with batch_size=1
     b_val = torch.randn(1, n, dtype=torch.float64, device=device, requires_grad=True)
@@ -1190,6 +1182,40 @@ def test_torch_compile_batch_size_one(device, reset_dynamo):
     loss.backward()
     assert b_val.grad is not None
     assert b_val.grad.shape == (1, n)
+    torch.testing.assert_close(x_sol, b_val.detach(), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(b_val.grad, torch.ones_like(b_val), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("batch_shape", [(), (1,), (3,)])
+def test_torch_compile_data_preparation_fullgraph(batch_shape, device):
+    """Tensor preprocessing compiles completely around the native solver."""
+    if device == "cuda" and not HAS_CUDA:
+        pytest.skip("CUDA not available")
+    x = cp.Variable(3)
+    b = cp.Parameter(3)
+    layer = CvxpyLayer(
+        cp.Problem(cp.Minimize(cp.sum_squares(x - b))), [b], [x], solver="MOREAU"
+    )
+    ctx = layer.ctx.solver_ctx
+    ctx.get_torch_solver(device)
+
+    def prepare(P, q, A):
+        data = ctx.torch_to_data(P, q, A)
+        return data.P_values, data.q, data.A_values, data.b
+
+    sizes = (ctx.nnz_P, ctx.P_shape[0] + 1, ctx.nnz_A + len(ctx.b_idx))
+    inputs = tuple(
+        torch.randn((size,) + batch_shape, device=device, requires_grad=True) for size in sizes
+    )
+    eager = prepare(*inputs)
+    compiled = torch.compile(prepare, fullgraph=True)(*inputs)
+    for result, expected in zip(compiled, eager):
+        torch.testing.assert_close(result, expected)
+    expected_grads = torch.autograd.grad(sum(v.sum() for v in eager), inputs)
+    actual_grads = torch.autograd.grad(sum(v.sum() for v in compiled), inputs)
+    for actual, expected in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual, expected)
 
 
 # ========== JAX JIT Tests ==========

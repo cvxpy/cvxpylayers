@@ -218,11 +218,12 @@ class MOREAU_ctx:
             n = csr.P_shape[0]
             self.P_col_indices = np.array([], dtype=np.int64)
             self.P_row_offsets = np.zeros(n + 1, dtype=np.int64)
-        self.P_shape = csr.P_shape
+        # Fixed dimensions must remain Python constants under torch.compile.
+        self.P_shape = (int(csr.P_shape[0]), int(csr.P_shape[1]))
 
         self.A_col_indices = csr.A_csr_structure[0].astype(np.int64)
         self.A_row_offsets = csr.A_csr_structure[1].astype(np.int64)
-        self.A_shape = csr.A_shape
+        self.A_shape = (int(csr.A_shape[0]), int(csr.A_shape[1]))
         self.b_idx = csr.b_idx
 
         # Number of non-zeros in P and A (used for slicing in forward/backward)
@@ -436,7 +437,7 @@ class MOREAU_ctx:
         A_values = -con_values[: self.nnz_A, :]  # (nnzA, batch)
 
         # b vector: entries after the A values
-        b_idx_tensor = torch.tensor(self.b_idx, dtype=torch.long, device=device)
+        b_idx_tensor = torch.as_tensor(self.b_idx, dtype=torch.long, device=device)
         b_raw = con_values[self.nnz_A :, :]  # (nb, batch)
         # Scatter into full b tensor (use non-in-place scatter to preserve autograd)
         b_idx_expanded = b_idx_tensor.unsqueeze(1).expand(-1, batch_size)
