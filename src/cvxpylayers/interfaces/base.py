@@ -51,10 +51,11 @@ Choosing what to implement
 * **Framework-agnostic batched**: override ``solve_numpy_batch`` +
   ``derivative_numpy_batch``; all frameworks convert to numpy before calling.
 """
+
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 from cvxpy.reductions.solvers.solver import Solver as _CvxpySolver
@@ -62,6 +63,9 @@ from cvxpy.reductions.solvers.solver import Solver as _CvxpySolver
 # ---------------------------------------------------------------------------
 # @require_one_of decorator
 # ---------------------------------------------------------------------------
+
+_ClassT = TypeVar("_ClassT", bound=type)
+
 
 def require_one_of(*method_names: str):
     """Class decorator: at least one of *method_names* must be overridden.
@@ -83,7 +87,8 @@ def require_one_of(*method_names: str):
         class Bad(Base):
             pass  # TypeError: Bad must override at least one of: method_a, method_b
     """
-    def decorator(cls: type) -> type:
+
+    def decorator(cls: _ClassT) -> _ClassT:
         original_init_subclass = cls.__init_subclass__
 
         @classmethod  # type: ignore[misc]
@@ -106,8 +111,7 @@ def require_one_of(*method_names: str):
                 ):
                     return
             raise TypeError(
-                f"{sub_cls.__name__} must override at least one of: "
-                f"{', '.join(method_names)}"
+                f"{sub_cls.__name__} must override at least one of: {', '.join(method_names)}"
             )
 
         cls.__init_subclass__ = new_init_subclass  # type: ignore[method-assign]
@@ -120,17 +124,20 @@ def require_one_of(*method_names: str):
 # Conversion helpers (all cross-framework paths go through numpy as the hub)
 # ---------------------------------------------------------------------------
 
+
 def _to_numpy_from_torch(t: Any) -> np.ndarray:
     return t.detach().cpu().numpy()
 
 
 def _to_torch_from_numpy(arr: np.ndarray) -> Any:
     import torch
+
     return torch.from_numpy(np.asarray(arr))
 
 
 def _to_jax_from_numpy(arr: np.ndarray) -> Any:
     import jax.numpy as jnp
+
     return jnp.array(arr)
 
 
@@ -140,6 +147,7 @@ def _to_numpy_from_jax(arr: Any) -> np.ndarray:
 
 def _to_mlx_from_numpy(arr: np.ndarray) -> Any:
     import mlx.core as mx
+
     return mx.array(arr)
 
 
@@ -150,6 +158,7 @@ def _to_numpy_from_mlx(arr: Any) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Per-item state splitting helper
 # ---------------------------------------------------------------------------
+
 
 def _split_state(state: Any, batch_size: int) -> list[Any]:
     """Return a list of per-item saved states of length *batch_size*.
@@ -192,6 +201,7 @@ _DERIV_METHODS = (
 # ---------------------------------------------------------------------------
 # SolverInterface ABC
 # ---------------------------------------------------------------------------
+
 
 @require_one_of(*_SOLVE_METHODS)
 @require_one_of(*_DERIV_METHODS)
@@ -388,14 +398,16 @@ class SolverInterface(ABC):
                 return None, dq, dA
         """
         _solve, _derivative = solve, derivative
-        _sfb: Any = save_for_backward if save_for_backward is not None else (
-            lambda p, d: (p, d)
-        )
+        _sfb: Any = save_for_backward if save_for_backward is not None else (lambda p, d: (p, d))
 
         def _wrapped_solve(
             self: Any,
-            P: Any, q: Any, A: Any,
-            dims: Any, args: Any, ng: Any,
+            P: Any,
+            q: Any,
+            A: Any,
+            dims: Any,
+            args: Any,
+            ng: Any,
         ) -> tuple[Any, Any, Any]:
             result = _solve(P, q, A, dims, args, ng)
             if len(result) == 2:
@@ -413,9 +425,7 @@ class SolverInterface(ABC):
                 "canon_solver": canon_solver,
                 "supports_quad_obj": supports_quad_obj,
                 "solve_numpy": _wrapped_solve,
-                "derivative_numpy": (
-                    lambda self, dp, dd, state: _derivative(dp, dd, state)
-                ),
+                "derivative_numpy": (lambda self, dp, dd, state: _derivative(dp, dd, state)),
             },
         )
         return _cls()
@@ -453,26 +463,27 @@ class SolverInterface(ABC):
             A concrete :class:`SolverInterface` instance with
             :attr:`is_parametric` ``= True``.
         """
+
         def _not_impl(self: Any, *a: Any, **kw: Any) -> Any:
-            raise NotImplementedError(
-                "Parametric SolverInterface must be used through CvxpyLayer."
-            )
+            raise NotImplementedError("Parametric SolverInterface must be used through CvxpyLayer.")
 
         _cls: type[SolverInterface] = type(
             "_ParametricSolverInterface",
             (cls,),
             {
-                "is_parametric":    True,
+                "is_parametric": True,
                 # Satisfy @require_one_of — never reached on the parametric path.
-                "solve_numpy":      _not_impl,
+                "solve_numpy": _not_impl,
                 "derivative_numpy": _not_impl,
-                "_solve":           staticmethod(solve),
-                "_solve_and_state": staticmethod(solve_and_state) if solve_and_state is not None else None,
-                "_gradient":        staticmethod(gradient) if gradient is not None else None,
+                "_solve": staticmethod(solve),
+                "_solve_and_state": staticmethod(solve_and_state)
+                if solve_and_state is not None
+                else None,
+                "_gradient": staticmethod(gradient) if gradient is not None else None,
             },
         )
         return _cls()
-    
+
     @classmethod
     def from_codegen(
         cls,
@@ -480,7 +491,7 @@ class SolverInterface(ABC):
         gradient: Any,
     ) -> "SolverInterface":
         """Create a parameter-space :class:`SolverInterface` from CVXPYgen functions.
-        
+
         This is the recommended way to integrate a CVXPYgen-generated solver.
         The three function arguments map directly to what CVXPYgen exports::
 
@@ -493,7 +504,7 @@ class SolverInterface(ABC):
                     gradient = cpg_solver.backward,
                 ),
             )
-            
+
         Args:
             solve_and_state: ``solve_and_state(problem) ->
                 (value, state)`` — runs the solver *and* captures
@@ -506,15 +517,13 @@ class SolverInterface(ABC):
             A concrete :class:`SolverInterface` instance with
             :attr:`is_parametric` ``= True``.
         """
-        
+
         def solve(problem, **solver_args):
             val, _ = solve_and_state(problem, **solver_args)
             return val
-        
+
         return cls.from_parametric_functions(
-            solve=solve,
-            solve_and_state=solve_and_state,
-            gradient=gradient
+            solve=solve, solve_and_state=solve_and_state, gradient=gradient
         )
 
     @property
@@ -634,12 +643,17 @@ class SolverInterface(ABC):
         Default: loops :meth:`solve_torch` over the batch dimension.
         """
         import torch
+
         batch = q.shape[0]
         primals, duals, states = [], [], []
         for i in range(batch):
             p_i, d_i, state_i = self.solve_torch(
-                P[i] if P is not None else None, q[i], A[i],
-                dims, solver_args, needs_grad,
+                P[i] if P is not None else None,
+                q[i],
+                A[i],
+                dims,
+                solver_args,
+                needs_grad,
             )
             primals.append(p_i)
             duals.append(d_i)
@@ -662,7 +676,9 @@ class SolverInterface(ABC):
         P_np = _to_numpy_from_torch(P) if P is not None else None
         q_np = _to_numpy_from_torch(q)
         A_np = _to_numpy_from_torch(A)
-        primal_np, dual_np, state = self.solve_numpy(P_np, q_np, A_np, dims, solver_args, needs_grad)
+        primal_np, dual_np, state = self.solve_numpy(
+            P_np, q_np, A_np, dims, solver_args, needs_grad
+        )
         return (
             _to_torch_from_numpy(primal_np).to(dtype=q.dtype, device=q.device),
             _to_torch_from_numpy(dual_np).to(dtype=q.dtype, device=q.device),
@@ -696,7 +712,12 @@ class SolverInterface(ABC):
         """
         P_b = P[np.newaxis] if P is not None else None
         primal_b, dual_b, state = self.solve_numpy_batch(
-            P_b, q[np.newaxis], A[np.newaxis], dims, solver_args, needs_grad,
+            P_b,
+            q[np.newaxis],
+            A[np.newaxis],
+            dims,
+            solver_args,
+            needs_grad,
         )
         state_item = state[0] if isinstance(state, list) and len(state) == 1 else state
         return primal_b[0], dual_b[0], state_item
@@ -719,8 +740,12 @@ class SolverInterface(ABC):
         """
         P_jax = _to_jax_from_numpy(P) if P is not None else None
         primal_jax, dual_jax, state = self.solve_jax_batch(
-            P_jax, _to_jax_from_numpy(q), _to_jax_from_numpy(A),
-            dims, solver_args, needs_grad,
+            P_jax,
+            _to_jax_from_numpy(q),
+            _to_jax_from_numpy(A),
+            dims,
+            solver_args,
+            needs_grad,
         )
         return _to_numpy_from_jax(primal_jax), _to_numpy_from_jax(dual_jax), state
 
@@ -736,12 +761,17 @@ class SolverInterface(ABC):
         """Solve a **batch** of problems; inputs/outputs are JAX arrays.
         Default: loops :meth:`solve_jax` over the batch dimension."""
         import jax.numpy as jnp
+
         batch = q.shape[0]
         primals, duals, states = [], [], []
         for i in range(batch):
             p_i, d_i, state_i = self.solve_jax(
-                P[i] if P is not None else None, q[i], A[i],
-                dims, solver_args, needs_grad,
+                P[i] if P is not None else None,
+                q[i],
+                A[i],
+                dims,
+                solver_args,
+                needs_grad,
             )
             primals.append(p_i)
             duals.append(d_i)
@@ -764,9 +794,12 @@ class SolverInterface(ABC):
             P_mlx,
             _to_mlx_from_numpy(_to_numpy_from_jax(q)),
             _to_mlx_from_numpy(_to_numpy_from_jax(A)),
-            dims, solver_args, needs_grad,
+            dims,
+            solver_args,
+            needs_grad,
         )
         import jax.numpy as jnp
+
         return (
             jnp.array(_to_numpy_from_mlx(primal_mlx)),
             jnp.array(_to_numpy_from_mlx(dual_mlx)),
@@ -785,10 +818,15 @@ class SolverInterface(ABC):
         """Solve a **single** problem; inputs/outputs are MLX arrays.
         Default: wraps :meth:`solve_mlx_batch` with a size-1 batch dim."""
         import mlx.core as mx
+
         P_b = mx.expand_dims(P, 0) if P is not None else None
         primal_b, dual_b, state = self.solve_mlx_batch(
-            P_b, mx.expand_dims(q, 0), mx.expand_dims(A, 0),
-            dims, solver_args, needs_grad,
+            P_b,
+            mx.expand_dims(q, 0),
+            mx.expand_dims(A, 0),
+            dims,
+            solver_args,
+            needs_grad,
         )
         state_item = state[0] if isinstance(state, list) and len(state) == 1 else state
         return primal_b[0], dual_b[0], state_item
@@ -805,12 +843,15 @@ class SolverInterface(ABC):
         """Solve a **batch** of problems; inputs/outputs are MLX arrays.
         Default: converts to torch, calls :meth:`solve_torch_batch`. Closes the ring."""
         import mlx.core as mx
+
         P_t = _to_torch_from_numpy(_to_numpy_from_mlx(P)) if P is not None else None
         primal_t, dual_t, state = self.solve_torch_batch(
             P_t,
             _to_torch_from_numpy(_to_numpy_from_mlx(q)),
             _to_torch_from_numpy(_to_numpy_from_mlx(A)),
-            dims, solver_args, needs_grad,
+            dims,
+            solver_args,
+            needs_grad,
         )
         return (
             mx.array(_to_numpy_from_torch(primal_t)),
@@ -842,6 +883,7 @@ class SolverInterface(ABC):
         Default: loops :meth:`derivative_torch` over the batch dimension.
         """
         import torch
+
         batch = dprimal.shape[0]
         state_list = _split_state(saved_state, batch)
         dPs, dqs, dAs = [], [], []
@@ -899,7 +941,9 @@ class SolverInterface(ABC):
         strips the batch dim.
         """
         dP_b, dq_b, dA_b = self.derivative_numpy_batch(
-            dprimal[np.newaxis], ddual[np.newaxis], [saved_state],
+            dprimal[np.newaxis],
+            ddual[np.newaxis],
+            [saved_state],
         )
         dP = dP_b[0] if dP_b is not None else None
         return dP, dq_b[0], dA_b[0]
@@ -934,6 +978,7 @@ class SolverInterface(ABC):
         """Backward pass for a **batch** of problems; arrays are JAX arrays.
         Default: loops :meth:`derivative_jax` over the batch dimension."""
         import jax.numpy as jnp
+
         batch = dprimal.shape[0]
         state_list = _split_state(saved_state, batch)
         dPs, dqs, dAs = [], [], []
@@ -960,6 +1005,7 @@ class SolverInterface(ABC):
         dd_mlx = _to_mlx_from_numpy(_to_numpy_from_jax(ddual))
         dP_mlx, dq_mlx, dA_mlx = self.derivative_mlx(dp_mlx, dd_mlx, saved_state)
         import jax.numpy as jnp
+
         dP = jnp.array(_to_numpy_from_mlx(dP_mlx)) if dP_mlx is not None else None
         return dP, jnp.array(_to_numpy_from_mlx(dq_mlx)), jnp.array(_to_numpy_from_mlx(dA_mlx))
 
@@ -972,6 +1018,7 @@ class SolverInterface(ABC):
         """Backward pass for a **single** problem; arrays are MLX arrays.
         Default: wraps :meth:`derivative_mlx_batch` with a size-1 batch dim."""
         import mlx.core as mx
+
         dP_b, dq_b, dA_b = self.derivative_mlx_batch(
             mx.expand_dims(dprimal, 0),
             mx.expand_dims(ddual, 0),
@@ -989,6 +1036,7 @@ class SolverInterface(ABC):
         """Backward pass for a **batch** of problems; arrays are MLX arrays.
         Default: converts to torch, calls :meth:`derivative_torch_batch`. Closes the ring."""
         import mlx.core as mx
+
         dp_t = _to_torch_from_numpy(_to_numpy_from_mlx(dprimal))
         dd_t = _to_torch_from_numpy(_to_numpy_from_mlx(ddual))
         dP_t, dq_t, dA_t = self.derivative_torch_batch(dp_t, dd_t, saved_state)
