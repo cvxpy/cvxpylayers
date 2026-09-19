@@ -7,9 +7,10 @@ Moreau is a conic optimization solver that solves problems of the form:
 
 where K is a product of cones.
 
-Uses Moreau's native PyTorch and JAX solvers with built-in automatic differentiation:
+Uses Moreau's native solvers for forward solves and implicit differentiation:
 - PyTorch: moreau.torch.Solver with two-step API (setup + solve) and autograd support
 - JAX: moreau.jax.Solver with custom_vjp for gradients
+- MLX: moreau.CompiledSolver on CPU with the layer's custom VJP
 
 Limitations:
 - Not thread-safe: solver instances are lazily initialized and cached on MOREAU_ctx.
@@ -48,6 +49,11 @@ try:
     import torch
 except ImportError:
     torch = None  # type: ignore[assignment]
+
+try:
+    import mlx.core as mx
+except ImportError:
+    mx = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     import cvxpylayers.utils.parse_args as pa
@@ -292,11 +298,12 @@ class MOREAU_ctx:
             )
         return self._cones
 
-    def _get_settings(self, enable_grad: bool = True):
+    def _get_settings(self, enable_grad: bool = True, overrides=None):
         """Get moreau.Settings configured from self.options.
 
         Args:
             enable_grad: Whether to enable gradient computation in Moreau.
+            overrides: Per-call settings that override the layer defaults.
 
         Accepts any moreau.Settings field names directly (e.g., max_iter,
         tol_gap_abs, verbose, etc.).  ``ipm_settings`` can be a dict or a
@@ -305,7 +312,7 @@ class MOREAU_ctx:
         settings = moreau.Settings(enable_grad=enable_grad)
 
         # Set any field that exists on moreau.Settings
-        for key, value in self.options.items():
+        for key, value in {**self.options, **(overrides or {})}.items():
             if key == "ipm_settings":
                 if isinstance(value, dict):
                     value = moreau.IPMSettings(**value)
@@ -396,6 +403,36 @@ class MOREAU_ctx:
             self._jax_solver = self._create_jax_solver()
         return self._jax_solver
 
+    def mlx_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "MOREAU_mlx_data":
+        """Copy MLX canonical data to NumPy for Moreau's CPU backend."""
+        if mx is None:
+            raise ImportError("MLX interface requires 'mlx'. Install with: pip install mlx")
+        if moreau is None:
+            raise ImportError("Moreau solver requires 'moreau'. Install with: pip install moreau")
+
+        batch_size, originally_unbatched = _detect_batch_size(con_values)
+        # Parametrization matrices already produce CSR-ordered values. Moreau
+        # expects float64 arrays with the batch dimension first.
+        con_np = np.array(con_values, dtype=np.float64).reshape(-1, batch_size).T
+        lin_np = np.array(lin_obj_values, dtype=np.float64).reshape(-1, batch_size).T
+        P_values = (
+            np.array(quad_obj_values, dtype=np.float64).reshape(-1, batch_size).T
+            if quad_obj_values is not None
+            else np.zeros((batch_size, 0))
+        )
+        b = np.zeros((batch_size, self.A_shape[0]))
+        b[:, self.b_idx] = con_np[:, self.nnz_A :]
+
+        return MOREAU_mlx_data(
+            ctx=self,
+            P_values=P_values,
+            A_values=-con_np[:, : self.nnz_A],
+            q=lin_np[:, :-1],
+            b=b,
+            originally_unbatched=originally_unbatched,
+            dtype=lin_obj_values.dtype,
+        )
+
     def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "MOREAU_data":
         """Prepare data for torch solve.
 
@@ -476,6 +513,79 @@ class MOREAU_ctx:
             P_eval_size=quad_obj_values.shape[0] if quad_obj_values is not None else 0,
             q_eval_size=lin_obj_values.shape[0],
             A_eval_size=con_values.shape[0],
+        )
+
+
+@dataclass
+class MOREAU_mlx_data:
+    """CPU solve data; each forward call retains its own solver for the VJP."""
+
+    ctx: MOREAU_ctx
+    P_values: np.ndarray
+    A_values: np.ndarray
+    q: np.ndarray
+    b: np.ndarray
+    originally_unbatched: bool
+    dtype: Any
+
+    def mlx_solve(self, solver_args=None):
+        settings = self.ctx._get_settings(overrides=solver_args)
+        if settings.device not in ("auto", "cpu"):
+            raise ValueError("The Moreau MLX backend only supports device='cpu'.")
+        settings.device = "cpu"
+        if settings.solver not in ("auto", "ipm"):
+            raise ValueError("The Moreau MLX backend requires solver='ipm' for differentiation.")
+        settings.solver = "ipm"
+        settings.enable_grad = True
+        settings.batch_size = self.q.shape[0]
+
+        # CompiledSolver.backward uses the last solve's state. A solver owned by
+        # this forward call keeps multiple calls to the same layer independent.
+        solver = moreau.CompiledSolver(
+            n=self.ctx.P_shape[0],
+            m=self.ctx.A_shape[0],
+            P_row_offsets=self.ctx.P_row_offsets,
+            P_col_indices=self.ctx.P_col_indices,
+            A_row_offsets=self.ctx.A_row_offsets,
+            A_col_indices=self.ctx.A_col_indices,
+            cones=self.ctx.cones,
+            settings=settings,
+        )
+        solver.setup(self.P_values, self.A_values)
+        solution = solver.solve(self.q, self.b)
+        for i, status in enumerate(solver.info.status):
+            if status not in (moreau.SolverStatus.Solved, moreau.SolverStatus.AlmostSolved):
+                raise RuntimeError(f"Moreau failed for batch element {i}: {status}")
+        dual = (
+            np.concatenate((solution.z, solution.z_x), axis=-1)
+            if self.ctx.dir_cones
+            else solution.z
+        )
+        return (
+            mx.array(solution.x * self.ctx.primal_scale, dtype=self.dtype),
+            mx.array(dual, dtype=self.dtype),
+            solver,
+        )
+
+    def mlx_derivative(self, dprimal, ddual, solver):
+        ddual = np.array(ddual, dtype=np.float64)
+        m = self.ctx.A_shape[0]
+        grads = solver.backward(
+            np.array(dprimal, dtype=np.float64) * self.ctx.primal_scale,
+            ddual[:, :m],
+            dz_x=ddual[:, m:] if self.ctx.dir_cones else None,
+        )
+        # Undo q's constant objective offset and the A sign / sparse b scatter.
+        dP = grads["dP_values"].T if self.ctx.nnz_P else None
+        dq = np.concatenate((grads["dq"], np.zeros((self.q.shape[0], 1))), axis=1).T
+        dA = np.concatenate((-grads["dA_values"], grads["db"][:, self.ctx.b_idx]), axis=1).T
+        if self.originally_unbatched:
+            dP = dP[:, 0] if dP is not None else None
+            dq, dA = dq[:, 0], dA[:, 0]
+        return (
+            mx.array(dP, dtype=self.dtype) if dP is not None else None,
+            mx.array(dq, dtype=self.dtype),
+            mx.array(dA, dtype=self.dtype),
         )
 
 
