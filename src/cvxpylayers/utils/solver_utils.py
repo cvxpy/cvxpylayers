@@ -24,7 +24,11 @@ class CsrProblemData:
 
 def convert_to_csr(
     param_prob,
-) -> tuple["CsrProblemData", sp.sparray | None, sp.sparray | None]:
+) -> tuple[
+    "CsrProblemData",
+    sp.csr_array | sp.csr_matrix | None,
+    sp.csr_array | sp.csr_matrix,
+]:
     """Convert a parametrized problem from CSC to CSR format.
 
     Reads ``param_prob.reduced_P.problem_data_index`` and
@@ -46,8 +50,8 @@ def convert_to_csr(
     Returns:
         A 3-tuple ``(csr, permuted_P_mat, permuted_A_mat)`` where *csr*
         is a ``CsrProblemData`` and the matrices are the row-permuted
-        parametrization matrices (or ``None`` when the corresponding
-        structure is absent).
+        parametrization matrices (``permuted_P_mat`` is ``None`` when
+        the quadratic objective is absent).
     """
     P_structure_csc = param_prob.reduced_P.problem_data_index
     A_structure_csc = param_prob.reduced_A.problem_data_index
@@ -58,9 +62,8 @@ def convert_to_csr(
     elif A_structure_csc is not None:
         n = A_structure_csc[2][1] - 1  # A has n+1 columns (last is b)
     else:
-        raise ValueError(
-            "Cannot determine problem dimension: both P and A are None"
-        )
+        # Direct cones can leave a linear problem with neither P nor A.
+        n = param_prob.x.size
 
     # --- P matrix ---
     if P_structure_csc is not None:
@@ -77,8 +80,8 @@ def convert_to_csr(
 
     # --- A matrix (with last-column extraction for b) ---
     if A_structure_csc is not None:
-        A_perm, A_csr_structure, A_shape, b_idx = (
-            convert_csc_structure_to_csr_structure(A_structure_csc, True)
+        A_perm, A_csr_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
+            A_structure_csc, True
         )
         nnz_A = len(A_perm)
         # Permute constraint rows: [A values in CSR order | b values unchanged]
@@ -93,7 +96,7 @@ def convert_to_csr(
         A_shape = (0, n)
         nnz_A = 0
         b_idx = np.array([], dtype=np.int64)
-        permuted_A_mat = None
+        permuted_A_mat = sp.csr_array((0, param_prob.q.shape[1]))
 
     csr = CsrProblemData(
         P_csr_structure=P_csr_structure,

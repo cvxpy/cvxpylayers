@@ -52,11 +52,24 @@ def get_solver_ctx(
         case "MOREAU":
             from cvxpylayers.interfaces.moreau_if import MOREAU_ctx
 
-            return MOREAU_ctx(
-                csr, cone_dims, options,
+            ctx = MOREAU_ctx(
+                csr,
+                cone_dims,
+                options,
                 reduced_P_mat=permuted_P_mat,
                 reduced_A_mat=permuted_A_mat,
+                dir_cones=getattr(param_prob, "dir_cones", []),
             )
+            if ctx.has_psd_scaling:
+                if permuted_P_mat is not None:
+                    param_prob.reduced_P.reduced_mat = permuted_P_mat.multiply(
+                        ctx.P_scale[:, None]
+                    ).tocsr()
+                param_prob.reduced_A.reduced_mat = permuted_A_mat.multiply(
+                    ctx.Ab_scale[:, None]
+                ).tocsr()
+                param_prob.q = param_prob.q.multiply(ctx.q_scale[:, None]).tocsr()
+            return ctx
         case "CUCLARABEL":
             from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx
 
@@ -65,7 +78,8 @@ def get_solver_ctx(
             from cvxpylayers.interfaces.mpax_if import MPAX_ctx
 
             return MPAX_ctx(
-                csr, cone_dims,
+                csr,
+                cone_dims,
                 lower_bounds=data.get("lower_bound"),
                 upper_bounds=data.get("upper_bound"),
                 options=options,

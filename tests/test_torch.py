@@ -182,7 +182,7 @@ def test_logistic_regression():
     )
     prob = cp.Problem(cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
 
-    fit_logreg = CvxpyLayer(prob, [X, lam], [a])
+    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver="DIFFCP")
 
     torch.autograd.gradcheck(fit_logreg, (X_th, lam_th), atol=1e-4)
 
@@ -224,7 +224,7 @@ def test_lml():
     obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
-    lml = CvxpyLayer(prob, [x], [y])
+    lml = CvxpyLayer(prob, [x], [y], solver="DIFFCP")
 
     x_th = torch.tensor([1.0, -1.0, -1.0, -1.0]).requires_grad_()
     torch.autograd.gradcheck(lml, (x_th,), atol=1e-3)
@@ -240,7 +240,7 @@ def test_sdp():
     trace_con = cp.trace(X) == 1
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
-    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver="DIFFCP")
 
     # Use a well-conditioned symmetric matrix
     C_t = torch.tensor([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], requires_grad=True)
@@ -300,7 +300,7 @@ def test_infeasible():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(param), [x >= 1, x <= -1])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_th = torch.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_th)
@@ -310,7 +310,7 @@ def test_unbounded():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(x), [x <= param])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_th = torch.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_th)
@@ -393,9 +393,9 @@ def test_shared_parameter():
     b1 = rng.standard_normal(m)
     b2 = rng.standard_normal(m)
     prob1 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b1)))
-    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x])
+    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x], solver="DIFFCP")
     prob2 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b2)))
-    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x])
+    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x], solver="DIFFCP")
 
     A_th = torch.randn(m, n).double().requires_grad_()
     solver_args = {
@@ -441,7 +441,7 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
     a_th = torch.tensor([2.0]).requires_grad_()
     b_th = torch.tensor([1.0]).requires_grad_()
     c_th = torch.tensor([0.5]).requires_grad_()
@@ -476,7 +476,7 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
 
     # Batched parameters - test with batch size 4 (double precision)
     # For scalar parameters, batching means 1D tensors
@@ -536,7 +536,7 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
 
     # Now use the layer with actual parameter values
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
@@ -586,8 +586,14 @@ def test_gp_reversed_parameter_order():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layers with parameters in different orders
-    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
-    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+    layer_abc = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver="DIFFCP",
+    )
+    layer_cba = CvxpyLayer(
+        problem, parameters=[c, b, a], variables=[x, y, z], gp=True,
+        solver="DIFFCP",
+    )
 
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
     b_th = torch.tensor([1.0], dtype=torch.float64, requires_grad=True)
@@ -719,7 +725,7 @@ def test_solver_args_actually_used():
     obj = cp.sum_squares(A @ x - b) + 0.01 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(obj))
 
-    layer = CvxpyLayer(prob, [A, b], [x])
+    layer = CvxpyLayer(prob, [A, b], [x], solver="DIFFCP")
 
     A_th = torch.randn(m, n).double()
     b_th = torch.randn(m).double()
@@ -1017,7 +1023,7 @@ def test_quad_form_psd_rejects_diffcp():
     # DIFFCP can't handle parametric P — scope is not entered, so construction
     # fails (either DPP validation or canonicalization, depending on CVXPY version).
     with pytest.raises((ValueError, AssertionError)):
-        CvxpyLayer(prob, parameters=[Q, q], variables=[x])
+        CvxpyLayer(prob, parameters=[Q, q], variables=[x], solver="DIFFCP")
 
 
 @requires_moreau

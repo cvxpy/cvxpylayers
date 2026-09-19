@@ -1175,16 +1175,8 @@ def test_jax_vmap_dual_moreau():
 # ============================================================================
 
 
-@pytest.fixture
-def reset_dynamo():
-    """Reset torch.compile cache between tests."""
-    torch._dynamo.reset()
-    yield
-    torch._dynamo.reset()
-
-
 @pytest.mark.parametrize("device", get_device_params())
-def test_torch_compile_dual_moreau(device, reset_dynamo):
+def test_torch_compile_dual_moreau(device, compile_without_fallback):
     """Test torch.compile with dual variables using Moreau solver."""
     n = 2
     x = cp.Variable(n)
@@ -1201,7 +1193,7 @@ def test_torch_compile_dual_moreau(device, reset_dynamo):
         solver="MOREAU",
     )
 
-    @torch.compile
+    @compile_without_fallback
     def solve_and_sum_dual(c_t, b_t):
         x_opt, eq_dual = layer(c_t, b_t)
         return eq_dual.sum()
@@ -1211,14 +1203,16 @@ def test_torch_compile_dual_moreau(device, reset_dynamo):
 
     # Test compiled forward
     result = solve_and_sum_dual(c_t, b_t)
-    assert torch.isfinite(result)
+    # Stationarity gives lambda = -(b + sum(c)) / n.
+    expected_dual = -(b_t.detach() + c_t.detach().sum()) / n
+    torch.testing.assert_close(result, expected_dual, atol=1e-4, rtol=1e-4)
 
     # Test compiled backward
     result.backward()
     assert c_t.grad is not None
     assert b_t.grad is not None
-    assert torch.isfinite(c_t.grad).all()
-    assert torch.isfinite(b_t.grad)
+    torch.testing.assert_close(c_t.grad, torch.full_like(c_t, -1 / n), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(b_t.grad, torch.full_like(b_t, -1 / n), atol=1e-4, rtol=1e-4)
 
 
 # ============================================================================

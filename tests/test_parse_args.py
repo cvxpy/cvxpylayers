@@ -171,14 +171,14 @@ class TestParseArgs:
             parse_args(problem, {x}, [p], "DIFFCP")  # type: ignore[arg-type]
 
     def test_parse_args_default_solver(self):
-        """Test that solver defaults to DIFFCP when None."""
+        """Test that solver defaults to Moreau when None."""
         x = cp.Variable(2)
         p = cp.Parameter(2)
         problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
 
         ctx = parse_args(problem, [x], [p], None)
-        # Should not raise an error and should work with DIFFCP
         assert isinstance(ctx, LayersContext)
+        assert ctx.solver == "MOREAU"
 
     def test_parse_args_multiple_variables(self):
         """Test parse_args with multiple variables."""

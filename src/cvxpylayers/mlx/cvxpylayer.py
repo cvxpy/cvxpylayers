@@ -341,7 +341,7 @@ class CvxpyLayer:
             problem,
             variables,
             parameters,
-            solver,
+            "DIFFCP" if solver is None else solver,
             gp=gp,
             verbose=verbose,
             canon_backend=canon_backend,

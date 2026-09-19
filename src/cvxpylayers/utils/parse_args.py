@@ -1,4 +1,5 @@
 import contextlib
+import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -17,7 +18,6 @@ from cvxpylayers.interfaces.base import SolverInterface
 # so that quad_form(x, P) with parametric P is accepted as DPP.
 # DIFFCP decomposes quad_form to SOC and cannot handle parametric P.
 SUPPORTS_QUAD_OBJ = frozenset({"MOREAU", "CUCLARABEL", "MPAX"})
-
 
 
 if TYPE_CHECKING:
@@ -71,6 +71,8 @@ class VariableRecovery:
     shape: tuple[int, ...]
     is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
     is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
+    dual_indices: tuple[int, ...] | None = None
+    dual_upper: bool = False
     # Pre-computed fields for JIT compatibility (eliminate conditionals in hot path)
     source: Literal["primal", "dual"] = "primal"  # Which solution to read from
     unpack_fn: Literal["reshape", "svec_primal", "svec_dual"] = "reshape"  # How to unpack
@@ -160,7 +162,6 @@ class LayersContext:
         return ()
 
 
-
 def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
     """Build mapping from dual variable ID to parent constraint.
 
@@ -221,6 +222,7 @@ def _build_dual_recovery(
     parent_con: cp.Constraint,
     constr_id_to_slice: dict[int, slice],
     constr_id_map: dict[int, int],
+    dual_upper: bool = False,
 ) -> VariableRecovery:
     """Build recovery info for a dual variable."""
     constr_slice = constr_id_to_slice[constr_id_map.get(parent_con.id, parent_con.id)]
@@ -235,11 +237,40 @@ def _build_dual_recovery(
     else:
         dual_size = var.size
 
+    dual_indices = None
+    # ConeFormat interleaves the arguments of vectorized cones. Recover each
+    # original dual argument in Fortran order, rather than slicing across cones.
+    if isinstance(parent_con, cvxpy.constraints.SOC):
+        sizes = parent_con.cone_sizes()
+        starts = np.cumsum([0] + sizes[:-1])
+        if offset == 0:
+            indices = starts
+        else:
+            indices = np.array([s + j for s, n in zip(starts, sizes) for j in range(1, n)])
+            if parent_con.axis == 1:
+                indices = indices.reshape(len(sizes), -1).ravel(order="F")
+        dual_indices = tuple((constr_slice.start + indices).tolist())
+    elif isinstance(parent_con, (cvxpy.constraints.ExpCone, cvxpy.constraints.PowCone3D)):
+        indices = 3 * np.arange(var.size) + offset // var.size
+        dual_indices = tuple((constr_slice.start + indices).tolist())
+    elif isinstance(parent_con, cvxpy.constraints.PowConeND):
+        sizes = parent_con.cone_sizes()
+        starts = np.cumsum([0] + sizes[:-1])
+        if offset == 0:
+            indices = np.array([s + j for s, n in zip(starts, sizes) for j in range(n - 1)])
+            if parent_con.axis == 1:
+                indices = indices.reshape(len(sizes), -1).ravel(order="F")
+        else:
+            indices = starts + np.array(sizes) - 1
+        dual_indices = tuple((constr_slice.start + indices).tolist())
+
     return VariableRecovery(
         primal=None,
         dual=slice(dual_start, dual_start + dual_size),
         shape=var.shape,
         is_psd_dual=is_psd,
+        dual_indices=dual_indices,
+        dual_upper=dual_upper,
         source="dual",
         unpack_fn="svec_dual" if is_psd else "reshape",
     )
@@ -269,6 +300,7 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
         cvxpy.constraints.SvecPSD,
         cvxpy.constraints.ExpCone,
         cvxpy.constraints.PowCone3D,
+        cvxpy.constraints.PowConeND,
     ]
 
     for cone_type in cone_types:
@@ -282,6 +314,12 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
                 cone_size = c.size
             constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
             cur_idx += cone_size
+
+    # Moreau appends recovered direct-cone duals after the slack duals.
+    for cone in getattr(param_prob, "dir_cones", []):
+        start = constr_id_to_slice.get(cone.constr_id, slice(cur_idx, cur_idx)).start
+        cur_idx += len(cone.indices)
+        constr_id_to_slice[cone.constr_id] = slice(start, cur_idx)
 
     return constr_id_to_slice
 
@@ -310,10 +348,10 @@ def _validate_problem(
         ValueError: If problem is not DPP-compliant or inputs are invalid
     """
     if gp:
-        if not problem.is_dpp('dgp'):
+        if not problem.is_dpp("dgp"):
             raise ValueError("Problem must be DPP for geometric programming.")
     elif qp_solver:
-        if not problem.is_dpp(quad_form_dpp='qp'):  # type: ignore[call-arg]
+        if not problem.is_dpp(quad_form_dpp="qp"):  # type: ignore[call-arg]
             raise ValueError(
                 "Problem must be DPP. Note: quad_form(x, P) with parametric P "
                 "is only supported in the objective, not in constraints."
@@ -362,6 +400,7 @@ def _build_user_order_mapping(
     Returns:
         Tuple mapping user parameter index to column order index (JIT-compatible)
     """
+
     def _resolve(raw_id: int) -> int:
         return param_id_map.get(raw_id, raw_id)
 
@@ -376,7 +415,9 @@ def _build_user_order_mapping(
                 [
                     (
                         param_prob.param_id_to_col[
-                            _resolve(gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id)
+                            _resolve(
+                                gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id
+                            )
                         ],
                         i,
                     )
@@ -444,8 +485,8 @@ def parse_args(
         # falling back to whatever the caller passed in solver.
         solver = solver or custom_solver.canon_solver_name
     elif solver is None:
-        solver = "DIFFCP"
-        
+        solver = "MOREAU"
+
     if custom_solver is not None:
         qp_solver = solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
     else:
@@ -455,8 +496,7 @@ def parse_args(
 
     # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
     # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
-    with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
-
+    with scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext():
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
         if gp:
@@ -503,7 +543,11 @@ def parse_args(
         # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
         constr_id_map = chain.compose_constr_id_map()
 
-    param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
+    # Solver layouts and coordinate scaling belong to this layer, not CVXPY's
+    # cached parametrization (which may be reused by another layer).
+    param_prob = copy.copy(data[cp.settings.PARAM_PROB])  # type: ignore[attr-defined]
+    param_prob.reduced_P = copy.copy(param_prob.reduced_P)
+    param_prob.reduced_A = copy.copy(param_prob.reduced_A)
     cone_dims = data["dims"]
 
     # Create solver context — skip for custom solvers (no built-in ctx needed)
@@ -539,7 +583,11 @@ def parse_args(
             var_recover.append(_build_primal_recovery(v, param_prob, var_id_map))
         else:
             parent_con = dual_var_to_constraint[v.id]
-            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice, constr_id_map))
+            var_recover.append(
+                _build_dual_recovery(
+                    v, parent_con, constr_id_to_slice, constr_id_map, dual_upper=solver == "MOREAU"
+                )
+            )
 
     # Pre-compute GP log mask for JIT compatibility
     gp_log_mask = None

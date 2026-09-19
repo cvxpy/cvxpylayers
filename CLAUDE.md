@@ -41,10 +41,10 @@ ruff format src/ tests/
 - **Framework-specific layers** (`torch/`, `jax/`, `mlx/`): Each contains a `cvxpylayer.py` implementing `CvxpyLayer` for that framework. The PyTorch layer extends `torch.nn.Module`; JAX and MLX layers are callable classes.
 
 - **Solver interfaces** (`interfaces/`): Abstractions for different solver backends:
-  - `diffcp_if.py` - Default CPU solver using diffcp
+  - `diffcp_if.py` - CPU solver using diffcp (MLX default)
   - `cuclarabel_if.py` - GPU-accelerated solver using CuClarabel (requires Julia)
   - `mpax_if.py` - MPAX solver interface
-  - `moreau_if.py` - Moreau envelope solver
+  - `moreau_if.py` - Default PyTorch/JAX backend using Moreau
 
 - **Utilities** (`utils/`):
   - `parse_args.py` - Core canonicalization logic that converts CVXPY problems to parametrized cone programs. Defines `LayersContext` dataclass holding problem matrices and solver context.
@@ -97,5 +97,6 @@ Key test patterns:
 
 - Python >= 3.11
 - CVXPY >= 1.9.0 (provides `quad_form_dpp_scope` for parametric quad_form, native DGP→DCP reduction)
-- diffcp >= 1.1.0 (default solver backend)
-- Framework: PyTorch >= 2.0, JAX >= 0.4.0, or MLX
+- Moreau >= 0.4.0 (default PyTorch/JAX solver backend)
+- diffcp >= 1.1.0 (MLX default and explicit alternative)
+- Framework: PyTorch >= 2.4, JAX >= 0.4.0, or MLX

@@ -792,6 +792,7 @@ def test_soc_explicit_multi_dual_gradcheck():
         prob,
         parameters=[c, t_param],
         variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
+        solver="DIFFCP",
     )
 
     def f(c_t, t_t):

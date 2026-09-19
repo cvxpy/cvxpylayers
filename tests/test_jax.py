@@ -152,7 +152,7 @@ def test_logistic_regression():
     )
     prob = cp.Problem(cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
 
-    fit_logreg = CvxpyLayer(prob, [X, lam], [a])
+    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver="DIFFCP")
 
     check_grads(fit_logreg, (X_jax, lam_jax), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
 
@@ -191,7 +191,7 @@ def test_lml():
     obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
-    lml = CvxpyLayer(prob, [x], [y])
+    lml = CvxpyLayer(prob, [x], [y], solver="DIFFCP")
 
     x_th = jnp.array([1.0, -1.0, -1.0, -1.0])
     check_grads(lml, (x_th,), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
@@ -207,7 +207,7 @@ def test_sdp():
     trace_con = cp.trace(X) == 1
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
-    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver="DIFFCP")
 
     # Use a well-conditioned symmetric matrix
     C_jax = jnp.array([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]])
@@ -267,7 +267,7 @@ def test_infeasible():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(param), [x >= 1, x <= -1])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_jax = jnp.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_jax)
@@ -277,7 +277,7 @@ def test_unbounded():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(x), [x <= param])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_jax = jnp.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_jax)
@@ -380,9 +380,9 @@ def test_shared_parameter():
     b1 = random.normal(k1, shape=(m,))
     b2 = random.normal(k2, shape=(m,))
     prob1 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b1)))
-    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x])
+    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x], solver="DIFFCP")
     prob2 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b2)))
-    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x])
+    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x], solver="DIFFCP")
 
     key, k1 = random.split(key, num=2)
     A_jax = random.normal(k1, shape=(m, n))
@@ -429,7 +429,7 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
     a_jax = jnp.array(2.0)
     b_jax = jnp.array(1.0)
     c_jax = jnp.array(0.5)
@@ -471,7 +471,7 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
 
     # Batched parameters - test with batch size 4
     # For scalar parameters, batching means 1D arrays
@@ -533,7 +533,7 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
 
     # Now use the layer with actual parameter values
     a_jax = jnp.array(2.0)
@@ -590,8 +590,14 @@ def test_gp_reversed_parameter_order():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layers with parameters in different orders
-    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
-    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+    layer_abc = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver="DIFFCP",
+    )
+    layer_cba = CvxpyLayer(
+        problem, parameters=[c, b, a], variables=[x, y, z], gp=True,
+        solver="DIFFCP",
+    )
 
     a_jax = jnp.array(2.0)
     b_jax = jnp.array(1.0)

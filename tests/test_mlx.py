@@ -674,7 +674,7 @@ def test_relu(n):
     prob = cp.Problem(cp.Minimize(cp.sum_squares(y_var - x_param)), [y_var >= 0])
 
     # Torch CVXPY layer
-    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, parameters=[x_param], variables=[y_var])
 
     # Input
@@ -703,7 +703,7 @@ def test_sigmoid(n):
     obj = cp.Minimize(-x_param.T @ y_var - cp.sum(cp.entr(y_var) + cp.entr(1.0 - y_var)))
     prob = cp.Problem(obj)
 
-    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x_param], variables=[y_var], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, parameters=[x_param], variables=[y_var])
 
     x_np = np.linspace(-5, 5, n).astype(np.float32)
@@ -729,7 +729,7 @@ def test_sparsemax(n):
     constraint = [cp.sum(y) == 1, 0 <= y, y <= 1]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(x - y)), constraint)
 
-    torch_layer = TorchCvxpyLayer(prob, parameters=[x], variables=[y])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x], variables=[y], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, parameters=[x], variables=[y])
 
     np.random.seed(0)
@@ -751,7 +751,7 @@ def test_csoftmax(n, k):
     constraint = [cp.sum(y) == 1.0, y <= u]
     prob = cp.Problem(cp.Minimize(-x @ y - cp.sum(cp.entr(y))), constraint)
 
-    torch_layer = TorchCvxpyLayer(prob, parameters=[x], variables=[y])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[x], variables=[y], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, parameters=[x], variables=[y])
 
     np.random.seed(0)
@@ -774,7 +774,7 @@ def test_csparsemax(n, k):
     constraint = [cp.sum(y) == 1.0, 0.0 <= y, y <= u]
     prob = cp.Problem(cp.Minimize(obj), constraint)
 
-    torch_layer = TorchCvxpyLayer(prob, [x], [y])
+    torch_layer = TorchCvxpyLayer(prob, [x], [y], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, [x], [y])
 
     x_np = np.random.randn(n).astype(np.float32)
@@ -795,7 +795,7 @@ def test_limited_multilayer_proj(n, k):
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
 
-    torch_layer = TorchCvxpyLayer(prob, [x], [y])
+    torch_layer = TorchCvxpyLayer(prob, [x], [y], solver="DIFFCP")
     mlx_layer = CvxpyLayer(prob, [x], [y])
 
     x_np = np.random.randn(n).astype(np.float32)
@@ -817,7 +817,7 @@ def test_multiple_variables_vs_torch(n):
     problem = cp.Problem(cp.Minimize(cp.sum_squares(x) + cp.sum_squares(y)), [x + y == c])
 
     mlx_layer = CvxpyLayer(problem, parameters=[c], variables=[x, y])
-    torch_layer = TorchCvxpyLayer(problem, parameters=[c], variables=[x, y])
+    torch_layer = TorchCvxpyLayer(problem, parameters=[c], variables=[x, y], solver="DIFFCP")
 
     c_val_np = np.array([2.0, 4.0], dtype=np.float32)
     c_val_mx = mx.array(c_val_np, dtype=mx.float32)
@@ -851,7 +851,7 @@ def test_batched_solver(batch_size, n, m):
     problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)), [x >= 0])
 
     mlx_layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
-    torch_layer = TorchCvxpyLayer(problem, parameters=[A, b], variables=[x])
+    torch_layer = TorchCvxpyLayer(problem, parameters=[A, b], variables=[x], solver="DIFFCP")
 
     np.random.seed(42)
     A_batch_np = np.random.randn(batch_size, m, n).astype(np.float32)
@@ -893,7 +893,9 @@ def test_ellipsoid_projection(n):
 
     # MLX and Torch layers
     mlx_layer = CvxpyLayer(prob, parameters=[_A, _z, _x], variables=[_y, _t])
-    torch_layer = TorchCvxpyLayer(prob, parameters=[_A, _z, _x], variables=[_y, _t])
+    torch_layer = TorchCvxpyLayer(
+        prob, parameters=[_A, _z, _x], variables=[_y, _t], solver="DIFFCP"
+    )
 
     # Random input
     torch.manual_seed(0)
@@ -1009,7 +1011,7 @@ def test_sdp():
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
     mlx_layer = CvxpyLayer(prob, parameters=[C], variables=[X])
-    torch_layer = TorchCvxpyLayer(prob, parameters=[C], variables=[X])
+    torch_layer = TorchCvxpyLayer(prob, parameters=[C], variables=[X], solver="DIFFCP")
 
     # Use a well-conditioned symmetric matrix
     C_np = np.array([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], dtype=np.float32)
