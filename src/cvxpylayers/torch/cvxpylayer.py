@@ -7,7 +7,9 @@ import scipy.sparse
 import torch
 
 import cvxpylayers.utils.parse_args as pa
+from cvxpylayers.interfaces import get_torch_cvxpylayer
 from cvxpylayers.interfaces.base import SolverInterface
+from cvxpylayers.torch._sparse import _CsrMatrix
 
 
 class _ScipySparseMatmul(torch.autograd.Function):
@@ -39,9 +41,7 @@ class _ScipySparseMatmul(torch.autograd.Function):
 
 
 @torch.compiler.disable
-def _scipy_sparse_matmul(
-    scipy_csr: scipy.sparse.csr_array, x: torch.Tensor
-) -> torch.Tensor:
+def _scipy_sparse_matmul(scipy_csr: scipy.sparse.csr_array, x: torch.Tensor) -> torch.Tensor:
     """Keep SciPy native sparse operations outside the compiled tensor graph."""
     return _ScipySparseMatmul.apply(scipy_csr, x)
 
@@ -84,10 +84,7 @@ def _apply_gp_log_transform(
         return params
 
     # Use pre-computed mask for JIT compatibility (no dict lookups)
-    return tuple(
-        torch.log(p) if needs_log else p
-        for p, needs_log in zip(params, ctx.gp_log_mask)
-    )
+    return tuple(torch.log(p) if needs_log else p for p, needs_log in zip(params, ctx.gp_log_mask))
 
 
 def _flatten_and_batch_params(
@@ -160,9 +157,9 @@ def _svec_to_symmetric(
     svec: torch.Tensor,
     n: int,
     batch: tuple,
-    rows: np.ndarray,
-    cols: np.ndarray,
-    scale: np.ndarray | None = None,
+    rows: torch.Tensor,
+    cols: torch.Tensor,
+    scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Convert vectorized form to full symmetric matrix.
 
@@ -177,10 +174,10 @@ def _svec_to_symmetric(
     Returns:
         Full symmetric matrix, shape (*batch, n, n)
     """
-    rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
-    cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
+    rows_t = torch.as_tensor(rows, dtype=torch.long, device=svec.device)
+    cols_t = torch.as_tensor(cols, dtype=torch.long, device=svec.device)
     if scale is not None:
-        scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
+        scale_t = torch.as_tensor(scale, dtype=svec.dtype, device=svec.device)
         data = svec * scale_t
     else:
         data = svec
@@ -209,7 +206,7 @@ def _unpack_primal_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tenso
     Returns:
         Full symmetric matrix
     """
-    rows, cols = np.triu_indices(n)
+    rows, cols = torch.triu_indices(n, n, device=svec.device)
     return _svec_to_symmetric(svec, n, batch, rows, cols)
 
 
@@ -228,12 +225,12 @@ def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple, upper: bool = False) 
     Returns:
         Full symmetric matrix with scaling removed
     """
-    rows_rm, cols_rm = np.triu_indices(n) if upper else np.tril_indices(n)
-    sort_idx = np.lexsort((rows_rm, cols_rm))
-    rows = rows_rm[sort_idx]
-    cols = cols_rm[sort_idx]
+    # Transpose the opposite triangle's row-major indices to obtain the
+    # column-major ordering without NumPy work inside the compiled graph.
+    indices = torch.tril_indices if upper else torch.triu_indices
+    cols, rows = indices(n, n, device=svec.device)
     # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
-    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
+    scale = torch.where(rows == cols, svec.new_tensor(1.0), svec.new_tensor(2.0**-0.5))
     return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
 
 
@@ -370,9 +367,7 @@ class CvxpyLayer(torch.nn.Module):
 
         # When solver is a SolverInterface, split off the CVXPY canonicalization
         # name (solver.canon_solver) and pass the object through to parse_args.
-        canon_solver_str: str | None = (
-            None if isinstance(solver, SolverInterface) else solver
-        )
+        canon_solver_str: str | None = None if isinstance(solver, SolverInterface) else solver
         custom_solver: SolverInterface | None = (
             solver if isinstance(solver, SolverInterface) else None
         )
@@ -404,7 +399,11 @@ class CvxpyLayer(torch.nn.Module):
             scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat),  # type: ignore[attr-defined]
         )
         self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
+        self._P_csr = _CsrMatrix(self._P_scipy) if self._P_scipy is not None else None
+        self._q_csr = _CsrMatrix(self._q_scipy)
+        self._A_csr = _CsrMatrix(self._A_scipy)
         self._warm_start_cache = None
+        self._solver_layer = get_torch_cvxpylayer(self.ctx.solver)
         if isinstance(self.ctx.solver, SolverInterface):
             self.ctx.solver.setup(self.ctx)
 
@@ -464,9 +463,7 @@ class CvxpyLayer(torch.nn.Module):
             # both the Parameter objects and the current numpy values.
             for param_obj, p in zip(self.ctx.parameters, params):
                 param_obj.value = p.detach().cpu().numpy()
-            needs_grad = torch.is_grad_enabled() and any(
-                p.requires_grad for p in params
-            )
+            needs_grad = torch.is_grad_enabled() and any(p.requires_grad for p in params)
             primal, dual, _, _ = _CustomCvxpyLayer.apply(  # type: ignore[misc]
                 None, None, None, self.ctx, solver_args, needs_grad, None, *params
             )
@@ -483,12 +480,14 @@ class CvxpyLayer(torch.nn.Module):
         param_device = p_stack.device
 
         # Evaluate parametrized matrices
-        if param_device.type == "cpu":
+        if torch.compiler.is_compiling() and param_device.type == "cuda":
+            P_eval = self._P_csr(p_stack) if self._P_csr is not None else None
+            q_eval = self._q_csr(p_stack)
+            A_eval = self._A_csr(p_stack)
+        elif param_device.type == "cpu":
             # Use scipy sparse matmul on CPU (80-200x faster than torch sparse CSR)
             P_eval = (
-                _scipy_sparse_matmul(self._P_scipy, p_stack)
-                if self._P_scipy is not None
-                else None
+                _scipy_sparse_matmul(self._P_scipy, p_stack) if self._P_scipy is not None else None
             )
             q_eval = _scipy_sparse_matmul(self._q_scipy, p_stack)
             A_eval = _scipy_sparse_matmul(self._A_scipy, p_stack)
@@ -503,9 +502,7 @@ class CvxpyLayer(torch.nn.Module):
             A_eval = self.A.to(dtype=param_dtype, device=param_device) @ p_stack  # type: ignore[operator]
 
         # Get the solver-specific _CvxpyLayer class
-        from cvxpylayers.interfaces import get_torch_cvxpylayer
-
-        _CvxpyLayer = get_torch_cvxpylayer(self.ctx.solver)
+        _CvxpyLayer = self._solver_layer
 
         # Give the custom solver the raw parameter values before the solve.
         # This allows CVXPYgen-style solvers that work with CVXPY parameter
@@ -516,9 +513,7 @@ class CvxpyLayer(torch.nn.Module):
 
         # Determine if gradients are needed (must check here, not inside
         # Function.forward() where torch.is_grad_enabled() is always False)
-        needs_grad = torch.is_grad_enabled() and any(
-            p.requires_grad for p in params
-        )
+        needs_grad = torch.is_grad_enabled() and any(p.requires_grad for p in params)
 
         # Validate warm start batch compatibility before using cache.
         # moreau.torch always uses batched mode internally (batch_size=1 for unbatched),
@@ -543,7 +538,17 @@ class CvxpyLayer(torch.nn.Module):
 
         # Always update warm start cache for Moreau solver (negligible cost)
         if self.ctx.solver == "MOREAU":
-            self._warm_start_cache = solver_data._solution.to_warm_start()
+            if torch.compiler.is_compiling() and param_device.type == "cuda":
+                # Keep independent GPU buffers without retaining the training graph.
+                solution = solver_data._solution
+                self._warm_start_cache = type(solution)(
+                    solution.x.detach().clone(),
+                    solution.z.detach().clone(),
+                    solution.s.detach().clone(),
+                    solution.z_x.detach().clone(),
+                )
+            else:
+                self._warm_start_cache = solver_data._solution.to_warm_start()
 
         # Recover results and apply GP inverse transform if needed
         return _recover_results(primal, dual, self.ctx, batch)
