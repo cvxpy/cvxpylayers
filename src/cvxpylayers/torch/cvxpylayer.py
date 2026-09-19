@@ -480,7 +480,7 @@ class CvxpyLayer(torch.nn.Module):
         param_device = p_stack.device
 
         # Evaluate parametrized matrices
-        if torch.compiler.is_compiling() and param_device.type == "cuda":
+        if torch.compiler.is_compiling() and param_device.type in ("cpu", "cuda"):
             P_eval = self._P_csr(p_stack) if self._P_csr is not None else None
             q_eval = self._q_csr(p_stack)
             A_eval = self._A_csr(p_stack)
@@ -538,8 +538,8 @@ class CvxpyLayer(torch.nn.Module):
 
         # Always update warm start cache for Moreau solver (negligible cost)
         if self.ctx.solver == "MOREAU":
-            if torch.compiler.is_compiling() and param_device.type == "cuda":
-                # Keep independent GPU buffers without retaining the training graph.
+            if torch.compiler.is_compiling() and param_device.type in ("cpu", "cuda"):
+                # Keep independent tensor buffers without retaining the training graph.
                 solution = solver_data._solution
                 self._warm_start_cache = type(solution)(
                     solution.x.detach().clone(),

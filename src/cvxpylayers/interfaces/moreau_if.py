@@ -478,8 +478,8 @@ class MOREAU_ctx:
         b = b.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, m)
 
         # Select solver based on device
-        if torch.compiler.is_compiling() and is_cuda:
-            index = self._initialize_torch_solver("cuda", solver_args)
+        if torch.compiler.is_compiling():
+            index = self._initialize_torch_solver("cuda" if is_cuda else "cpu", solver_args)
             solver = self._compiled_torch_solvers[index][1]
         else:
             solver = self.get_torch_solver("cuda" if is_cuda else "cpu")
@@ -551,7 +551,7 @@ class MOREAU_data:
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
-        if torch.compiler.is_compiling() and self.is_cuda:
+        if torch.compiler.is_compiling():
             # The compiled path selected a solver with these settings at construction.
             return self._torch_solve_impl(warm_start)
 
@@ -568,7 +568,7 @@ class MOREAU_data:
     def _torch_solve_impl(self, warm_start=None):
         """Inner solve logic, called with settings already overridden."""
         # Enable gradients on inputs for Moreau's autograd
-        compiling = torch.compiler.is_compiling() and self.is_cuda
+        compiling = torch.compiler.is_compiling()
         q = self.q if compiling else self.q.requires_grad_(True)
         b = self.b if compiling else self.b.requires_grad_(True)
 

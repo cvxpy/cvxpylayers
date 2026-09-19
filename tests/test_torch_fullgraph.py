@@ -25,14 +25,17 @@ from torch._dynamo.testing import CompileCounterWithBackend
 from cvxpylayers.torch import CvxpyLayer
 from cvxpylayers.torch._sparse import _csr_mm
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or not moreau.device_available("cuda"),
-    reason="CUDA Moreau required",
-)
+
+@pytest.fixture(params=["cpu", "cuda"])
+def device(request):
+    device = request.param
+    if not moreau.device_available(device) or (device == "cuda" and not torch.cuda.is_available()):
+        pytest.skip(f"Moreau {device} required")
+    return device
 
 
-def _tensor(value, batch_shape=(), dtype=torch.float64):
-    t = torch.tensor(value, dtype=dtype, device="cuda")
+def _tensor(value, device, batch_shape=(), dtype=torch.float64):
+    t = torch.tensor(value, dtype=dtype, device=device)
     if batch_shape:
         t = t.expand(*batch_shape, *t.shape).clone()
     return t.requires_grad_()
@@ -40,7 +43,7 @@ def _tensor(value, batch_shape=(), dtype=torch.float64):
 
 @pytest.mark.parametrize("batch_shape", [(), (1,), (3,)])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_fullgraph_layer_parameters_and_duals(batch_shape, dtype):
+def test_fullgraph_layer_parameters_and_duals(batch_shape, dtype, device):
     x = cp.Variable(2)
     d = cp.Parameter(2, nonneg=True)
     a = cp.Parameter((1, 2))
@@ -61,10 +64,10 @@ def test_fullgraph_layer_parameters_and_duals(batch_shape, dtype):
     for scale in (1.0, 1.4):
         # Mix batched and shared parameters, including changes to P and A.
         inputs = (
-            _tensor([2.0 * scale, 3.0], dtype=dtype),
-            _tensor([[1.0, scale]], batch_shape, dtype),
-            _tensor([0.2, -0.3], batch_shape, dtype),
-            _tensor([1.0], dtype=dtype),
+            _tensor([2.0 * scale, 3.0], device, dtype=dtype),
+            _tensor([[1.0, scale]], device, batch_shape, dtype),
+            _tensor([0.2, -0.3], device, batch_shape, dtype),
+            _tensor([1.0], device, dtype=dtype),
         )
         actual = compiled(*inputs)
         expected = model(*inputs)
@@ -80,7 +83,7 @@ def test_fullgraph_layer_parameters_and_duals(batch_shape, dtype):
 
 
 @pytest.mark.parametrize("problem_kind", ["direct", "lp", "psd"])
-def test_fullgraph_cones_and_warm_start(problem_kind):
+def test_fullgraph_cones_and_warm_start(problem_kind, device):
     if problem_kind == "psd":
         x = cp.Variable((2, 2), symmetric=True)
         p = cp.Parameter((2, 2))
@@ -102,7 +105,7 @@ def test_fullgraph_cones_and_warm_start(problem_kind):
     torch._dynamo.reset()
     compiled = torch.compile(layer, fullgraph=True)
     for scale in (1.0, 1.2, 0.8):
-        p = _tensor(np.asarray(values) * scale)
+        p = _tensor(np.asarray(values) * scale, device)
         actual = compiled(p, warm_start=True)
         assert not layer._warm_start_cache.x.requires_grad
         assert not layer._warm_start_cache.z_x.requires_grad
@@ -115,24 +118,24 @@ def test_fullgraph_cones_and_warm_start(problem_kind):
     torch._dynamo.reset()
 
 
-def test_sparse_operator_contract():
-    crow = torch.tensor([0, 1, 3], device="cuda")
-    col = torch.tensor([0, 0, 1], device="cuda")
-    values = torch.tensor([1.0, 2.0, 3.0], device="cuda", dtype=torch.float64)
+def test_sparse_operator_contract(device):
+    crow = torch.tensor([0, 1, 3], device=device)
+    col = torch.tensor([0, 0, 1], device=device)
+    values = torch.tensor([1.0, 2.0, 3.0], device=device, dtype=torch.float64)
     for shape in ((2,), (2, 3)):
-        x = torch.randn(shape, device="cuda", dtype=torch.float64, requires_grad=True)
+        x = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
         torch.library.opcheck(_csr_mm, (crow, col, values, x, 2, 2, False))
         assert torch.autograd.gradcheck(lambda x: _csr_mm(crow, col, values, x, 2, 2, False), x)
 
 
-def test_fullgraph_gp_options_and_inference():
+def test_fullgraph_gp_options_and_inference(device):
     x, p = cp.Variable(2, pos=True), cp.Parameter(2, pos=True)
     layer = CvxpyLayer(
         cp.Problem(cp.Minimize(cp.sum(x)), [x >= p]), [p], [x], gp=True, solver="MOREAU"
     )
     torch._dynamo.reset()
     compiled = torch.compile(layer, fullgraph=True)
-    value = _tensor([2.0, 3.0])
+    value = _tensor([2.0, 3.0], device)
     options = {"max_iter": 80, "ipm_settings": {"tol_gap_abs": 1e-9}}
     (result,) = compiled(value, solver_args=options)
     torch.testing.assert_close(result, value, atol=1e-5, rtol=1e-5)

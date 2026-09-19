@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import numpy as np
+import scipy.sparse
 import torch
 
 
@@ -27,6 +29,13 @@ def _csr_mm(
     cols: int,
     transpose: bool,
 ) -> torch.Tensor:
+    if x.device.type == "cpu":
+        matrix = scipy.sparse.csr_array(
+            (values.numpy(), col.numpy(), crow.numpy()), shape=(rows, cols)
+        )
+        if transpose:
+            matrix = matrix.T
+        return torch.from_numpy(np.asarray(matrix @ x.numpy()))
     matrix = torch.sparse_csr_tensor(crow, col, values, size=(rows, cols))
     if transpose:
         matrix = matrix.transpose(0, 1)
