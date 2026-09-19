@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, cast
+from typing import Any, Callable, TypeVar, cast
 
 import cvxpy as cp
 import numpy as np
@@ -40,10 +40,18 @@ class _ScipySparseMatmul(torch.autograd.Function):
         return None, torch.from_numpy(np.asarray(result))
 
 
-@torch.compiler.disable
+_FuncT = TypeVar("_FuncT", bound=Callable[..., Any])
+
+
+def _typed_disable(fn: _FuncT) -> _FuncT:
+    """Preserve the callable's signature through Torch's untyped decorator."""
+    return cast(_FuncT, torch.compiler.disable(fn))
+
+
+@_typed_disable
 def _scipy_sparse_matmul(scipy_csr: scipy.sparse.csr_array, x: torch.Tensor) -> torch.Tensor:
     """Keep SciPy native sparse operations outside the compiled tensor graph."""
-    return _ScipySparseMatmul.apply(scipy_csr, x)
+    return cast(torch.Tensor, _ScipySparseMatmul.apply(scipy_csr, x))
 
 
 def _reshape_fortran(array: torch.Tensor, shape: tuple) -> torch.Tensor:
