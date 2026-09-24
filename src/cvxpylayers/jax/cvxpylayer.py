@@ -503,6 +503,12 @@ class CvxpyLayer:
         b_idx = solver_ctx.b_idx  # pyright: ignore[reportAttributeAccessIssue]
         nnz_A = solver_ctx.nnz_A  # pyright: ignore[reportAttributeAccessIssue]
         m = solver_ctx.A_shape[0]  # pyright: ignore[reportAttributeAccessIssue]
+        # psd_triangle direct-cone scaling: solver works in scale * x
+        scale = solver_ctx.scale  # pyright: ignore[reportAttributeAccessIssue]
+        if scale is not None:
+            P_values_scale = jnp.asarray(solver_ctx.P_values_scale)  # pyright: ignore[reportAttributeAccessIssue]
+            A_values_scale = jnp.asarray(solver_ctx.A_values_scale)  # pyright: ignore[reportAttributeAccessIssue]
+            scale = jnp.asarray(scale)
 
         def _extract_problem_data(
             P_eval_single: jnp.ndarray | None,
@@ -518,7 +524,14 @@ class CvxpyLayer:
             b = jnp.zeros(m, dtype=jnp.float64)
             b = b.at[b_idx].set(b_raw)
             q = q_eval_single[:-1]
+            if scale is not None:
+                P_values = P_values * P_values_scale
+                A_values = A_values * A_values_scale
+                q = q / scale
             return P_values, A_values, q, b
+
+        def _unscale(x: jnp.ndarray) -> jnp.ndarray:
+            return x / scale if scale is not None else x
 
         def extract_and_solve(
             P_eval_single,
@@ -530,7 +543,7 @@ class CvxpyLayer:
                 P_eval_single, q_eval_single, A_eval_single
             )
             solution, _info = solve_fn(P_values, A_values, q, b)
-            return solution.x, solution.z, solution.s
+            return _unscale(solution.x), solution.z, solution.s, solution.z_x
 
         def extract_and_solve_warm(
             P_eval_single,
@@ -545,7 +558,7 @@ class CvxpyLayer:
                 P_eval_single, q_eval_single, A_eval_single
             )
             solution, _info = solve_warm_fn(P_values, A_values, q, b, ws_x, ws_z, ws_s)
-            return solution.x, solution.z, solution.s
+            return _unscale(solution.x), solution.z, solution.s, solution.z_x
 
         # Select solve function and extra args.
         # When solve_warm_fn is available (CUDA), pass warm arrays as positional args.
@@ -561,34 +574,39 @@ class CvxpyLayer:
         if batch:
             P_eval_t = P_eval.T if P_eval is not None else None
             vmapped = jax.vmap(solve, in_axes=(0,) * (3 + len(extra_args)))
-            primal, dual, slack = vmapped(P_eval_t, q_eval.T, A_eval.T, *extra_args)
+            primal, dual, slack, dir_dual = vmapped(P_eval_t, q_eval.T, A_eval.T, *extra_args)
         else:
-            primal, dual, slack = solve(P_eval, q_eval, A_eval, *extra_args)
+            primal, dual, slack, dir_dual = solve(P_eval, q_eval, A_eval, *extra_args)
             # Add batch dimension for _recover_results (which expects it)
             primal = jnp.expand_dims(primal, 0)
             dual = jnp.expand_dims(dual, 0)
+            dir_dual = jnp.expand_dims(dir_dual, 0)
 
         if use_side_channel_warm_start:
             self._moreau_jax_impl._pending_warm_start = None
 
         # Always update warm start cache (negligible cost).
         # Skip when inside jit/vmap — traced arrays can't be converted to numpy.
+        # Warm starts are in the solver's (scaled) coordinates.
+        solver_primal = primal * scale if scale is not None else primal
         try:
             if batch:
                 self._warm_start_cache = BatchedWarmStart(
-                    x=np.asarray(primal, dtype=np.float64),
+                    x=np.asarray(solver_primal, dtype=np.float64),
                     z=np.asarray(dual, dtype=np.float64),
                     s=np.asarray(slack, dtype=np.float64),
                 )
             else:
                 self._warm_start_cache = WarmStart(
-                    x=np.asarray(primal.squeeze(0), dtype=np.float64),
+                    x=np.asarray(solver_primal.squeeze(0), dtype=np.float64),
                     z=np.asarray(dual.squeeze(0), dtype=np.float64),
                     s=np.asarray(slack, dtype=np.float64),
                 )
         except jax.errors.TracerArrayConversionError:
             pass  # Inside jit/vmap — warm start cache not available
 
+        # Duals of cones on variables (zero-length if none) follow the conic duals
+        dual = jnp.concatenate([dual, dir_dual], axis=1)
         return _recover_results(primal, dual, self.ctx, batch)
 
     def _solve_parametric(

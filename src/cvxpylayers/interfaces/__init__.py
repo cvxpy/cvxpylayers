@@ -56,6 +56,7 @@ def get_solver_ctx(
                 csr, cone_dims, options,
                 reduced_P_mat=permuted_P_mat,
                 reduced_A_mat=permuted_A_mat,
+                dir_cones=data.get("dir_cones", []),
             )
         case "CUCLARABEL":
             from cvxpylayers.interfaces.cuclarabel_if import CUCLARABEL_ctx

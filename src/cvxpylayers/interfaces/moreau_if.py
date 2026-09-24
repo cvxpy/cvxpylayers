@@ -156,6 +156,27 @@ def _cvxpy_dims_to_moreau_cones(dims: dict):
     return cones
 
 
+def _psd_triangle_scale(dir_cones, n: int) -> np.ndarray | None:
+    """Per-variable scaling for ``psd_triangle`` direct cones.
+
+    Moreau expects the off-diagonal entries of a direct PSD cone scaled by
+    sqrt(2), while CVXPY stores them unscaled. As in CVXPY's MOREAU interface,
+    the solver works in ``x_solver = scale * x``.
+
+    Returns:
+        Array of shape (n,), or None if no rescaling is needed.
+    """
+    scale = np.ones(n)
+    for cone in dir_cones:
+        if cone.kind == "psd_triangle":
+            k = cone.extras["psd_k"]
+            j = np.arange(k)
+            indices = np.asarray(cone.indices)
+            scale[indices] = np.sqrt(2)
+            scale[indices[j * (j + 3) // 2]] = 1  # diagonal entries
+    return scale if np.any(scale != 1) else None
+
+
 class MOREAU_ctx:
     """Context class for Moreau solver.
 
@@ -186,6 +207,7 @@ class MOREAU_ctx:
         *,
         reduced_P_mat=None,
         reduced_A_mat=None,
+        dir_cones=(),
     ):
         """Initialize Moreau solver context.
 
@@ -201,6 +223,9 @@ class MOREAU_ctx:
                 are constant across parameter values, enabling a one-time
                 ``setup()`` call (the ``PA_is_constant`` optimisation).
             reduced_A_mat: Already-permuted sparse parametrization matrix for A.
+            dir_cones: CVXPY ``DirectCone`` metadata for cones placed directly
+                on variables (e.g. ``x >= 0``, ``PSD=True``), which CVXPY
+                removes from the conic rows of ``A``.
         """
         # Store CSR structure (handle None P for LP problems)
         if csr.P_csr_structure is not None:
@@ -224,6 +249,16 @@ class MOREAU_ctx:
         # Store dimensions
         self.dims = dims
         self.options = options or {}
+        self.dir_cones = list(dir_cones)
+
+        # Rescaling for psd_triangle direct cones: the solver sees
+        # P / (scale scale^T), A / scale^T, q / scale and returns scale * x.
+        # Expressed per CSR nonzero so it applies directly to P/A values.
+        self.scale = _psd_triangle_scale(self.dir_cones, self.P_shape[0])
+        if self.scale is not None:
+            P_rows = np.repeat(np.arange(self.P_shape[0]), np.diff(self.P_row_offsets))
+            self.P_values_scale = 1 / (self.scale[P_rows] * self.scale[self.P_col_indices])
+            self.A_values_scale = 1 / self.scale[self.A_col_indices]
 
         # Create cones and solver lazily
         self._cones = None
@@ -251,6 +286,9 @@ class MOREAU_ctx:
             A_csr = reduced_A_mat[:, -1].tocsr()
             # Only take A values (first nnz_A), not b values; negate for Ax + s = b form
             self._A_const_values = -A_csr.data[: self.nnz_A]
+            if self.scale is not None:
+                self._P_const_values = self._P_const_values * self.P_values_scale
+                self._A_const_values = self._A_const_values * self.A_values_scale
         else:
             self._P_const_values = None
             self._A_const_values = None
@@ -260,6 +298,11 @@ class MOREAU_ctx:
         """Get moreau.Cones (unified for NumPy and PyTorch paths)."""
         if self._cones is None:
             self._cones = _cvxpy_dims_to_moreau_cones(dims_to_solver_dict(self.dims))
+            # Cones CVXPY placed directly on variables (not in the rows of A)
+            self._cones.dir_cones = [
+                moreau.DirectConeSpec(kind=c.kind, indices=c.indices, **c.extras)
+                for c in self.dir_cones
+            ]
         return self._cones
 
     def _get_settings(self, enable_grad: bool = True):
@@ -425,6 +468,15 @@ class MOREAU_ctx:
         q = q.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, n)
         b = b.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, m)
 
+        scale = P_values_scale = A_values_scale = None
+        if self.scale is not None:
+            scale = torch.tensor(self.scale, dtype=torch.float64, device=device)
+            P_values_scale = torch.tensor(self.P_values_scale, dtype=torch.float64, device=device)
+            A_values_scale = torch.tensor(self.A_values_scale, dtype=torch.float64, device=device)
+            P_values = P_values * P_values_scale
+            A_values = A_values * A_values_scale
+            q = q / scale
+
         # Select solver based on device
         solver = self.get_torch_solver("cuda" if is_cuda else "cpu")
 
@@ -445,6 +497,10 @@ class MOREAU_ctx:
             P_eval_size=quad_obj_values.shape[0] if quad_obj_values is not None else 0,
             q_eval_size=lin_obj_values.shape[0],
             A_eval_size=con_values.shape[0],
+            has_dir_cones=bool(self.dir_cones),
+            scale=scale,
+            P_values_scale=P_values_scale,
+            A_values_scale=A_values_scale,
         )
 
 
@@ -473,6 +529,14 @@ class MOREAU_data:
     P_eval_size: int  # Size of P_eval tensor (= nnz_P)
     q_eval_size: int  # Size of q_eval tensor (n+1)
     A_eval_size: int  # Size of A_eval tensor (= nnz_A + nb)
+
+    # Whether to append direct-cone duals (solution.z_x) to the dual output
+    has_dir_cones: bool = False
+
+    # psd_triangle direct-cone scaling: solver returns scale * x (None if unused)
+    scale: Any = None  # torch.Tensor (n,)
+    P_values_scale: Any = None  # torch.Tensor (nnzP,)
+    A_values_scale: Any = None  # torch.Tensor (nnzA,)
 
     def torch_solve(self, solver_args=None, warm_start=None):
         """Solve using moreau.torch.Solver with autograd support.
@@ -523,6 +587,11 @@ class MOREAU_data:
         # Extract primal and dual - keep connected to autograd graph (don't detach!)
         primal = solution.x  # (batch, n)
         dual = solution.z  # (batch, m)
+        if self.has_dir_cones:
+            # Duals of cones on variables follow the conic duals
+            dual = torch.cat([dual, solution.z_x], dim=1)  # (batch, m + len(z_x))
+        if self.scale is not None:
+            primal = primal / self.scale
 
         # Store for backward - NOT returned as output to avoid grad_fn corruption
         self._backwards_info = {
@@ -571,6 +640,15 @@ class MOREAU_data:
             allow_unused=True,
         )
         dP_values, dq_raw, dA_values, db_raw = grads
+
+        # Chain rule through the psd_triangle direct-cone scaling
+        if self.scale is not None:
+            if dP_values is not None:
+                dP_values = dP_values * self.P_values_scale
+            if dA_values is not None:
+                dA_values = dA_values * self.A_values_scale
+            if dq_raw is not None:
+                dq_raw = dq_raw / self.scale
 
         device = dprimal.device
         dtype = torch.float64

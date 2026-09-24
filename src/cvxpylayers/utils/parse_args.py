@@ -245,14 +245,19 @@ def _build_dual_recovery(
     )
 
 
-def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
+def _build_constr_id_to_slice(
+    param_prob: ParamConeProg, dir_cones: list | None = None
+) -> dict[int, slice]:
     """Build mapping from constraint ID to slice in dual solution vector.
 
     The dual solution vector is ordered by cone type:
-    Zero (equalities) -> NonNeg (inequalities) -> SOC -> PSD/SvecPSD -> ExpCone -> PowCone3D
+    Zero (equalities) -> NonNeg (inequalities) -> SOC -> PSD/SvecPSD -> ExpCone -> PowCone3D,
+    followed by the duals of any direct cones (constraints the solver
+    interface placed directly on variables, e.g. MOREAU), in ``dir_cones`` order.
 
     Args:
         param_prob: CVXPY's parametrized cone program
+        dir_cones: CVXPY ``DirectCone`` metadata from the problem data, if any
 
     Returns:
         Dictionary mapping constraint ID to slice in dual solution vector
@@ -282,6 +287,18 @@ def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
                 cone_size = c.size
             constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
             cur_idx += cone_size
+
+    # A constraint may emit several consecutive DirectCone entries
+    # (e.g. multi-cone SOC); its dual is their concatenation.
+    for cone in dir_cones or []:
+        cone_size = len(cone.indices)
+        prev = constr_id_to_slice.get(cone.constr_id)
+        if prev is not None:
+            assert prev.stop == cur_idx, "DirectCone entries of a constraint must be contiguous"
+            constr_id_to_slice[cone.constr_id] = slice(prev.start, cur_idx + cone_size)
+        else:
+            constr_id_to_slice[cone.constr_id] = slice(cur_idx, cur_idx + cone_size)
+        cur_idx += cone_size
 
     return constr_id_to_slice
 
@@ -530,7 +547,7 @@ def parse_args(
     q = param_prob.q
 
     # Build variable recovery info for each requested variable
-    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
+    constr_id_to_slice = _build_constr_id_to_slice(param_prob, data.get("dir_cones"))
     primal_vars = set(problem.variables())
 
     var_recover = []
