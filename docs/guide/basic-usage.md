@@ -23,7 +23,7 @@ CvxpyLayer(
 | `problem` | `cp.Problem` | A DPP-compliant CVXPY problem |
 | `parameters` | `list[cp.Parameter]` | Parameters that will receive values at runtime |
 | `variables` | `list[cp.Variable]` | Variables to return from the solution |
-| `solver` | `str` or `None` | Solver backend (e.g., `cp.CLARABEL`, `cp.SCS`) |
+| `solver` | `str`, `SolverInterface`, or `None` | Layer backend (e.g., `cp.DIFFCP`, `cp.MOREAU`, `cp.CUCLARABEL`), a custom solver, or `None` for Moreau |
 | `gp` | `bool` | Set `True` for geometric/log-log convex programs |
 | `verbose` | `bool` | Print solver output |
 | `solver_args` | `dict` | Default arguments passed to the solver |
@@ -170,6 +170,9 @@ SolverError: Solver 'SCS' failed.
 ```
 
 Try:
-1. Different backend: `solver=cp.DIFFCP` at construction
-2. Moreau iterations: `solver_args={"max_iter": 500}`
-3. Moreau tolerance: `solver_args={"ipm_settings": {"tol_gap_abs": 1e-6, "tol_feas": 1e-6}}`
+1. Different diffcp solver: `solver_args={"solve_method": "Clarabel"}`
+2. More SCS iterations: `solver_args={"max_iters": 10000}`
+3. Looser SCS tolerance: `solver_args={"eps": 1e-6}`
+4. Different backend: `solver=cp.MOREAU` at construction (the default), then tune
+   `solver_args={"max_iter": 500}` or
+   `solver_args={"ipm_settings": {"tol_gap_abs": 1e-6, "tol_feas": 1e-6}}`

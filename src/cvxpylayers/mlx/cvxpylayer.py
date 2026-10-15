@@ -322,7 +322,10 @@ class CvxpyLayer:
                 by __call__(). Order determines the order of returned arrays.
             solver: Solver backend to use (``cp.DIFFCP`` or ``cp.MOREAU``).
                 Moreau solves and differentiates on CPU using its IPM solver.
-                If None, uses the default Moreau CPU solver.
+                If None, uses the default Moreau CPU solver. To select SCS or
+                Clarabel within diffcp, use
+                ``solver_args={"solve_method": "SCS"}`` or
+                ``solver_args={"solve_method": "Clarabel"}``.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.

@@ -357,6 +357,9 @@ class CvxpyLayer(torch.nn.Module):
                 When a ``SolverInterface`` is passed, its ``canon_solver`` attribute
                 selects the CVXPY canonicalization solver; the instance itself is
                 called during the forward/backward pass instead of diffcp.
+                To select SCS or Clarabel within diffcp, use
+                ``solver_args={"solve_method": "SCS"}`` or
+                ``solver_args={"solve_method": "Clarabel"}``.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.
