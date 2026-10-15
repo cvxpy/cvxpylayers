@@ -107,7 +107,9 @@ print(b_batch.grad.shape)  # (10, 3)
 
 ## JAX: vmap Integration
 
-In JAX, you can also use `jax.vmap` for batching:
+With the default diffcp backend, pass batched arrays directly. `jax.vmap`
+and `jax.jit` require the Moreau backend; diffcp uses Python-based solving
+and cannot be traced by these transformations.
 
 ```python
 import jax
@@ -116,17 +118,9 @@ from cvxpylayers.jax import CvxpyLayer
 
 layer = CvxpyLayer(problem, parameters=[A, b], variables=[x])
 
-# Option 1: Pass batched arrays directly (built-in support)
+# Pass batched arrays directly (works with the default diffcp backend)
 A_batch = jax.random.normal(key, (batch_size, 3, 2))
 (x_batch,) = layer(A_batch, b_single)
-
-# Option 2: Use vmap explicitly
-def solve_single(A):
-    (x,) = layer(A, b_single)
-    return x
-
-solve_batched = jax.vmap(solve_single)
-x_batch = solve_batched(A_batch)
 ```
 
 ## Example: Batch Portfolio Optimization

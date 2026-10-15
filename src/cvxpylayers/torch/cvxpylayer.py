@@ -336,12 +336,15 @@ class CvxpyLayer(torch.nn.Module):
                 at runtime. Order must match the order of tensors passed to forward().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by forward(). Order determines the order of returned tensors.
-            solver: CVXPY solver string (e.g., ``cp.CLARABEL``, ``cp.SCS``),
+            solver: Layer backend (e.g., ``cp.DIFFCP``, ``"MOREAU"``, ``cp.CUCLARABEL``),
                 a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
                 for a custom solver, or ``None`` (uses diffcp by default).
                 When a ``SolverInterface`` is passed, its ``canon_solver`` attribute
                 selects the CVXPY canonicalization solver; the instance itself is
                 called during the forward/backward pass instead of diffcp.
+                To select SCS or Clarabel within diffcp, use
+                ``solver_args={"solve_method": "SCS"}`` or
+                ``solver_args={"solve_method": "Clarabel"}``.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.

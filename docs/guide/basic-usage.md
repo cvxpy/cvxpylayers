@@ -23,7 +23,7 @@ CvxpyLayer(
 | `problem` | `cp.Problem` | A DPP-compliant CVXPY problem |
 | `parameters` | `list[cp.Parameter]` | Parameters that will receive values at runtime |
 | `variables` | `list[cp.Variable]` | Variables to return from the solution |
-| `solver` | `str` or `None` | Solver backend (e.g., `cp.CLARABEL`, `cp.SCS`) |
+| `solver` | `str`, `SolverInterface`, or `None` | Layer backend (e.g., `cp.DIFFCP`, `"MOREAU"`, `cp.CUCLARABEL`), a custom solver, or `None` for diffcp |
 | `gp` | `bool` | Set `True` for geometric/log-log convex programs |
 | `verbose` | `bool` | Print solver output |
 | `solver_args` | `dict` | Default arguments passed to the solver |
@@ -170,6 +170,6 @@ SolverError: Solver 'SCS' failed.
 ```
 
 Try:
-1. Different solver: `solver=cp.CLARABEL`
+1. Different diffcp solver: `solver_args={"solve_method": "Clarabel"}`
 2. More iterations: `solver_args={"max_iters": 10000}`
 3. Looser tolerance: `solver_args={"eps": 1e-6}`
