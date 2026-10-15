@@ -321,8 +321,10 @@ class CvxpyLayer:
                 at runtime. Order must match the order of arrays passed to __call__().
             variables: List of CVXPY Variables whose optimal values will be returned
                 by __call__(). Order determines the order of returned arrays.
-            solver: CVXPY solver to use (e.g., ``cp.CLARABEL``, ``cp.SCS``).
-                If None, uses the default diffcp solver.
+            solver: Layer backend. If None, uses the default diffcp solver.
+                To select SCS or Clarabel within diffcp, use
+                ``solver_args={"solve_method": "SCS"}`` or
+                ``solver_args={"solve_method": "Clarabel"}``.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.

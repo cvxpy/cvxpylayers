@@ -16,6 +16,11 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 ## Specifying a Solver
 
+`solver` selects the CVXPYlayers backend, such as `cp.DIFFCP` (the default),
+`"MOREAU"`, or `cp.CUCLARABEL`. To select SCS or Clarabel within diffcp,
+use `solver_args={"solve_method": "SCS"}` or
+`solver_args={"solve_method": "Clarabel"}`; do not pass them as `solver`.
+
 ### At Construction
 
 ```python
@@ -27,7 +32,7 @@ layer = CvxpyLayer(
     parameters=[A, b],
     variables=[x],
     solver=cp.DIFFCP,
-    solver_args={'solver': cp.CLARABEL}  # Use Clarabel
+    solver_args={"solve_method": "Clarabel"}  # Use Clarabel within diffcp
 )
 ```
 
@@ -38,7 +43,7 @@ layer = CvxpyLayer(
 (x,) = layer(A_tensor, b_tensor)
 
 # Override with different solver
-(x,) = layer(A_tensor, b_tensor, solver_args={"solver": cp.SCS})
+(x,) = layer(A_tensor, b_tensor, solver_args={"solve_method": "SCS"})
 ```
 
 ## Specifying a Custom Solver
@@ -131,8 +136,10 @@ layer = CvxpyLayer(
 
 | Argument | Solver | Description |
 |----------|--------|-------------|
-| `eps` | SCS, Clarabel | Convergence tolerance |
-| `max_iters` | All | Maximum iterations |
+| `eps` | SCS | Convergence tolerance |
+| `max_iters` | SCS | Maximum iterations |
+| `tol_gap_abs`, `tol_gap_rel`, `tol_feas` | Clarabel | Convergence tolerances |
+| `max_iter` | Clarabel | Maximum iterations |
 | `verbose` | All | Print solver output |
 | `acceleration_lookback` | SCS | Anderson acceleration window |
 
@@ -155,7 +162,10 @@ If SCS still struggles, try Clarabel:
 
 ```python
 # Clarabel for better cone support
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CLARABEL)
+layer = CvxpyLayer(
+    problem, parameters=[A, b], variables=[x],
+    solver_args={"solve_method": "Clarabel"}
+)
 ```
 
 ## Moreau
