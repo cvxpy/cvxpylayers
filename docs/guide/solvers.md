@@ -6,15 +6,20 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 | Solver | Type | Best For |
 |--------|------|----------|
-| **diffcp w/ SCS** (default) | CPU | General use, most problem types |
+| **diffcp w/ SCS** (MLX default) | CPU | General use, most problem types |
 | **diffcp w/ Clarabel** | CPU | Higher accuracy |
-| **[Moreau](https://docs.moreau.so/)** | CPU/GPU | Best performance |
+| **[Moreau](https://docs.moreau.so/)** (PyTorch/JAX default) | CPU/GPU | Best performance |
 | **MPAX*** | CPU | LPs/QPs |
 | **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
 
 \* Gradient support is currently broken.
 
 ## Specifying a Solver
+
+Omitting `solver` (or passing `None`) selects Moreau for PyTorch and JAX.
+MLX defaults to DIFFCP. Select `solver=cp.DIFFCP` explicitly to retain the
+previous PyTorch/JAX backend. A backend is selected at construction;
+`solver_args` configures that backend at call time.
 
 ### At Construction
 
@@ -27,18 +32,18 @@ layer = CvxpyLayer(
     parameters=[A, b],
     variables=[x],
     solver=cp.DIFFCP,
-    solver_args={'solver': cp.CLARABEL}  # Use Clarabel
+    solver_args={'solve_method': cp.CLARABEL}  # Use Clarabel
 )
 ```
 
-### At Call Time
+### At Call Time (DIFFCP)
 
 ```python
-# Use default solver
+# Use the solver configured on the DIFFCP layer above
 (x,) = layer(A_tensor, b_tensor)
 
-# Override with different solver
-(x,) = layer(A_tensor, b_tensor, solver_args={"solver": cp.SCS})
+# Switch the underlying DIFFCP solver for this call
+(x,) = layer(A_tensor, b_tensor, solver_args={"solve_method": cp.SCS})
 ```
 
 ## Specifying a Custom Solver
@@ -120,19 +125,22 @@ layer = CvxpyLayer(
     problem,
     parameters=[A, b],
     variables=[x],
-    solver_args={"max_iters": 5000, "eps": 1e-8}
+    solver_args={"max_iter": 300, "ipm_settings": {"tol_gap_abs": 1e-8}}
 )
 
 # At call time (override for this call)
-(x,) = layer(A_tensor, b_tensor, solver_args={"max_iters": 10000})
+(x,) = layer(A_tensor, b_tensor, solver_args={"max_iter": 500})
 ```
 
 ### Common Arguments
 
 | Argument | Solver | Description |
 |----------|--------|-------------|
-| `eps` | SCS, Clarabel | Convergence tolerance |
-| `max_iters` | All | Maximum iterations |
+| `eps` | SCS | Convergence tolerance |
+| `ipm_settings` | Moreau | Dictionary of IPM settings, including `tol_gap_abs`, `tol_gap_rel`, `tol_feas` |
+| `tol_gap_abs`, `tol_gap_rel`, `tol_feas` | Clarabel | Gap and feasibility tolerances |
+| `max_iter` | Moreau, Clarabel | Maximum iterations |
+| `max_iters` | SCS | Maximum iterations |
 | `verbose` | All | Print solver output |
 | `acceleration_lookback` | SCS | Anderson acceleration window |
 
@@ -141,6 +149,9 @@ layer = CvxpyLayer(
 SCS is robust but may need tuning for difficult problems:
 
 ```python
+# Select DIFFCP/SCS at construction
+layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.DIFFCP)
+
 # Recommended settings for convergence issues
 solver_args = {
     "eps": 1e-8,              # Tighter tolerance
@@ -155,18 +166,25 @@ If SCS still struggles, try Clarabel:
 
 ```python
 # Clarabel for better cone support
-layer = CvxpyLayer(problem, parameters=[A, b], variables=[x], solver=cp.CLARABEL)
+layer = CvxpyLayer(problem, parameters=[A, b], variables=[x],
+                   solver=cp.DIFFCP, solver_args={"solve_method": cp.CLARABEL})
 ```
 
 ## Moreau
 
-[Moreau](https://docs.moreau.so/) is the recommended solver for best performance on both CPU and GPU.
+[Moreau](https://docs.moreau.so/) is the default backend for PyTorch and JAX on CPU and GPU.
 It supports PyTorch and JAX with native autograd integration, warm starts, and `jax.jit` compatibility.
 
 ### Setup
 
-Moreau is available by request through a private package index.
-See the [Moreau installation guide](https://docs.moreau.so/installation.html) for access and setup instructions.
+Moreau >= 0.4.1 is installed with CVXPYlayers. It is open source under the Apache
+2.0 license and distributed on PyPI. For NVIDIA GPUs, additionally install
+`moreau[cuda12]` or `moreau[cuda13]`; see the
+[Moreau installation guide](https://docs.moreau.so/installation.html). For JAX on CUDA,
+Moreau 0.4.1 wheels require a runtime compatible with XLA FFI ABI 0.4; JAX 0.12.0.1
+with matching `jaxlib` and CUDA plugins is verified. Older JAX runtimes can report
+an unregistered `moreau_solve_fwd` custom call because their FFI ABI is too old.
+
 
 ### Usage (PyTorch)
 
@@ -211,7 +229,8 @@ b_jax = jax.random.normal(jax.random.PRNGKey(1), shape=(m,))
 
 ### Warm Starts
 
-Moreau supports warm starting to speed up sequential solves:
+Both PyTorch and JAX support eager warm starts. The layer caches the previous
+solution and reuses it when the batch size matches:
 
 ```python
 (x_sol,) = layer(A_tch, b_tch, warm_start=True)
@@ -227,7 +246,7 @@ Moreau is beneficial when:
 
 ---
 
-## CuClarabel (Open-Source Alternative)
+## CuClarabel
 
 [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/) is an open-source GPU solver alternative. It requires Julia and several additional dependencies. For NVIDIA GPUs, it keeps all data on the GPU:
 
@@ -243,8 +262,8 @@ SolverError: Solver 'SCS' failed. Try another solver or adjust solver settings.
 
 **Solutions:**
 1. Try a different solver
-2. Increase `max_iters`
-3. Loosen tolerance (`eps`)
+2. Increase `max_iter` for Moreau/Clarabel or `max_iters` for SCS
+3. Loosen the selected solver's feasibility and gap tolerances
 4. Check problem feasibility
 
 ### Numerical Issues
