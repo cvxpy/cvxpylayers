@@ -45,9 +45,9 @@ separately, which can be done by following the instructions on their websites.
 CVXPYlayers has the following dependencies:
 * Python >= 3.11
 * [NumPy](https://pypi.org/project/numpy/) >= 1.22.4
-* [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.9.0
+* [CVXPY](https://github.com/cvxgrp/cvxpy) >= 1.9.3
 * [diffcp](https://github.com/cvxgrp/diffcp) >= 1.1.0
-* [Moreau](https://docs.moreau.so/) >= 0.4.0
+* [Moreau](https://docs.moreau.so/) >= 0.4.1
 
 Additionally, install one of the following frameworks:
 * [PyTorch](https://pytorch.org) >= 2.4

@@ -96,7 +96,7 @@ Key test patterns:
 ## Dependencies
 
 - Python >= 3.11
-- CVXPY >= 1.9.0 (provides `quad_form_dpp_scope` for parametric quad_form, native DGP→DCP reduction)
-- Moreau >= 0.4.0 (default PyTorch/JAX solver backend)
+- CVXPY >= 1.9.3 (provides `quad_form_dpp_scope` for parametric quad_form, native DGP→DCP reduction)
+- Moreau >= 0.4.1 (default PyTorch/JAX solver backend)
 - diffcp >= 1.1.0 (MLX default and explicit alternative)
 - Framework: PyTorch >= 2.4, JAX >= 0.4.0, or MLX
