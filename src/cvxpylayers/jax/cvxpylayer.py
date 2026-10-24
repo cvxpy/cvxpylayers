@@ -472,6 +472,12 @@ class CvxpyLayer:
         solver_ctx = cast("MOREAU_ctx", self.ctx.solver_ctx)
         jax_solver = solver_ctx.get_jax_solver()  # pyright: ignore[reportAttributeAccessIssue]
 
+        # Moreau's native VJP returns float64 cotangents. Cast at this boundary
+        # so JAX converts them back before transposing float32 preprocessing.
+        P_eval = P_eval.astype(jnp.float64) if P_eval is not None else None
+        q_eval = q_eval.astype(jnp.float64)
+        A_eval = A_eval.astype(jnp.float64)
+
         # Apply per-call solver_args to solver settings
         if solver_args:
             settings = jax_solver._settings

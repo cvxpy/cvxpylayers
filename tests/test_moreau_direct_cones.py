@@ -169,8 +169,33 @@ def test_vectorized_direct_cones_and_dual_gradients(kind, device):
     p = torch.tensor(q.value, dtype=torch.double, device=device, requires_grad=True)
     for actual, reference in zip(layer(p), expected):
         np.testing.assert_allclose(actual.detach().cpu(), reference, atol=2e-4)
+    if kind == "exp":
+        # Differentiate the smooth first cone's projection KKT equations.
+        # The second cone projects to the apex from the interior of its polar,
+        # so its derivative is zero. Small finite differences there amplify
+        # forward-solve error; independently check the full primal Jacobian.
+        indices = [0, 2, 4]
+        u, v, w = expected[0][indices]
+        exponential = np.exp(u / v)
+        normal = np.array([exponential, exponential * (1 - u / v), -1.0])
+        hessian = np.zeros((3, 3))
+        hessian[:2, :2] = exponential / v * np.outer([1, -u / v], [1, -u / v])
+        multiplier = w + q.value[4]
+        kkt = np.block([
+            [np.eye(3) + multiplier * hessian, normal[:, None]],
+            [normal[None, :], np.zeros((1, 1))],
+        ])
+        expected_jacobian = np.zeros((n, n))
+        expected_jacobian[np.ix_(indices, indices)] = -np.linalg.inv(kkt)[:3, :3]
+        actual_jacobian = torch.autograd.functional.jacobian(lambda p: layer(p)[0], p)
+        np.testing.assert_allclose(
+            actual_jacobian.detach().cpu(), expected_jacobian, atol=2e-5, rtol=1e-4
+        )
     # CUDA reductions differ across backward calls at double-precision roundoff.
-    assert torch.autograd.gradcheck(layer, (p,), eps=1e-4, atol=5e-4, rtol=5e-3, nondet_tol=1e-12)
+    # For the exponential apex, 1e-3 stays inside the polar while avoiding the
+    # solver's approximately 1e-7 forward-error floor at the 1e-4 step size.
+    eps = 1e-3 if kind == "exp" else 1e-4
+    assert torch.autograd.gradcheck(layer, (p,), eps=eps, atol=5e-4, rtol=5e-3, nondet_tol=1e-12)
 
 
 @requires_direct_cones

@@ -706,3 +706,28 @@ def test_batch_size_one_preserves_batch_dimension():
         f"Expected gradient shape (1, {n}), got {grad_b.shape}. "
         "Batch dimension should be preserved for batch_size=1."
     )
+
+
+def test_moreau_float32_parameter_gradients():
+    """Native float64 cotangents must cross back into float32 preprocessing."""
+    previous_x64 = jax.config.jax_enable_x64
+    try:
+        jax.config.update("jax_enable_x64", False)
+        A_value = jnp.array([[1., 2.], [3., -1.], [2., 1.]], dtype=jnp.float32)
+        b_value = jnp.array([1., 2., 3.], dtype=jnp.float32)
+        x = cp.Variable(2)
+        A = cp.Parameter((3, 2))
+        b = cp.Parameter(3)
+        problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
+        layer = CvxpyLayer(problem, [A, b], [x], solver_args={"device": "cpu"})
+        actual = jax.grad(lambda A, b: layer(A, b)[0].sum(), argnums=(0, 1))(
+            A_value, b_value
+        )
+        expected = jax.grad(
+            lambda A, b: jnp.linalg.solve(A.T @ A, A.T @ b).sum(), argnums=(0, 1)
+        )(A_value, b_value)
+        for result, reference in zip(actual, expected):
+            assert result.dtype == jnp.float32
+            np.testing.assert_allclose(result, reference, atol=1e-6, rtol=1e-5)
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)

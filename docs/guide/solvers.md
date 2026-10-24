@@ -180,7 +180,11 @@ It supports PyTorch and JAX with native autograd integration, warm starts, and `
 Moreau >= 0.4.1 is installed with CVXPYlayers. It is open source under the Apache
 2.0 license and distributed on PyPI. For NVIDIA GPUs, additionally install
 `moreau[cuda12]` or `moreau[cuda13]`; see the
-[Moreau installation guide](https://docs.moreau.so/installation.html).
+[Moreau installation guide](https://docs.moreau.so/installation.html). For JAX on CUDA,
+Moreau 0.4.1 wheels require a runtime compatible with XLA FFI ABI 0.4; JAX 0.12.0.1
+with matching `jaxlib` and CUDA plugins is verified. Older JAX runtimes can report
+an unregistered `moreau_solve_fwd` custom call because their FFI ABI is too old.
+
 
 ### Usage (PyTorch)
 
