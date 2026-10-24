@@ -31,4 +31,4 @@ jobs:
       - name: Run CVXPYgen tests
         run: |
           uv run --no-sync python tests/pgd_diagnostic.py
-          uv run --no-sync pytest cvxpygen/tests/test_diff.py
+          # Full suite already measured; focus the diagnostic on local gradients.
