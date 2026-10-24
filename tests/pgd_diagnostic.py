@@ -95,3 +95,32 @@ for t in range(T):
         print("LOCAL",t,"Q,S,q=",inp.detach().numpy(),"delta outputs",em-ea,
               "J_exact=",ja,"J_moreau=",jm,"delta J=",e,flush=True)
 print("DIAG END",flush=True)
+
+for theta in [np.array([.72107762,.10727486]), np.array([.62670699,.10584761])]:
+    _,_,exact_outputs=sim("analytic",theta)
+    qin=np.r_[.5*theta[0],exact_outputs[:-1,3]]
+    print("LOCAL THETA",theta,flush=True)
+    for t in range(T):
+        inp=torch.tensor([theta[0],theta[1],qin[t]],dtype=torch.float64,requires_grad=True)
+        def local(method,p):
+            Q,S,q=p.unbind()
+            g,s,b,qp=solve_step(method,t,Q,S,q)
+            return torch.stack((g,qp))
+        ja=torch.autograd.functional.jacobian(lambda p: local("analytic",p),inp).detach().numpy()
+        jm=torch.autograd.functional.jacobian(lambda p: local("moreau",p),inp).detach().numpy()
+        e=jm-ja
+        if np.max(np.abs(e))>1e-5:
+            # Finite differences compare the actual Moreau solution map to its autograd.
+            fd=[]
+            for k in range(3):
+                eps=1e-5
+                pert=torch.zeros(3,dtype=torch.float64)
+                pert[k]=eps
+                yplus=local("moreau",inp.detach()+pert).detach().numpy()
+                yminus=local("moreau",inp.detach()-pert).detach().numpy()
+                fd.append((yplus-yminus)/(2*eps))
+            fd=np.column_stack(fd)
+            print("LOCAL",t,"Q,S,q=",inp.detach().numpy(),
+                  "J_exact=",ja,"J_moreau=",jm,"J_FD=",fd,
+                  "delta_jacobian=",e,flush=True)
+print("DIAG FINISHED",flush=True)
