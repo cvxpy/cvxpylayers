@@ -34,6 +34,12 @@ def set_seed(x: int) -> np.random.Generator:
     return np.random.default_rng(x)
 
 
+# Tight solves keep finite-difference checks above the solver accuracy floor.
+GRADCHECK_SOLVER_ARGS = {
+    "ipm_settings": {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12},
+}
+
+
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
 
@@ -101,7 +107,7 @@ def test_least_squares():
     A_th = torch.randn(m, n).double().requires_grad_()
     b_th = torch.randn(m).double().requires_grad_()
 
-    x = prob_th(A_th, b_th, solver_args={"eps": 1e-10})[0]
+    x = prob_th(A_th, b_th, solver_args=GRADCHECK_SOLVER_ARGS)[0]
 
     def lstsq(A, b):
         return torch.linalg.solve(
@@ -182,9 +188,24 @@ def test_logistic_regression():
     )
     prob = cp.Problem(cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
 
-    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver="DIFFCP")
+    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver_args=GRADCHECK_SOLVER_ARGS)
 
-    torch.autograd.gradcheck(fit_logreg, (X_th, lam_th), atol=1e-4)
+    # Check against implicit differentiation of the logistic objective itself.
+    # Differencing solver outputs at 1e-6 amplifies exponential-cone solve noise.
+    a_sol = fit_logreg(X_th, lam_th)[0].detach()
+
+    def stationarity(X, lam):
+        return X.T @ (torch.sigmoid(X @ a_sol) - torch.tensor(y_np)) + 2 * lam * a_sol
+
+    residual = stationarity(X_th, lam_th)
+    torch.testing.assert_close(residual, torch.zeros_like(residual), atol=1e-6, rtol=0)
+    w = torch.sigmoid(X_th @ a_sol).detach()
+    hessian = X_th.T @ ((w * (1 - w)) * X_th) + 2 * lam_th * torch.eye(n)
+    actual = torch.autograd.functional.jacobian(fit_logreg, (X_th, lam_th))[0]
+    rhs = torch.autograd.functional.jacobian(stationarity, (X_th, lam_th))
+    for jac, dr in zip(actual, rhs):
+        expected = -torch.linalg.solve(hessian, dr.reshape(n, -1)).reshape(jac.shape)
+        torch.testing.assert_close(jac, expected, atol=1e-4, rtol=1e-3)
 
 
 @pytest.mark.skip
@@ -224,10 +245,10 @@ def test_lml():
     obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
-    lml = CvxpyLayer(prob, [x], [y], solver="DIFFCP")
+    lml = CvxpyLayer(prob, [x], [y], solver_args=GRADCHECK_SOLVER_ARGS)
 
     x_th = torch.tensor([1.0, -1.0, -1.0, -1.0]).requires_grad_()
-    torch.autograd.gradcheck(lml, (x_th,), atol=1e-3)
+    torch.autograd.gradcheck(lml, (x_th,), eps=1e-3, atol=1e-3)
 
 
 def test_sdp():
@@ -240,12 +261,25 @@ def test_sdp():
     trace_con = cp.trace(X) == 1
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
-    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver="DIFFCP")
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver_args=GRADCHECK_SOLVER_ARGS)
 
     # Use a well-conditioned symmetric matrix
     C_t = torch.tensor([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]], requires_grad=True)
 
-    torch.autograd.gradcheck(layer, (C_t,), atol=1e-4, rtol=1e-3)
+    # The optimum is the projector onto the minimum-eigenvalue eigenspace.
+    # Symmetrize perturbations to respect the parameter's declared domain.
+    def solve(C):
+        return layer((C + C.T) / 2)[0]
+
+    def reference(C):
+        _, vectors = torch.linalg.eigh((C + C.T) / 2)
+        v = vectors[:, 0]
+        return torch.outer(v, v)
+
+    torch.testing.assert_close(solve(C_t), reference(C_t), atol=1e-5, rtol=1e-5)
+    actual = torch.autograd.functional.jacobian(solve, C_t)
+    expected = torch.autograd.functional.jacobian(reference, C_t)
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-3)
 
 
 def test_not_enough_parameters():
@@ -367,7 +401,7 @@ def test_broadcasting():
     b_th_0 = torch.randn(m).double().requires_grad_()
     b_th = torch.stack((b_th_0, b_th_0))
 
-    x = prob_th(A_th, b_th, solver_args={"eps": 1e-10})[0]
+    x = prob_th(A_th, b_th, solver_args=GRADCHECK_SOLVER_ARGS)[0]
 
     def lstsq(A, b):
         return torch.linalg.solve(
@@ -393,15 +427,13 @@ def test_shared_parameter():
     b1 = rng.standard_normal(m)
     b2 = rng.standard_normal(m)
     prob1 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b1)))
-    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x], solver="DIFFCP")
+    layer1 = CvxpyLayer(prob1, parameters=[A], variables=[x])
     prob2 = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b2)))
-    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x], solver="DIFFCP")
+    layer2 = CvxpyLayer(prob2, parameters=[A], variables=[x])
 
     A_th = torch.randn(m, n).double().requires_grad_()
     solver_args = {
-        "eps": 1e-10,
-        "acceleration_lookback": 0,
-        "max_iters": 10000,
+        "ipm_settings": {"tol_gap_abs": 1e-10, "tol_gap_rel": 1e-10, "tol_feas": 1e-10},
     }
 
     def f(A_th):
@@ -441,7 +473,10 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
     a_th = torch.tensor([2.0]).requires_grad_()
     b_th = torch.tensor([1.0]).requires_grad_()
     c_th = torch.tensor([0.5]).requires_grad_()
@@ -452,10 +487,10 @@ def test_basic_gp():
     assert torch.allclose(torch.tensor(z.value), z_th, atol=1e-5)
 
     def f(a, b, c):
-        res = layer(a, b, c, solver_args={"acceleration_lookback": 0})
+        res = layer(a, b, c)
         return res[0].sum()
 
-    torch.autograd.gradcheck(f, (a_th, b_th, c_th), atol=1e-4)
+    torch.autograd.gradcheck(f, (a_th, b_th, c_th), eps=1e-3, atol=1e-4)
 
 
 def test_batched_gp():
@@ -476,7 +511,10 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Batched parameters - test with batch size 4 (double precision)
     # For scalar parameters, batching means 1D tensors
@@ -512,10 +550,10 @@ def test_batched_gp():
 
     # Test gradients on batched problem
     def f_batch(a, b, c):
-        res = layer(a, b, c, solver_args={"acceleration_lookback": 0})
+        res = layer(a, b, c)
         return res[0].sum()
 
-    torch.autograd.gradcheck(f_batch, (a_batch, b_batch, c_batch), atol=1e-3, rtol=1e-3)
+    torch.autograd.gradcheck(f_batch, (a_batch, b_batch, c_batch), eps=1e-3, atol=1e-3, rtol=1e-3)
 
 
 def test_gp_without_param_values():
@@ -536,7 +574,10 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True, solver="DIFFCP")
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Now use the layer with actual parameter values
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
@@ -558,10 +599,10 @@ def test_gp_without_param_values():
 
     # Test gradients
     def f(a, b, c):
-        res = layer(a, b, c, solver_args={"acceleration_lookback": 0})
+        res = layer(a, b, c)
         return res[0].sum()
 
-    torch.autograd.gradcheck(f, (a_th, b_th, c_th), atol=1e-4)
+    torch.autograd.gradcheck(f, (a_th, b_th, c_th), eps=1e-3, atol=1e-4)
 
 
 def test_gp_reversed_parameter_order():
@@ -588,11 +629,11 @@ def test_gp_reversed_parameter_order():
     # Create layers with parameters in different orders
     layer_abc = CvxpyLayer(
         problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
-        solver="DIFFCP",
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
     layer_cba = CvxpyLayer(
         problem, parameters=[c, b, a], variables=[x, y, z], gp=True,
-        solver="DIFFCP",
+        solver_args=GRADCHECK_SOLVER_ARGS,
     )
 
     a_th = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
@@ -626,7 +667,7 @@ def test_gp_reversed_parameter_order():
     c_th2 = torch.tensor([0.5], dtype=torch.float64, requires_grad=True)
     b_th2 = torch.tensor([1.0], dtype=torch.float64, requires_grad=True)
     a_th2 = torch.tensor([2.0], dtype=torch.float64, requires_grad=True)
-    torch.autograd.gradcheck(f_cba, (c_th2, b_th2, a_th2), atol=1e-4)
+    torch.autograd.gradcheck(f_cba, (c_th2, b_th2, a_th2), eps=1e-3, atol=1e-4)
 
 
 def test_no_grad_context():

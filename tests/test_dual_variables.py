@@ -776,8 +776,8 @@ def test_soc_explicit_multi_dual():
     )
 
 
-def test_soc_explicit_multi_dual_gradcheck():
-    """Rigorous gradient check for SOC with multiple dual variables."""
+def test_soc_explicit_multi_dual_gradients():
+    """Check SOC dual derivatives against the closed-form active-cone solution."""
     n = 3
     x = cp.Variable(n)
     t = cp.Variable()
@@ -792,7 +792,9 @@ def test_soc_explicit_multi_dual_gradcheck():
         prob,
         parameters=[c, t_param],
         variables=[x, t, soc_con.dual_variables[0], soc_con.dual_variables[1]],
-        solver="DIFFCP",
+        solver_args={
+            "ipm_settings": {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12}
+        },
     )
 
     def f(c_t, t_t):
@@ -802,7 +804,18 @@ def test_soc_explicit_multi_dual_gradcheck():
     c_t = torch.tensor([0.5, 0.3, -0.2], requires_grad=True)
     t_t = torch.tensor(2.0, requires_grad=True)
 
-    torch.autograd.gradcheck(f, (c_t, t_t), atol=1e-4, rtol=1e-3)
+    # Here ||c|| > 0.2 t, so x = -t c / ||c|| and the SOC multiplier
+    # is ||c|| - 0.2 t. This reference avoids differencing noisy cone solves.
+    def reference(c, t):
+        norm_c = torch.linalg.vector_norm(c)
+        multiplier = norm_c - 0.2 * t
+        return multiplier * (1 + c.sum() / norm_c)
+
+    torch.testing.assert_close(f(c_t, t_t), reference(c_t, t_t), atol=1e-4, rtol=1e-3)
+    actual = torch.autograd.grad(f(c_t, t_t), (c_t, t_t))
+    expected = torch.autograd.grad(reference(c_t, t_t), (c_t, t_t))
+    for grad, ref in zip(actual, expected):
+        torch.testing.assert_close(grad, ref, atol=1e-4, rtol=1e-3)
 
 
 def test_mixed_cones_all_types():

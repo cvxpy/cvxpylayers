@@ -40,7 +40,6 @@ def test_equality_dual_vs_torch():
         prob,
         parameters=[c, b],
         variables=[x, eq_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -76,7 +75,6 @@ def test_inequality_dual_vs_torch():
         prob,
         parameters=[c],
         variables=[x, ineq_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -111,7 +109,6 @@ def test_multiple_duals_vs_torch():
         prob,
         parameters=[c, b],
         variables=[x, eq_con.dual_variables[0], ineq_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -151,7 +148,6 @@ def test_batched_dual_vs_torch():
         prob,
         parameters=[c, b],
         variables=[x, eq_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -192,7 +188,6 @@ def test_soc_dual_vs_torch():
         prob,
         parameters=[c, t],
         variables=[x, soc_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -229,7 +224,6 @@ def test_psd_dual_vs_torch():
         prob,
         parameters=[C],
         variables=[X, psd_con.dual_variables[0]],
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
@@ -266,7 +260,6 @@ def test_gp_dual_vs_torch():
         parameters=[a, b],
         variables=[x, y, z, ineq_con.dual_variables[0]],
         gp=True,
-        solver="DIFFCP",
     )
     mlx_layer = MLXCvxpyLayer(
         prob,
