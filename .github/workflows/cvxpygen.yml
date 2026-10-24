@@ -28,7 +28,11 @@ jobs:
           git clone --recurse-submodules https://github.com/cvxgrp/cvxpygen.git
           cd cvxpygen
           uv pip install ".[dev]"
+          cd ..
+          # Validate against unreleased native Moreau adjoint fix (#116).
+          git clone --depth 1 --branch ptn/ipm-adjoint-regularization https://github.com/moreau-project/moreau.git moreau-src
+          uv pip install --reinstall --no-deps ./moreau-src/packages/moreau-cpu
       - name: Run CVXPYgen tests
         run: |
           uv run --no-sync python tests/pgd_diagnostic.py
-          # Full suite already measured; focus the diagnostic on local gradients.
+          uv run --no-sync pytest cvxpygen/tests/test_diff.py
