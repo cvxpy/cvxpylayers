@@ -22,7 +22,7 @@ All frameworks share the same constructor signature:
        problem,           # cvxpy.Problem
        parameters,        # list of cvxpy.Parameter
        variables,         # list of cvxpy.Variable
-       solver=None,       # Moreau (PyTorch/JAX), DIFFCP (MLX)
+       solver=None,       # optional solver
        gp=False,          # geometric program mode
        verbose=False,     # solver verbosity
        solver_args=None,  # default solver arguments

@@ -9,7 +9,7 @@ CvxpyLayer(
     problem,           # CVXPY Problem object
     parameters,        # List of cp.Parameter objects
     variables,         # List of cp.Variable objects to return
-    solver=None,       # Moreau for PyTorch/JAX; DIFFCP for MLX
+    solver=None,       # Solver to use (optional)
     gp=False,          # True for geometric programs
     verbose=False,     # Print solver output
     solver_args=None,  # Default solver arguments
