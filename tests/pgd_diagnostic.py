@@ -124,3 +124,64 @@ for theta in [np.array([.72107762,.10727486]), np.array([.62670699,.10584761])]:
                   "J_exact=",ja,"J_moreau=",jm,"J_FD=",fd,
                   "delta_jacobian=",e,flush=True)
 print("DIAG FINISHED",flush=True)
+
+# Bypass CVXPYlayers altogether: equivalent four-variable QP at t=23.
+# This directly checks Moreau's native Jacobian on an interior q value.
+import moreau as mo
+import scipy.sparse as sp
+
+theta=np.array([.72107762,.10727486])
+_,_,trace=sim("analytic",theta)
+qstate0=float(trace[22,3])
+Q0,S0=map(float,theta)
+L0=float(L_t[23])
+c0=float(P_t[23])*h/alpha
+P0=sp.csr_array(np.diag([0.,0.,2.,2.]))
+A0=sp.csr_array(np.array([
+    [1.,1.,1.,0.],     # g+s+b = L
+    [0.,0.,h,1.],      # h*b+u = qstate
+    [-1.,0.,0.,0.],    # g >= 0
+    [0.,-1.,0.,0.],    # s >= 0
+    [0.,1.,0.,0.],     # s <= S
+    [0.,0.,-1.,0.],    # b >= -Q/(10h)
+    [0.,0.,1.,0.],     # b <= Q/(10h)
+    [0.,0.,0.,-1.],    # u >= 0
+    [0.,0.,0.,1.],     # u <= Q
+]))
+tf=lambda arr: torch.tensor(np.array(arr),dtype=torch.float64)
+pvals=tf(P0.data)
+avals=tf(A0.data)
+cost=tf([c0,0,0,-1.6*Q0])
+cones=mo.Cones(num_zero_cones=2,num_nonneg_cones=7)
+def rhs(qstate):
+    return torch.stack((qstate.new_tensor(L0),qstate,
+        qstate.new_tensor(0.),qstate.new_tensor(0.),
+        qstate.new_tensor(S0),qstate.new_tensor(Q0/(10*h)),
+        qstate.new_tensor(Q0/(10*h)),qstate.new_tensor(0.),
+        qstate.new_tensor(Q0)))
+for equilibrium in (True,False):
+    settings=mo.Settings(
+        solver="ipm", device="cpu",enable_grad=True,
+        ipm_settings=mo.IPMSettings(
+            diff_method="exact",equilibrate_enable=equilibrium,
+            tol_gap_abs=1e-10,tol_gap_rel=1e-10,tol_feas=1e-10
+        ),
+    )
+    native=mo.torch.Solver(n=4,m=9,
+        P_row_offsets=torch.as_tensor(P0.indptr,dtype=torch.int64),
+        P_col_indices=torch.as_tensor(P0.indices,dtype=torch.int64),
+        A_row_offsets=torch.as_tensor(A0.indptr,dtype=torch.int64),
+        A_col_indices=torch.as_tensor(A0.indices,dtype=torch.int64),
+        cones=cones,settings=settings)
+    qi=torch.tensor(qstate0,dtype=torch.float64,requires_grad=True)
+    y=native.solve(pvals,avals,cost,rhs(qi)).x[0]
+    y.backward()
+    fd=[]
+    for sign in (-1,1):
+        qt=torch.tensor(qstate0+sign*1e-5,dtype=torch.float64)
+        fd.append(native.solve(pvals,avals,cost,rhs(qt)).x[0].item())
+    print("NATIVE MINI QP", "equil=",equilibrium,"q=",qstate0,
+          "g=",y.item(),"expected_g=",L0-S0-qstate0/h,
+          "dg/dq_native=",qi.grad.item(),"expected_dg/dq=",-1/h,
+          "dg/dq_FD=",(fd[1]-fd[0])/(2e-5),flush=True)
+print("NATIVE END",flush=True)
