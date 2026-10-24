@@ -302,7 +302,7 @@ class MOREAU_ctx:
         tol_gap_abs, verbose, etc.).  ``ipm_settings`` can be a dict or a
         ``moreau.IPMSettings`` object; dicts are automatically converted.
         """
-        settings = moreau.Settings(enable_grad=enable_grad)
+        # Use IPM for differentiable solves to avoid active-set sensitivity errors.\n        settings = moreau.Settings(enable_grad=enable_grad, solver="ipm")
 
         # Set any field that exists on moreau.Settings
         for key, value in self.options.items():
