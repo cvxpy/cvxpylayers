@@ -20,6 +20,7 @@ from cvxpylayers.interfaces.base import SolverInterface
 SUPPORTS_QUAD_OBJ = frozenset({"MOREAU", "CUCLARABEL", "MPAX"})
 
 
+
 if TYPE_CHECKING:
     import torch
 
@@ -160,6 +161,7 @@ class LayersContext:
             return (batch_size,)
         self.batch_sizes = batch_sizes
         return ()
+
 
 
 def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
@@ -348,10 +350,10 @@ def _validate_problem(
         ValueError: If problem is not DPP-compliant or inputs are invalid
     """
     if gp:
-        if not problem.is_dpp("dgp"):
+        if not problem.is_dpp('dgp'):
             raise ValueError("Problem must be DPP for geometric programming.")
     elif qp_solver:
-        if not problem.is_dpp(quad_form_dpp="qp"):  # type: ignore[call-arg]
+        if not problem.is_dpp(quad_form_dpp='qp'):  # type: ignore[call-arg]
             raise ValueError(
                 "Problem must be DPP. Note: quad_form(x, P) with parametric P "
                 "is only supported in the objective, not in constraints."
@@ -400,7 +402,6 @@ def _build_user_order_mapping(
     Returns:
         Tuple mapping user parameter index to column order index (JIT-compatible)
     """
-
     def _resolve(raw_id: int) -> int:
         return param_id_map.get(raw_id, raw_id)
 
@@ -496,7 +497,8 @@ def parse_args(
 
     # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
     # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
-    with scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext():
+    with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
+
         # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
         gp_param_to_log_param = None
         if gp:

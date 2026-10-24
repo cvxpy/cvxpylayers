@@ -26,8 +26,8 @@ def convert_to_csr(
     param_prob,
 ) -> tuple[
     "CsrProblemData",
-    sp.csr_array | sp.csr_matrix | None,
-    sp.csr_array | sp.csr_matrix,
+    sp.csr_array | None,
+    sp.csr_array,
 ]:
     """Convert a parametrized problem from CSC to CSR format.
 
@@ -80,8 +80,8 @@ def convert_to_csr(
 
     # --- A matrix (with last-column extraction for b) ---
     if A_structure_csc is not None:
-        A_perm, A_csr_structure, A_shape, b_idx = convert_csc_structure_to_csr_structure(
-            A_structure_csc, True
+        A_perm, A_csr_structure, A_shape, b_idx = (
+            convert_csc_structure_to_csr_structure(A_structure_csc, True)
         )
         nnz_A = len(A_perm)
         # Permute constraint rows: [A values in CSR order | b values unchanged]
