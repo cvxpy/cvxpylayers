@@ -307,7 +307,8 @@ class MOREAU_ctx:
             enable_grad=enable_grad,
             solver="ipm",
             ipm_settings=moreau.IPMSettings(
-                tol_gap_abs=1e-10, tol_gap_rel=1e-10, tol_feas=1e-10
+                tol_gap_abs=1e-10, tol_gap_rel=1e-10, tol_feas=1e-10,
+                equilibrate_enable=False, diff_method="exact"
             ),
         )
 
