@@ -71,7 +71,7 @@ def convert_to_csr(
             P_structure_csc, False
         )
         nnz_P = len(P_perm)
-        permuted_P_mat = param_prob.reduced_P.reduced_mat[P_perm, :]
+        permuted_P_mat = sp.csr_array(param_prob.reduced_P.reduced_mat[P_perm, :])
     else:
         P_csr_structure = None
         P_shape = (n, n)
@@ -87,7 +87,7 @@ def convert_to_csr(
         # Permute constraint rows: [A values in CSR order | b values unchanged]
         nb = param_prob.reduced_A.reduced_mat.shape[0] - nnz_A
         full_A_perm = np.concatenate([A_perm, np.arange(nnz_A, nnz_A + nb)])
-        permuted_A_mat = param_prob.reduced_A.reduced_mat[full_A_perm, :]
+        permuted_A_mat = sp.csr_array(param_prob.reduced_A.reduced_mat[full_A_perm, :])
     else:
         A_csr_structure = (
             np.array([], dtype=np.int64),
