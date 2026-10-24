@@ -288,7 +288,7 @@ class MOREAU_ctx:
         """Get moreau.Cones (unified for NumPy and PyTorch paths)."""
         if self._cones is None:
             self._cones = _cvxpy_dims_to_moreau_cones(
-                dims_to_solver_dict(self.dims), self.dir_cones, getattr(self.dims, "pnd", [])
+                dims_to_solver_dict(self.dims), self.dir_cones, self.dims.pnd
             )
         return self._cones
 

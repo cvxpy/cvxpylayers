@@ -58,7 +58,7 @@ def get_solver_ctx(
                 options,
                 reduced_P_mat=permuted_P_mat,
                 reduced_A_mat=permuted_A_mat,
-                dir_cones=getattr(param_prob, "dir_cones", []),
+                dir_cones=param_prob.dir_cones,
             )
             if ctx.has_psd_scaling:
                 if permuted_P_mat is not None:

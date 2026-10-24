@@ -177,7 +177,7 @@ It supports PyTorch and JAX with native autograd integration, warm starts, and `
 
 ### Setup
 
-Moreau >= 0.4.0 is installed with CVXPYlayers. It is open source under the Apache
+Moreau >= 0.4.1 is installed with CVXPYlayers. It is open source under the Apache
 2.0 license and distributed on PyPI. For NVIDIA GPUs, additionally install
 `moreau[cuda12]` or `moreau[cuda13]`; see the
 [Moreau installation guide](https://docs.moreau.so/installation.html).
@@ -231,50 +231,6 @@ solution and reuses it when the batch size matches:
 ```python
 (x_sol,) = layer(A_tch, b_tch, warm_start=True)
 ```
-
-### Direct Cones and Semidefinite Programs
-
-With a CVXPY version that supports direct-cone extraction (currently CVXPY
-master), Moreau can impose eligible nonnegative, second-order, exponential,
-power, generalized power, and PSD constraints directly on variable blocks.
-CVXPY performs this extraction automatically; no layer option is needed.
-CVXPYlayers forwards the cone metadata and recovers both primal variables and
-constraint duals with gradients, including the coordinate scaling for PSD cones.
-General affine cone constraints remain in the slack formulation.
-
-This path also requires a Moreau build containing the direct-cone dual scaling
-and CPU warm-start fixes. The released Moreau 0.4.0 predates those fixes.
-
-For example, this layer returns the projection onto the nonnegative orthant and
-its constraint dual:
-
-```python
-x = cp.Variable(3)
-q = cp.Parameter(3)
-nonneg = x >= 0
-problem = cp.Problem(cp.Minimize(0.5 * cp.sum_squares(x) + q @ x), [nonneg])
-layer = CvxpyLayer(problem, parameters=[q], variables=[x, nonneg.dual_variables[0]])
-```
-
-Semidefinite and generalized power support also require a CVXPY version whose
-Moreau interface supports those cones. CVXPYlayers handles both direct and slack
-PSD cones; symmetric matrix outputs and their duals use ordinary matrix coordinates.
-
-### Differentiation Settings
-
-Moreau's IPM settings can be passed as a dictionary at construction:
-
-```python
-layer = CvxpyLayer(
-    problem, parameters=[q], variables=[x],
-    solver_args={"ipm_settings": {"diff_method": "smoothed", "diff_smoothing_mu": 1e-4}},
-)
-```
-
-Smoothed differentiation is experimental: it uses a nearby central-path point
-for the backward pass while retaining the forward solution. See Moreau's
-[smoothed differentiation guide](https://docs.moreau.so/guide/smoothed-differentiation.html)
-for supported cone types and the meaning of the smoothing parameter.
 
 ### When to Use Moreau
 

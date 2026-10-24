@@ -17,9 +17,9 @@ authors = [
 maintainers = [{ name = "P. Nobel", email = "parthnobel@berkeley.edu" }]
 requires-python = ">=3.11"
 dependencies = [
-    "cvxpy>=1.9.0",
+    "cvxpy>=1.9.3",
     "diffcp>=1.1.0",
-    "moreau>=0.4.0",
+    "moreau>=0.4.1",
     "numpy>=1.22.4",
     "scipy>=1.13.0",
 ]
@@ -50,7 +50,7 @@ torch = ["torch>=2.4.0", "diffcp>=1.1.0"]
 mlx = ["mlx>=0.27.1"]
 metal = ["mlx-metal>=0.27.1"]
 jax = ["jax>=0.4.0", "jaxlib>=0.4.0"]
-moreau = ["moreau>=0.4.0"]
+moreau = ["moreau>=0.4.1"]
 all = [
     "torch>=2.4.0",
     "diffqcp>=0.4.4",
@@ -58,7 +58,7 @@ all = [
     "jaxlib>=0.4.0",
     "mlx>=0.27.1",
     "mlx-metal>=0.27.1",
-    "moreau>=0.4.0",
+    "moreau>=0.4.1",
 ]
 
 [tool.hatch.metadata]
