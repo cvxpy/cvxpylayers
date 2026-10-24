@@ -305,6 +305,7 @@ class MOREAU_ctx:
         # Probe whether tighter IPM convergence fixes the PGD derivative discrepancy.
         settings = moreau.Settings(
             enable_grad=enable_grad,
+            solver="ipm",
             ipm_settings=moreau.IPMSettings(
                 tol_gap_abs=1e-10, tol_gap_rel=1e-10, tol_feas=1e-10
             ),
