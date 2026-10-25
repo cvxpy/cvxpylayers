@@ -16,6 +16,7 @@ Limitations:
 """
 
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -107,7 +108,7 @@ if torch is not None:
                 warm_start: Optional WarmStart or BatchedWarmStart from a previous
                     solve, passed through to Moreau's solver.
             """
-            data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval)
+            data = cl_ctx.solver_ctx.torch_to_data(P_eval, q_eval, A_eval, solver_args)
             with torch.set_grad_enabled(needs_grad and torch.is_grad_enabled()):
                 primal, dual, _ = data.torch_solve(solver_args, warm_start=warm_start)
             # Return primal/dual with Moreau's grad_fn intact
@@ -255,6 +256,7 @@ class MOREAU_ctx:
         self._cones = None
         self._torch_solver_cuda = None  # CUDA solver (moreau.torch.Solver) with lazy init
         self._torch_solver_cpu = None  # CPU solver (moreau.torch.Solver) with lazy init
+        self._compiled_torch_solvers = []
         self._jax_solver = None  # JAX solver (moreau.jax.Solver) with lazy init
 
         # Detect if P and A are constant (don't depend on any parameters)
@@ -292,7 +294,7 @@ class MOREAU_ctx:
             )
         return self._cones
 
-    def _get_settings(self, enable_grad: bool = True):
+    def _get_settings(self, enable_grad: bool = True, overrides=None):
         """Get moreau.Settings configured from self.options.
 
         Args:
@@ -305,7 +307,7 @@ class MOREAU_ctx:
         settings = moreau.Settings(enable_grad=enable_grad)
 
         # Set any field that exists on moreau.Settings
-        for key, value in self.options.items():
+        for key, value in (self.options | (overrides or {})).items():
             if key == "ipm_settings":
                 if isinstance(value, dict):
                     value = moreau.IPMSettings(**value)
@@ -315,7 +317,7 @@ class MOREAU_ctx:
 
         return settings
 
-    def _create_torch_solver(self, device: str):
+    def _create_torch_solver(self, device: str, solver_args=None):
         """Create a moreau.torch.Solver for the specified device.
 
         Called lazily on first use. If P/A are constant, also calls setup().
@@ -330,7 +332,7 @@ class MOREAU_ctx:
                 "Install with: pip install moreau[cuda]"
             )
 
-        settings = self._get_settings(enable_grad=True)
+        settings = self._get_settings(enable_grad=True, overrides=solver_args)
         settings.device = device
         solver = moreau_torch.Solver(
             n=self.P_shape[0],
@@ -369,6 +371,24 @@ class MOREAU_ctx:
                 self._torch_solver_cpu = self._create_torch_solver("cpu")
             return self._torch_solver_cpu
 
+    if torch is not None:
+
+        @torch.compiler.assume_constant_result
+        def _initialize_torch_solver(self, device, solver_args):
+            # Construction depends only on fixed structure and settings. Read
+            # the cached solver normally afterward so Dynamo guards its identity.
+            key = (device, deepcopy(solver_args or {}))
+            for index, (cached_key, _) in enumerate(self._compiled_torch_solvers):
+                if key == cached_key:
+                    return index
+            solver = (
+                self._create_torch_solver(device, solver_args)
+                if solver_args
+                else self.get_torch_solver(device)
+            )
+            self._compiled_torch_solvers.append((key, solver))
+            return len(self._compiled_torch_solvers) - 1
+
     def _create_jax_solver(self):
         """Create a moreau.jax.Solver. Called lazily on first use."""
         if moreau_jax is None:
@@ -396,7 +416,9 @@ class MOREAU_ctx:
             self._jax_solver = self._create_jax_solver()
         return self._jax_solver
 
-    def torch_to_data(self, quad_obj_values, lin_obj_values, con_values) -> "MOREAU_data":
+    def torch_to_data(
+        self, quad_obj_values, lin_obj_values, con_values, solver_args=None
+    ) -> "MOREAU_data":
         """Prepare data for torch solve.
 
         Device-aware: uses GPU solver for CUDA tensors, CPU solver for CPU tensors.
@@ -456,7 +478,11 @@ class MOREAU_ctx:
         b = b.T.contiguous().to(device=device, dtype=torch.float64)  # (batch, m)
 
         # Select solver based on device
-        solver = self.get_torch_solver("cuda" if is_cuda else "cpu")
+        if torch.compiler.is_compiling():
+            index = self._initialize_torch_solver("cuda" if is_cuda else "cpu", solver_args)
+            solver = self._compiled_torch_solvers[index][1]
+        else:
+            solver = self.get_torch_solver("cuda" if is_cuda else "cpu")
 
         return MOREAU_data(
             ctx=self,
@@ -525,6 +551,10 @@ class MOREAU_data:
                 "PyTorch interface requires 'torch' package. Install with: pip install torch"
             )
 
+        if torch.compiler.is_compiling():
+            # The compiled path selected a solver with these settings at construction.
+            return self._torch_solve_impl(warm_start)
+
         # Convert ipm_settings dict to moreau.IPMSettings if needed
         if solver_args and "ipm_settings" in solver_args:
             solver_args = dict(solver_args)  # don't mutate caller's dict
@@ -538,14 +568,15 @@ class MOREAU_data:
     def _torch_solve_impl(self, warm_start=None):
         """Inner solve logic, called with settings already overridden."""
         # Enable gradients on inputs for Moreau's autograd
-        q = self.q.requires_grad_(True)
-        b = self.b.requires_grad_(True)
+        compiling = torch.compiler.is_compiling()
+        q = self.q if compiling else self.q.requires_grad_(True)
+        b = self.b if compiling else self.b.requires_grad_(True)
 
         # Moreau's solve() is stateless and caches P/A setup internally,
         # so we always pass P_values/A_values. requires_grad_ is a no-op
         # for constant P/A (leaf tensors with no upstream graph).
-        P_values = self.P_values.requires_grad_(True)
-        A_values = self.A_values.requires_grad_(True)
+        P_values = self.P_values if compiling else self.P_values.requires_grad_(True)
+        A_values = self.A_values if compiling else self.A_values.requires_grad_(True)
 
         solution = self.solver.solve(P_values, A_values, q, b, warm_start=warm_start)
 
