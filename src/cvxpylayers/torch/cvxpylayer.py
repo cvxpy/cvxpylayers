@@ -536,7 +536,11 @@ class CvxpyLayer(torch.nn.Module):
             self._warm_start_cache = solver_data._solution.to_warm_start()
 
         # Recover results and apply GP inverse transform if needed
-        return _recover_results(primal, dual, self.ctx, batch)
+        results = _recover_results(primal, dual, self.ctx, batch)
+        # CPU canonicalization and solvers may promote float32 inputs to float64.
+        if p_stack.is_floating_point():
+            results = tuple(result.to(dtype=param_dtype) for result in results)
+        return results
 
 
 def scipy_csr_to_torch_csr(
