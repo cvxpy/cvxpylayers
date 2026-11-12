@@ -32,7 +32,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e "." "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
+          # TEMPORARY: cvxpy from the canon-param-api branch until cvxpy/cvxpy#3604 is merged; then revert.
+          pip install -e "." "cvxpy @ git+https://github.com/cvxpy/cvxpy.git@canon-param-api"
           # Install doc dependencies
           pip install sphinx furo myst-parser sphinx-design sphinx-copybutton nbsphinx sphinx-autobuild
           # Install frameworks for autodoc

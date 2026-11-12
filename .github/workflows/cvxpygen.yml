@@ -24,7 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv --seed
-          uv pip install -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
+          # TEMPORARY: cvxpy from the canon-param-api branch until cvxpy/cvxpy#3604 is merged; then revert.
+          uv pip install -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git@canon-param-api"
           git clone --recurse-submodules https://github.com/cvxgrp/cvxpygen.git
           cd cvxpygen
           uv pip install ".[dev]"

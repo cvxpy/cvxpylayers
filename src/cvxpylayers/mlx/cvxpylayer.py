@@ -1,9 +1,11 @@
+import math
 from typing import Any, cast
 
 import cvxpy as cp
 import mlx.core as mx
 import numpy as np
 import scipy.sparse
+from cvxpy.reductions.canonical_maps import ParameterTransform, ParameterTransformKind
 
 import cvxpylayers.utils.parse_args as pa
 
@@ -43,171 +45,88 @@ def _reshape_fortran(array: mx.array, shape: tuple) -> mx.array:
     return reshaped
 
 
-def _apply_gp_log_transform(
-    params: tuple[mx.array, ...],
-    ctx: pa.LayersContext,
-) -> tuple[mx.array, ...]:
-    """Apply log transformation to geometric program (GP) parameters.
+def _matrix(rows: np.ndarray, cols: np.ndarray, vals: np.ndarray | None,
+            shape: tuple[int, int], dtype) -> mx.array:
+    """A dense matrix with entries ``vals`` (default 1) at ``(rows, cols)``.
 
-    Geometric programs are solved in log-space after conversion to DCP.
-    This function applies log transformation to the appropriate parameters.
-
-    Args:
-        params: Tuple of parameter arrays in original GP space
-        ctx: Layer context containing GP parameter mapping info
-
-    Returns:
-        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
+    MLX has no sparse linear algebra, and index operations are expressed as
+    matmuls with such matrices, which preserves gradient flow.
     """
-    if not ctx.gp or ctx.gp_log_mask is None:
-        return params
-
-    # Use pre-computed mask for consistency with Torch/JAX (no dict lookups)
-    return tuple(
-        mx.log(p) if needs_log else p
-        for p, needs_log in zip(params, ctx.gp_log_mask)
-    )
+    M = np.zeros(shape, dtype=np.float64)
+    np.add.at(M, (rows, cols), 1.0 if vals is None else vals)
+    return mx.array(M, dtype=dtype)
 
 
-def _flatten_and_batch_params(
+def _gather(x: mx.array, indices: np.ndarray) -> mx.array:
+    """``x[..., indices]`` as a matmul."""
+    n_in = x.shape[-1]
+    return x @ _matrix(indices, np.arange(len(indices)), None, (n_in, len(indices)), x.dtype)
+
+
+def _apply_transform(transform: ParameterTransform, value: mx.array) -> mx.array:
+    """Evaluate one of CVXPY's parameter transformations on flat values."""
+    kind = transform.kind
+    if kind == ParameterTransformKind.GATHER:
+        return _gather(value, transform.indices)
+    if kind == ParameterTransformKind.LOG:
+        return mx.log(value)
+    if kind == ParameterTransformKind.REAL:
+        return mx.real(value)
+    if kind == ParameterTransformKind.IMAG:
+        return mx.imag(value)
+    raise ValueError(f"Unknown parameter transform {kind}")
+
+
+def _prepare_param_stack(
     params: tuple[mx.array, ...],
     ctx: pa.LayersContext,
     batch: tuple,
-    param_triu_G: list[mx.array | None],
 ) -> mx.array:
-    """Flatten and batch parameters into a single stacked array.
+    """Turn user parameter values into the stacked compiled-parameter vector.
 
-    Converts a tuple of parameter arrays (potentially with mixed batched/unbatched)
-    into a single concatenated array suitable for matrix multiplication with the
-    parametrized problem matrices.
-
-    Args:
-        params: Tuple of parameter arrays
-        ctx: Layer context with batch info and ordering
-        batch: Batch dimensions tuple (empty if unbatched)
+    Evaluates CVXPY's parameter transformations (e.g. ``log`` for geometric
+    programs, gathers of the free entries of structured parameters) and packs
+    the compiled parameters in column order, followed by a constant 1.
 
     Returns:
-        Concatenated parameter array with shape (num_params, batch_size) or (num_params,)
+        Array of shape (num_params + 1,) or (num_params + 1, batch_size).
     """
-    flattened_params: list[mx.array | None] = [None] * (len(params) + 1)
+    effective_batch = batch if batch else (1,)
+    values: dict[int, mx.array] = {}
+    for i, (param, value) in enumerate(zip(ctx.parameters, params)):
+        if ctx.batch_sizes[i] == 0:  # type: ignore[index]
+            value = mx.broadcast_to(mx.expand_dims(value, axis=0), effective_batch + value.shape)
+        flat = _reshape_fortran(value, effective_batch + (-1,))
+        source = ctx.param_sources[i]
+        if source is not None:
+            # Sparse parameters enter the transforms as their stored entries.
+            flat = _gather(flat, source)
+        values[param.id] = flat
+    for transform in ctx.param_transforms:
+        values[transform.target_id] = _apply_transform(
+            transform, values[transform.source_id])
 
-    for i, param in enumerate(params):
-        # Check if this parameter is batched or needs broadcasting
-        if ctx.batch_sizes[i] == 0 and batch:  # type: ignore[index]
-            # Unbatched parameter - expand to match batch size
-            param_expanded = mx.broadcast_to(mx.expand_dims(param, axis=0), batch + param.shape)
-        else:
-            param_expanded = param
-
-        G = param_triu_G[i]
-        if G is not None:
-            # MLX doesn't support fancy indexing, so we use a precomputed selection
-            # matrix G (shape k times n2) so that upper_tri(C) = G @ C.flatten().
-            param_flat = param_expanded.reshape(param_expanded.shape[:-2] + (-1,))
-            flattened_params[ctx.user_order_to_col_order[i]] = param_flat @ G.T
-        else:
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param_expanded,
-                batch + (-1,) if batch else (-1,),
-            )
-
-    # Add constant 1.0 column for offset terms in canonical form
-    flattened_params[-1] = mx.ones(batch + (1,), dtype=params[0].dtype)
-
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-    p_stack = mx.concatenate(cast(list[mx.array], flattened_params), axis=-1)
-    # When batched, p_stack is (batch_size, num_params) but we need (num_params, batch_size)
-    if batch:
-        p_stack = mx.transpose(p_stack)
-    return p_stack
+    columns = [values[pid] for pid, _ in ctx.param_layout]
+    dtype = columns[0].dtype if columns else params[0].dtype
+    columns.append(mx.ones(effective_batch + (1,), dtype=dtype))
+    p_stack = mx.transpose(mx.concatenate(columns, axis=-1))
+    return mx.reshape(p_stack, (p_stack.shape[0],) + batch)
 
 
-def _svec_to_symmetric(
-    svec: mx.array,
-    n: int,
-    batch: tuple,
-    rows: np.ndarray,
-    cols: np.ndarray,
-    scale: np.ndarray | None = None,
-) -> mx.array:
-    """Convert vectorized form to full symmetric matrix.
-
-    Uses a prebuilt scatter matrix so the operation is a pure MLX matmul,
-    preserving gradient flow (no numpy roundtrip).
-
-    Args:
-        svec: Vectorized form, shape (*batch, n*(n+1)/2)
-        n: Matrix dimension
-        batch: Batch dimensions
-        rows: Row indices for unpacking
-        cols: Column indices for unpacking
-        scale: Optional scaling factors (for svec format with sqrt(2) scaling)
-
-    Returns:
-        Full symmetric matrix, shape (*batch, n, n)
-    """
-    if scale is not None:
-        scale_mx = mx.array(scale, dtype=svec.dtype)
-        data = svec * scale_mx
+def _recover_output(out: pa.OutputRecovery, vec: mx.array, batch: tuple) -> mx.array:
+    """Read one output from a (batch, n) solution array; see ``OutputRecovery``."""
+    n = vec.shape[-1]
+    if out.indices is not None:
+        data = _gather(vec, out.indices)
     else:
-        data = svec
-
-    # Build a constant scatter matrix S of shape (k, n*n) where k = len(rows).
-    # data @ S maps each svec element to both (r,c) and (c,r) positions.
-    k = len(rows)
-    S_np = np.zeros((k, n * n), dtype=np.float64)
-    for i in range(k):
-        r, c = int(rows[i]), int(cols[i])
-        S_np[i, r * n + c] = 1.0
-        S_np[i, c * n + r] = 1.0
-    S = mx.array(S_np, dtype=svec.dtype)
-
-    # data shape: (*batch, k) — matmul with S gives (*batch, n*n)
-    flat = data @ S
-    out_shape = batch + (n, n)
-    return mx.reshape(flat, out_shape)
-
-
-def _unpack_primal_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
-    """Unpack symmetric primal variable from vectorized form.
-
-    CVXPY stores symmetric variables in upper triangular row-major order:
-    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
-
-    Args:
-        svec: Vectorized symmetric variable
-        n: Matrix dimension
-        batch: Batch dimensions
-
-    Returns:
-        Full symmetric matrix
-    """
-    rows, cols = np.triu_indices(n)
-    return _svec_to_symmetric(svec, n, batch, rows, cols)
-
-
-def _unpack_svec(svec: mx.array, n: int, batch: tuple) -> mx.array:
-    """Unpack scaled vectorized (svec) form to full symmetric matrix.
-
-    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
-    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
-    ordering: (0,0), (1,0), (1,1), (2,0), ...
-
-    Args:
-        svec: Scaled vectorized form
-        n: Matrix dimension
-        batch: Batch dimensions
-
-    Returns:
-        Full symmetric matrix with scaling removed
-    """
-    rows_rm, cols_rm = np.tril_indices(n)
-    sort_idx = np.lexsort((rows_rm, cols_rm))
-    rows = rows_rm[sort_idx]
-    cols = cols_rm[sort_idx]
-    # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
-    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
-    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
+        data = vec @ _matrix(out.cols, out.rows, out.vals, (n, out.size), vec.dtype)
+    if out.exp:
+        data = mx.exp(data)
+    if out.scatter is not None:
+        size = math.prod(out.shape)
+        data = data @ _matrix(np.arange(out.size), out.scatter, None, (out.size, size),
+                              vec.dtype)
+    return _reshape_fortran(data, batch + out.shape)
 
 
 def _recover_results(
@@ -216,55 +135,18 @@ def _recover_results(
     ctx: pa.LayersContext,
     batch: tuple,
 ) -> tuple[mx.array, ...]:
-    """Recover variable values from primal/dual solutions.
+    """Recover the requested variables from the solver's primal/dual solutions.
 
-    Extracts the requested variables from the solver's primal and dual
-    solutions, unpacks symmetric matrices if needed, applies inverse GP
-    transformation, and removes batch dimension for unbatched inputs.
-
-    Args:
-        primal: Primal solution from solver
-        dual: Dual solution from solver
-        ctx: Layer context with variable recovery info
-        batch: Batch dimensions tuple (empty if unbatched)
-
-    Returns:
-        Tuple of recovered variable values
+    The solution arrays carry a leading batch dimension, also for unbatched
+    inputs; it is removed at the end.
     """
-    results = []
-    batch_shape = tuple(primal.shape[:-1])
-
-    for var in ctx.var_recover:
-        # Use pre-computed source field to select data (consistent with Torch/JAX)
-        if var.source == "primal":
-            data = primal[..., var.primal]
-        else:  # var.source == "dual"
-            data = dual[..., var.dual]
-
-        # Use pre-computed unpack_fn field (consistent with Torch/JAX)
-        if var.unpack_fn == "svec_primal":
-            results.append(_unpack_primal_svec(data, var.shape[0], batch_shape))
-        elif var.unpack_fn == "svec_dual":
-            results.append(_unpack_svec(data, var.shape[0], batch_shape))
-        elif var.unpack_fn == "reshape":
-            results.append(_reshape_fortran(data, batch_shape + var.shape))
-        else:
-            raise ValueError(f"Unknown variable recovery type: {var.unpack_fn}")
-
-    # Apply exp transformation to recover primal variables from log-space for GP
-    # (dual variables stay in original space - no transformation needed)
-    # Uses pre-computed source field (consistent with Torch/JAX)
-    if ctx.gp:
-        results = [
-            mx.exp(r) if var.source == "primal" else r
-            for r, var in zip(results, ctx.var_recover)
-        ]
-
-    # Squeeze batch dimension for unbatched inputs
-    if not batch:
-        results = [mx.squeeze(r, axis=0) for r in results]
-
-    return tuple(results)
+    internal_batch = tuple(primal.shape[:-1])
+    return tuple(
+        mx.reshape(
+            _recover_output(out, primal if out.source == "primal" else dual, internal_batch),
+            batch + out.shape)
+        for out in ctx.outputs
+    )
 
 
 class CvxpyLayer:
@@ -349,26 +231,9 @@ class CvxpyLayer:
         )
         # MLX doesn't support sparse LA, so we store dense numpy arrays
         # and convert to MLX arrays during forward pass
-        if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
-            self._P_np = _scipy_csr_to_dense(self.ctx.reduced_P.reduced_mat)  # type: ignore[attr-defined]
-        else:
-            self._P_np = None
-        self._q_np: np.ndarray = _scipy_csr_to_dense(self.ctx.q.tocsr())  # type: ignore[assignment]
-        self._A_np: np.ndarray = _scipy_csr_to_dense(self.ctx.reduced_A.reduced_mat)  # type: ignore[attr-defined, assignment]
-
-        # Precompute selection matrices for symmetric/hermitian/PSD/NSD parameters.
-        self._param_triu_G: list[mx.array | None] = []
-        for j, triu in enumerate(self.ctx.param_triu_indices):
-            if triu is not None:
-                triu_rows, triu_cols = triu
-                k = len(triu_rows)
-                n = self.ctx.parameters[j].shape[-1]
-                G_np = np.zeros((k, n * n), dtype=np.float64)
-                for idx, (r, c) in enumerate(zip(triu_rows, triu_cols)):
-                    G_np[idx, r * n + c] = 1.0
-                self._param_triu_G.append(mx.array(G_np))
-            else:
-                self._param_triu_G.append(None)
+        self._P_np = _scipy_csr_to_dense(self.ctx.P_mat)
+        self._q_np: np.ndarray = _scipy_csr_to_dense(self.ctx.q_mat)  # type: ignore[assignment]
+        self._A_np: np.ndarray = _scipy_csr_to_dense(self.ctx.A_mat)  # type: ignore[assignment]
 
     def __call__(
         self,
@@ -407,14 +272,8 @@ class CvxpyLayer:
             solver_args = {}
         batch = self.ctx.validate_params(list(params))
 
-        # Apply log transformation to GP parameters
-        params = _apply_gp_log_transform(params, self.ctx)
-
-        # Flatten and batch parameters
-        p_stack = _flatten_and_batch_params(params, self.ctx, batch, self._param_triu_G)
-
-        # Get dtype from input parameters to ensure type matching
-        param_dtype = params[0].dtype
+        p_stack = _prepare_param_stack(params, self.ctx, batch)
+        param_dtype = p_stack.dtype
 
         # Evaluate parametrized matrices (convert dense numpy to MLX)
         P_eval = (
