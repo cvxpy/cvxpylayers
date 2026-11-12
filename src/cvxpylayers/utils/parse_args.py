@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import cvxpy as cp
-import cvxpy.constraints
 import numpy as np
 import scipy.sparse
-from cvxpy.reductions.dcp2cone.cone_matrix_stuffing import ParamConeProg
+from cvxpy.reductions.canonical_maps import Exp, ParameterTransform
+from cvxpy.reductions.solvers.canonical_export import build_canonical_maps
 from cvxpy.utilities import scopes
 
 import cvxpylayers.interfaces
@@ -18,6 +18,10 @@ from cvxpylayers.interfaces.base import SolverInterface
 # DIFFCP decomposes quad_form to SOC and cannot handle parametric P.
 SUPPORTS_QUAD_OBJ = frozenset({"MOREAU", "CUCLARABEL", "MPAX"})
 
+# Solvers whose inputs come from CVXPY's canonical maps
+# (``Problem.get_canonical_maps``). The others still read CVXPY's internal
+# parameter tensors until their CVXPY interfaces export canonical maps.
+CANONICAL_INPUT_SOLVERS = frozenset({"DIFFCP"})
 
 
 if TYPE_CHECKING:
@@ -62,51 +66,72 @@ class SolverContext(Protocol):
         ...
 
 
-@dataclass
-class VariableRecovery:
-    """Information for recovering a variable from primal/dual solutions."""
+@dataclass(frozen=True)
+class OutputRecovery:
+    """How to read one requested output from the solver's primal/dual vectors.
 
-    primal: slice | None
-    dual: slice | None
+    The recovered entries are ``vec[indices]`` (a gather), or, when
+    ``indices`` is None, ``out[rows] += vals * vec[cols]`` (a sparse linear
+    map with ``size`` outputs). ``exp`` applies elementwise exponentiation
+    (geometric programs). When ``scatter`` is given, the entries are the
+    stored entries of a sparse or diagonal output, at the Fortran-order
+    positions ``scatter`` of the dense output.
+    """
+
+    source: Literal["primal", "dual"]
     shape: tuple[int, ...]
-    is_symmetric: bool = False  # True if primal variable is symmetric (requires svec unpacking)
-    is_psd_dual: bool = False  # True if this is a PSD constraint dual (requires svec unpacking)
-    # Pre-computed fields for JIT compatibility (eliminate conditionals in hot path)
-    source: Literal["primal", "dual"] = "primal"  # Which solution to read from
-    unpack_fn: Literal["reshape", "svec_primal", "svec_dual"] = "reshape"  # How to unpack
+    size: int
+    indices: np.ndarray | None = None
+    rows: np.ndarray | None = None
+    cols: np.ndarray | None = None
+    vals: np.ndarray | None = None
+    exp: bool = False
+    scatter: np.ndarray | None = None
 
 
 @dataclass
 class LayersContext:
-    """Context holding canonicalized problem data and solver information."""
+    """Context holding canonicalized problem data and solver information.
+
+    The forward pass has three stages, all derived from CVXPY's canonical
+    maps:
+
+    1. Parameter preparation: evaluate ``param_transforms`` on the user's
+       parameter values (read through ``param_sources``) and pack the
+       compiled parameters listed in ``param_layout``, followed by a 1.
+    2. Solver inputs: ``P_mat``, ``q_mat`` and ``A_mat`` map that stacked
+       vector to the values the solver context expects.
+    3. Recovery: ``outputs`` read the requested values from the solution.
+    """
 
     parameters: list[cp.Parameter]
-    reduced_P: scipy.sparse.csr_array
-    q: scipy.sparse.csr_array | None
-    reduced_A: scipy.sparse.csr_array
-    cone_dims: dict[str, int | list[int]]
+    # Solver inputs: each matrix maps [param_vec; 1] to the solver's values.
+    P_mat: scipy.sparse.csr_array | None
+    q_mat: scipy.sparse.csr_array
+    A_mat: scipy.sparse.csr_array
+    cone_dims: Any
     solver_ctx: SolverContext | None  # None when a SolverInterface is used
     solver: str | SolverInterface  # SolverInterface instance for custom solvers
-    var_recover: list[VariableRecovery]
-    user_order_to_col_order: tuple[int, ...]
+    # Parameter preparation.
+    param_sources: tuple[np.ndarray | None, ...]
+    param_transforms: tuple[ParameterTransform, ...]
+    param_layout: tuple[tuple[int, int], ...]  # (compiled parameter ID, size)
+    # Recovery of each requested variable.
+    outputs: tuple[OutputRecovery, ...]
     batch_sizes: list[int] | None = (
         None  # Track which params are batched (0=unbatched, N=batch size)
     )
-    # Original CVXPY problem and variables — used by CvxpygenInterface to read
-    # var.value / set var.gradient without needing canonical matrix bookkeeping.
+    # Original CVXPY problem and variables — used by parameter-space custom
+    # solvers (e.g. CVXPYgen) that read var.value / set var.gradient directly.
     problem: cp.Problem | None = None
     variables: list[cp.Variable] | None = None
-    # GP (Geometric Programming) support
     gp: bool = False
-    # Maps original GP parameters to their log-space DCP parameters
-    # Used to determine which parameters need log transformation in forward pass
-    gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None = None
-    # Pre-computed mask: which params need log() for GP (JIT-compatible)
-    gp_log_mask: tuple[bool, ...] | None = None
-    # Pre-computed upper-triangle indices for symmetric/PSD/NSD parameters.
-    # Entry i is (row_indices, col_indices) if parameter i needs upper-tri
-    # extraction before building p_stack, or None if it doesn't.
-    param_triu_indices: tuple[tuple[tuple[int, ...], tuple[int, ...]] | None, ...] = ()
+    # TRANSITIONAL: CVXPY's internal parameter tensors, set only for solvers
+    # that do not take canonical maps yet. Custom solvers receive values in
+    # this format and may inspect its structure in ``SolverInterface.setup``.
+    reduced_P: Any = None
+    reduced_A: Any = None
+    q: scipy.sparse.sparray | None = None
 
     def validate_params(self, values: list) -> tuple:
         if len(values) != len(self.parameters):
@@ -159,131 +184,15 @@ class LayersContext:
         self.batch_sizes = batch_sizes
         return ()
 
+    @property
+    def output_offsets(self) -> tuple[int, ...]:
+        """Offsets of the requested variables in their concatenated values.
 
-
-def _build_dual_var_map(problem: cp.Problem) -> dict[int, cp.Constraint]:
-    """Build mapping from dual variable ID to parent constraint.
-
-    Args:
-        problem: CVXPY problem
-
-    Returns:
-        Dictionary mapping dual variable ID to its parent constraint
-    """
-    dual_var_to_constraint: dict[int, cp.Constraint] = {}
-    for con in problem.constraints:
-        for dv in con.dual_variables:
-            dual_var_to_constraint[dv.id] = con
-    return dual_var_to_constraint
-
-
-def _dual_var_offset(var: cp.Variable, constraint: cp.Constraint) -> int:
-    """Get the offset of a dual variable within its parent constraint's dual vector."""
-    offset = 0
-    for dv in constraint.dual_variables:
-        if dv.id == var.id:
-            return offset
-        offset += dv.size
-    raise ValueError(f"Variable {var} not found in constraint {constraint}")
-
-
-def _build_primal_recovery(
-    var: cp.Variable,
-    param_prob: ParamConeProg,
-    var_id_map: dict[int, int],
-) -> VariableRecovery:
-    """Build recovery info for a primal variable."""
-    start = param_prob.var_id_to_col[var_id_map.get(var.id, var.id)]
-    is_sym = var.is_symmetric() and len(var.shape) >= 2
-
-    if is_sym:
-        n = var.shape[0]  # type: ignore[index]
-        svec_size = n * (n + 1) // 2
-        return VariableRecovery(
-            primal=slice(start, start + svec_size),
-            dual=None,
-            shape=var.shape,
-            is_symmetric=True,
-            source="primal",
-            unpack_fn="svec_primal",
-        )
-    return VariableRecovery(
-        primal=slice(start, start + var.size),
-        dual=None,
-        shape=var.shape,
-        source="primal",
-        unpack_fn="reshape",
-    )
-
-
-def _build_dual_recovery(
-    var: cp.Variable,
-    parent_con: cp.Constraint,
-    constr_id_to_slice: dict[int, slice],
-    constr_id_map: dict[int, int],
-) -> VariableRecovery:
-    """Build recovery info for a dual variable."""
-    constr_slice = constr_id_to_slice[constr_id_map.get(parent_con.id, parent_con.id)]
-    offset = _dual_var_offset(var, parent_con)
-    dual_start = constr_slice.start + offset
-
-    is_psd = isinstance(parent_con, cvxpy.constraints.PSD)
-    # PSD duals are stored in svec format: n*(n+1)//2 elements
-    if is_psd:
-        n = var.shape[0]
-        dual_size = n * (n + 1) // 2
-    else:
-        dual_size = var.size
-
-    return VariableRecovery(
-        primal=None,
-        dual=slice(dual_start, dual_start + dual_size),
-        shape=var.shape,
-        is_psd_dual=is_psd,
-        source="dual",
-        unpack_fn="svec_dual" if is_psd else "reshape",
-    )
-
-
-def _build_constr_id_to_slice(param_prob: ParamConeProg) -> dict[int, slice]:
-    """Build mapping from constraint ID to slice in dual solution vector.
-
-    The dual solution vector is ordered by cone type:
-    Zero (equalities) -> NonNeg (inequalities) -> SOC -> PSD/SvecPSD -> ExpCone -> PowCone3D
-
-    Args:
-        param_prob: CVXPY's parametrized cone program
-
-    Returns:
-        Dictionary mapping constraint ID to slice in dual solution vector
-    """
-    constr_id_to_slice: dict[int, slice] = {}
-    cur_idx = 0
-
-    # Process each cone type in canonical order
-    cone_types = [
-        cvxpy.constraints.Zero,
-        cvxpy.constraints.NonNeg,
-        cvxpy.constraints.SOC,
-        cvxpy.constraints.PSD,
-        cvxpy.constraints.SvecPSD,
-        cvxpy.constraints.ExpCone,
-        cvxpy.constraints.PowCone3D,
-    ]
-
-    for cone_type in cone_types:
-        for c in param_prob.constr_map.get(cone_type, []):
-            # PSD constraints use scaled vectorization (svec) in the dual
-            # For an n x n PSD constraint, svec size is n*(n+1)//2
-            if cone_type is cvxpy.constraints.PSD:
-                n = c.shape[0]  # Matrix dimension
-                cone_size = n * (n + 1) // 2
-            else:
-                cone_size = c.size
-            constr_id_to_slice[c.id] = slice(cur_idx, cur_idx + cone_size)
-            cur_idx += cone_size
-
-    return constr_id_to_slice
+        Parameter-space solvers (e.g. CVXPYgen) return variable values
+        directly; this is the layout used to pass them through autograd.
+        """
+        assert self.variables is not None
+        return tuple(np.cumsum([0] + [v.size for v in self.variables]).tolist())
 
 
 def _validate_problem(
@@ -291,7 +200,6 @@ def _validate_problem(
     variables: list[cp.Variable],
     parameters: list[cp.Parameter],
     gp: bool,
-    dual_var_to_constraint: dict[int, cp.Constraint],
     qp_solver: bool,
 ) -> None:
     """Validate that the problem is DPP-compliant and inputs are well-formed.
@@ -301,7 +209,6 @@ def _validate_problem(
         variables: List of CVXPY variables to track (can include constraint dual variables)
         parameters: List of CVXPY parameters
         gp: Whether this is a geometric program (GP)
-        dual_var_to_constraint: Mapping from dual variable ID to parent constraint
         qp_solver: Whether the solver handles quadratic objectives directly.
             When True, quad_form(x, P) with parametric P is allowed in the
             objective but rejected in constraints.
@@ -331,75 +238,35 @@ def _validate_problem(
         raise ValueError("The layer's variables must be provided as a list or tuple")
 
     # Validate variables: each must be either a primal variable or a constraint dual variable
-    primal_vars = set(problem.variables())
+    valid_ids = {v.id for v in problem.variables()} | {
+        dv.id for con in problem.constraints for dv in con.dual_variables
+    }
     for v in variables:
-        if v in primal_vars:
-            continue  # Valid primal variable
-        if v.id not in dual_var_to_constraint:
+        if v.id not in valid_ids:
             raise ValueError(
                 f"Variable {v} must be a subset of problem.variables or a constraint dual variable"
             )
 
 
-def _build_user_order_mapping(
-    parameters: list[cp.Parameter],
-    param_prob: ParamConeProg,
-    gp_param_to_log_param: dict[cp.Parameter, cp.Parameter] | None,
-    param_id_map: dict[int, int],
-) -> tuple[int, ...]:
-    """Build mapping from user parameter order to column order.
+def _output_recovery(source, rec, shape, sparse_idx) -> OutputRecovery:
+    """Translate one CVXPY recovery entry into an ``OutputRecovery``."""
+    exp = isinstance(rec, Exp)
+    if exp:
+        rec = rec.indices
+    scatter = None
+    if sparse_idx is not None:
+        scatter = np.ravel_multi_index(sparse_idx, shape, order="F")
+    if scipy.sparse.issparse(rec):
+        coo = scipy.sparse.coo_array(rec)
+        return OutputRecovery(source, shape, coo.shape[0], rows=coo.row, cols=coo.col,
+                              vals=coo.data, exp=exp, scatter=scatter)
+    return OutputRecovery(source, shape, len(rec), indices=np.asarray(rec), exp=exp,
+                          scatter=scatter)
 
-    CVXPY internally reorders parameters when canonicalizing problems. This
-    creates a mapping from the user's parameter order to the internal column
-    order used in the canonical form.
 
-    Args:
-        parameters: List of CVXPY parameters in user order
-        param_prob: CVXPY's parametrized problem object
-        gp_param_to_log_param: Mapping from GP params to log-space DCP params, or None
-        param_id_map: Flat mapping from original param IDs to final canonical IDs
-
-    Returns:
-        Tuple mapping user parameter index to column order index (JIT-compatible)
-    """
-    def _resolve(raw_id: int) -> int:
-        return param_id_map.get(raw_id, raw_id)
-
-    # For GP problems, we need to use the log-space DCP parameter IDs
-    if gp_param_to_log_param:
-        # Map user order index to column using log-space DCP parameters
-        # Must sort by column position (same as non-GP path) so that
-        # sequential slot indices match the canonical parameter order
-        user_order_to_col = {
-            i: col
-            for col, i in sorted(
-                [
-                    (
-                        param_prob.param_id_to_col[
-                            _resolve(gp_param_to_log_param[p].id if p in gp_param_to_log_param else p.id)
-                        ],
-                        i,
-                    )
-                    for i, p in enumerate(parameters)
-                ],
-            )
-        }
-    else:
-        # Standard DCP problem - use original parameters
-        user_order_to_col = {
-            i: col
-            for col, i in sorted(
-                [(param_prob.param_id_to_col[_resolve(p.id)], i) for i, p in enumerate(parameters)],
-            )
-        }
-
-    # Convert column indices to sequential order mapping as a tuple
-    # user_order_to_col_order[i] = j means user param i goes to column order j
-    user_order_to_col_order = [0] * len(parameters)
-    for j, i in enumerate(user_order_to_col.keys()):
-        user_order_to_col_order[i] = j
-
-    return tuple(user_order_to_col_order)
+def _with_constant(M: scipy.sparse.sparray, v: np.ndarray) -> scipy.sparse.csr_array:
+    """``[M | v]``: the affine map ``M @ p + v`` as a map on ``[p; 1]``."""
+    return scipy.sparse.hstack([M, scipy.sparse.csr_array(v[:, None])], format="csr")
 
 
 def parse_args(
@@ -414,10 +281,6 @@ def parse_args(
     custom_solver: Any = None,
 ) -> LayersContext:
     """Parse and canonicalize a CVXPY problem for use in differentiable layers.
-
-    This function validates the problem, extracts the parametrized cone program
-    representation, and creates a context object containing all information needed
-    for forward/backward passes.
 
     Args:
         problem: CVXPY problem to canonicalize
@@ -436,148 +299,96 @@ def parse_args(
     Returns:
         LayersContext containing canonicalized problem data
     """
-    # Build dual variable map for O(1) constraint lookup
-    dual_var_to_constraint = _build_dual_var_map(problem)
-
     if custom_solver is not None:
         # Use the custom solver's canon_solver as the CVXPY solver string,
         # falling back to whatever the caller passed in solver.
         solver = solver or custom_solver.canon_solver_name
-    elif solver is None:
-        solver = "DIFFCP"
-        
-    if custom_solver is not None:
         qp_solver = solver in SUPPORTS_QUAD_OBJ or custom_solver.supports_quad_obj
     else:
+        solver = solver or "DIFFCP"
         qp_solver = solver in SUPPORTS_QUAD_OBJ
 
-    _validate_problem(problem, variables, parameters, gp, dual_var_to_constraint, qp_solver)
+    _validate_problem(problem, variables, parameters, gp, qp_solver)
 
-    # Enter quad_form_dpp_scope for QP-capable solvers so that get_problem_data
-    # caches and canonicalizes under the QP-aware key (parametric quad_form P allowed).
+    compilation = dict(gp=gp, verbose=verbose, canon_backend=canon_backend,
+                       solver_opts=solver_args)
+    canonical_inputs = custom_solver is None and solver in CANONICAL_INPUT_SOLVERS
+    # Enter quad_form_dpp_scope for QP-capable solvers so that CVXPY caches and
+    # canonicalizes under the QP-aware key (parametric quad_form P allowed).
     with (scopes.quad_form_dpp_scope() if qp_solver else contextlib.nullcontext()):
-
-        # Handle GP problems using native CVXPY reduction (cvxpy >= 1.7.4)
-        gp_param_to_log_param = None
-        if gp:
-            # Apply native CVXPY DGP→DCP reduction
-            dgp2dcp = cp.reductions.Dgp2Dcp(problem)  # type: ignore[attr-defined]
-            dcp_problem, _ = dgp2dcp.apply(problem)
-
-            # Extract parameter mapping from the reduction
-            gp_param_to_log_param = dgp2dcp.canon_methods._parameters
-
-            # Get problem data from the already-transformed DCP problem
-            data, chain, _ = dcp_problem.get_problem_data(
-                solver=solver,
-                gp=False,
-                verbose=verbose,
-                canon_backend=canon_backend,
-                solver_opts=solver_args,
-            )
-
-            # In newer CVXPY, Dgp2Dcp gives fresh IDs to log-space variables
-            _dcp_var_map = {k: v[0] for k, v in chain.compose_var_id_map().items()}
-            var_id_map: dict[int, int] = {
-                orig_id: _dcp_var_map.get(log_ids[0], log_ids[0])
-                for orig_id, log_ids in dgp2dcp.var_id_map.items()
-            }
-            param_id_map: dict[int, int] = {}  # GP params handled via gp_param_to_log_param
+        if canonical_inputs:
+            canon = problem.get_canonical_maps(solver, list(variables), **compilation)
         else:
-            # Standard DCP path
-            data, chain, _ = problem.get_problem_data(
-                solver=solver,
-                gp=False,
-                verbose=verbose,
-                canon_backend=canon_backend,
-                solver_opts=solver_args,
-            )
+            # TRANSITIONAL: the CVXPY interfaces of these solvers do not export
+            # input maps yet, so read CVXPY's internal parameter tensors and
+            # take only parameter preparation and recovery from CVXPY.
+            data, chain, inverse_data = problem.get_problem_data(
+                solver, enforce_dpp=True, **compilation)
+            param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
+            canon = build_canonical_maps(problem, chain, param_prob, inverse_data,
+                                         list(variables), solver_inputs=False)
 
-            # In newer CVXPY, lowered variables and parameters receive fresh IDs
-            raw_vmap = chain.compose_var_id_map()
-            if any(len(v) > 1 for v in raw_vmap.values()):
-                raise NotImplementedError("Complex variables are not yet supported.")
-            var_id_map = {k: v[0] for k, v in raw_vmap.items()}
-            param_id_map = {k: v[0] for k, v in chain.compose_param_id_map().items()}
-
-        # In newer CVXPY PSD is converted to SvecPSD with fresh IDs
-        constr_id_map = chain.compose_constr_id_map()
-
-    param_prob = data[cp.settings.PARAM_PROB]  # type: ignore[attr-defined]
-    cone_dims = data["dims"]
-
-    # Create solver context — skip for custom solvers (no built-in ctx needed)
-    if custom_solver is not None:
-        solver_ctx = None
-        # Store the SolverInterface object directly as the solver identifier.
-        layer_solver = custom_solver
+    legacy: dict[str, Any] = {}
+    if canonical_inputs:
+        P_mat = None  # DIFFCP has no quadratic objective.
+        q_mat = _with_constant(*canon.maps["c"])
+        A_mat = scipy.sparse.vstack([_with_constant(*canon.maps["A"]),
+                                     _with_constant(*canon.maps["b"])], format="csr")
+        solver_ctx = cvxpylayers.interfaces.get_canonical_solver_ctx(
+            solver, canon, solver_args, verbose=verbose)
+        layer_solver: str | SolverInterface = solver
     else:
-        solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
-            solver,
-            param_prob,
-            cone_dims,
-            data,
-            solver_args,
-            verbose=verbose,
-        )
-        layer_solver = solver
+        if custom_solver is not None:
+            solver_ctx = None
+            layer_solver = custom_solver
+        else:
+            # May permute the rows of param_prob's tensors (CSR ordering).
+            solver_ctx = cvxpylayers.interfaces.get_solver_ctx(
+                solver, param_prob, canon.cone_dims, data, solver_args, verbose=verbose)
+            layer_solver = solver
+        reduced_P = param_prob.reduced_P.reduced_mat
+        P_mat = None if reduced_P is None else reduced_P.tocsr()
+        q_mat = param_prob.q.tocsr()
+        A_mat = param_prob.reduced_A.reduced_mat.tocsr()
+        legacy = dict(reduced_P=param_prob.reduced_P, reduced_A=param_prob.reduced_A,
+                      q=param_prob.q)
 
-    # Build parameter ordering mapping
-    user_order_to_col_order = _build_user_order_mapping(
-        parameters, param_prob, gp_param_to_log_param, param_id_map
+    # Parameter preparation: sparse parameters enter the transforms as their
+    # stored entries; the user passes dense values.
+    param_sources = tuple(
+        None if p.sparse_idx is None
+        else np.ravel_multi_index(p.sparse_idx, p.shape, order="F")
+        for p in parameters
     )
+    layout = sorted(canon.param_id_to_col.items(), key=lambda item: item[1])
+    param_layout = tuple((pid, canon.param_id_to_size[pid]) for pid, _ in layout)
 
-    q = param_prob.q
-
-    # Build variable recovery info for each requested variable
-    constr_id_to_slice = _build_constr_id_to_slice(param_prob)
-    primal_vars = set(problem.variables())
-
-    var_recover = []
+    primal_info = {info.var_id: info for info in canon.primal_vars}
+    dual_info = {info.dual_var_id: info for info in canon.dual_vars}
+    outputs = []
     for v in variables:
-        if v in primal_vars:
-            var_recover.append(_build_primal_recovery(v, param_prob, var_id_map))
+        if v.id in primal_info:
+            info = primal_info[v.id]
+            outputs.append(_output_recovery(
+                "primal", canon.primal_recovery[v.id], info.shape, info.sparse_idx))
         else:
-            parent_con = dual_var_to_constraint[v.id]
-            var_recover.append(_build_dual_recovery(v, parent_con, constr_id_to_slice, constr_id_map))
-
-    # Pre-compute GP log mask for JIT compatibility
-    gp_log_mask = None
-    if gp and gp_param_to_log_param:
-        gp_log_mask = tuple(p in gp_param_to_log_param for p in parameters)
-
-    # Pre-compute upper-triangle indices for (symmetric/hermitian/PSD/NSD attributes)
-    # parameters that CVXPY lowered to their upper-tri vector form
-    triu_list: list[tuple[tuple[int, ...], tuple[int, ...]] | None] = []
-    for p in parameters:
-        if getattr(p, "_has_dim_reducing_attr", False) and p.id in param_id_map:
-            if any(p.attributes.get(a) for a in ("symmetric", "hermitian", "PSD", "NSD")):
-                n = p.shape[-1]
-                rows, cols = np.triu_indices(n)
-                triu_list.append((tuple(rows.tolist()), tuple(cols.tolist())))
-            else:
-                raise NotImplementedError(
-                    f"Parameter '{p.name()}' has a dimension-reducing attribute "
-                    f"(diag, sparsity, or similar) that cvxpylayers does not yet handle"
-                )
-        else:
-            triu_list.append(None)
-    param_triu_indices = tuple(triu_list)
+            outputs.append(_output_recovery(
+                "dual", canon.dual_recovery[v.id], dual_info[v.id].shape, None))
 
     return LayersContext(
         parameters,
-        param_prob.reduced_P,
-        q,
-        param_prob.reduced_A,
-        cone_dims,
+        P_mat,
+        q_mat,
+        A_mat,
+        canon.cone_dims,
         solver_ctx,  # type: ignore[arg-type]
         layer_solver,
-        var_recover=var_recover,
-        user_order_to_col_order=user_order_to_col_order,
-        gp=gp,
-        gp_param_to_log_param=gp_param_to_log_param,
-        gp_log_mask=gp_log_mask,
+        param_sources=param_sources,
+        param_transforms=tuple(canon.param_transforms),
+        param_layout=param_layout,
+        outputs=tuple(outputs),
         problem=problem,
         variables=list(variables),
-        param_triu_indices=param_triu_indices,
+        gp=gp,
+        **legacy,
     )

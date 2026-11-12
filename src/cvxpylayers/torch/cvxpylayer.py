@@ -1,3 +1,4 @@
+import math
 import warnings
 from typing import Any, cast
 
@@ -5,6 +6,7 @@ import cvxpy as cp
 import numpy as np
 import scipy.sparse
 import torch
+from cvxpy.reductions.canonical_maps import ParameterTransform, ParameterTransformKind
 
 import cvxpylayers.utils.parse_args as pa
 from cvxpylayers.interfaces.base import SolverInterface
@@ -56,177 +58,81 @@ def _reshape_fortran(array: torch.Tensor, shape: tuple) -> torch.Tensor:
     return x.reshape(*reversed(shape)).permute(*reversed(range(len(shape))))
 
 
-def _apply_gp_log_transform(
-    params: tuple[torch.Tensor, ...],
-    ctx: pa.LayersContext,
-) -> tuple[torch.Tensor, ...]:
-    """Apply log transformation to geometric program (GP) parameters.
-
-    Geometric programs are solved in log-space after conversion to DCP.
-    This function applies log transformation to the appropriate parameters.
-
-    Args:
-        params: Tuple of parameter tensors in original GP space
-        ctx: Layer context containing GP parameter mapping info
-
-    Returns:
-        Tuple of transformed parameters (log-space for GP params, unchanged otherwise)
-    """
-    if not ctx.gp or ctx.gp_log_mask is None:
-        return params
-
-    # Use pre-computed mask for JIT compatibility (no dict lookups)
-    return tuple(
-        torch.log(p) if needs_log else p
-        for p, needs_log in zip(params, ctx.gp_log_mask)
-    )
+def _apply_transform(
+    transform: ParameterTransform, value: torch.Tensor,
+) -> torch.Tensor:
+    """Evaluate one of CVXPY's parameter transformations on flat values."""
+    kind = transform.kind
+    if kind == ParameterTransformKind.GATHER:
+        indices = torch.as_tensor(transform.indices, device=value.device)
+        return value[..., indices]
+    if kind == ParameterTransformKind.LOG:
+        return torch.log(value)
+    if kind == ParameterTransformKind.REAL:
+        return torch.real(value)
+    if kind == ParameterTransformKind.IMAG:
+        return torch.imag(value)
+    raise ValueError(f"Unknown parameter transform {kind}")
 
 
-def _flatten_and_batch_params(
+def _prepare_param_stack(
     params: tuple[torch.Tensor, ...],
     ctx: pa.LayersContext,
     batch: tuple,
 ) -> torch.Tensor:
-    """Flatten and batch parameters into a single stacked tensor.
+    """Turn user parameter values into the stacked compiled-parameter vector.
 
-    Converts a tuple of parameter tensors (potentially with mixed batched/unbatched)
-    into a single concatenated tensor suitable for matrix multiplication with the
-    parametrized problem matrices.
-
-    Args:
-        params: Tuple of parameter tensors
-        ctx: Layer context with batch info and ordering
-        batch: Batch dimensions tuple (empty if unbatched)
+    Evaluates CVXPY's parameter transformations (e.g. ``log`` for geometric
+    programs, gathers of the free entries of structured parameters) and packs
+    the compiled parameters in column order, followed by a constant 1.
 
     Returns:
-        Concatenated parameter tensor with shape (num_params, batch_size) or (num_params,)
+        Tensor of shape (num_params + 1,) or (num_params + 1, batch_size).
     """
-    flattened_params: list[torch.Tensor | None] = [None] * (len(params) + 1)
-
-    # Always work with batch_size >= 1 for uniform processing
-    # batch is () for unbatched, (B,) for batched
+    # Always work with batch_size >= 1 for uniform processing.
     effective_batch = batch if batch else (1,)
-
-    for i, param in enumerate(params):
-        # Check if this parameter is batched or needs broadcasting
+    values: dict[int, torch.Tensor] = {}
+    for i, (param, value) in enumerate(zip(ctx.parameters, params)):
         if ctx.batch_sizes[i] == 0:  # type: ignore[index]
             # Unbatched parameter - expand to match batch size
-            param_expanded = param.unsqueeze(0).expand(effective_batch + param.shape)
-        else:
-            param_expanded = param
+            value = value.unsqueeze(0).expand(effective_batch + value.shape)
+        flat = _reshape_fortran(value, effective_batch + (-1,))
+        source = ctx.param_sources[i]
+        if source is not None:
+            # Sparse parameters enter the transforms as their stored entries.
+            flat = flat[..., torch.as_tensor(source, device=flat.device)]
+        values[param.id] = flat
+    for transform in ctx.param_transforms:
+        values[transform.target_id] = _apply_transform(
+            transform, values[transform.source_id])
 
-        triu = ctx.param_triu_indices[i] if ctx.param_triu_indices else None
-        if triu is not None:
-            # Symmetric/PSD/NSD parameter: CVXPY canonicalizes to upper triangle.
-            # Extract it so p_stack matches the canonical form's column count.
-            triu_rows, triu_cols = triu
-            flattened_params[ctx.user_order_to_col_order[i]] = param_expanded[
-                ..., triu_rows, triu_cols
-            ]
-        else:
-            flattened_params[ctx.user_order_to_col_order[i]] = _reshape_fortran(
-                param_expanded,
-                effective_batch + (-1,),
-            )
-
-    # Add constant 1.0 column for offset terms in canonical form
-    flattened_params[-1] = torch.ones(
-        effective_batch + (1,),
-        dtype=params[0].dtype,
-        device=params[0].device,
-    )
-
-    assert all(p is not None for p in flattened_params), "All parameters must be assigned"
-    p_stack = torch.cat(flattened_params, -1)  # type: ignore[arg-type]
-    # p_stack is (batch_size, num_params), transpose to (num_params, batch_size)
-    p_stack = p_stack.T
-    # For unbatched case, squeeze the trailing dimension to get (num_params,)
-    # len(batch) is 0 for unbatched, 1 for batched - use this as a shape selector
-    # squeeze(-1) removes the last dimension if it's 1, otherwise no-op
-    # But we need conditional-free: use reshape with computed output shape
-    output_shape = (p_stack.shape[0],) + batch  # (num_params,) or (num_params, B)
-    return p_stack.reshape(output_shape)
+    columns = [values[pid] for pid, _ in ctx.param_layout]
+    dtype = columns[0].dtype if columns else params[0].dtype
+    columns.append(torch.ones(effective_batch + (1,), dtype=dtype, device=params[0].device))
+    # (batch_size, num_params) -> (num_params,) or (num_params, batch_size)
+    p_stack = torch.cat(columns, -1).T
+    return p_stack.reshape((p_stack.shape[0],) + batch)
 
 
-def _svec_to_symmetric(
-    svec: torch.Tensor,
-    n: int,
-    batch: tuple,
-    rows: np.ndarray,
-    cols: np.ndarray,
-    scale: np.ndarray | None = None,
+def _recover_output(
+    out: pa.OutputRecovery, vec: torch.Tensor, batch: tuple,
 ) -> torch.Tensor:
-    """Convert vectorized form to full symmetric matrix.
-
-    Args:
-        svec: Vectorized form, shape (*batch, n*(n+1)/2)
-        n: Matrix dimension
-        batch: Batch dimensions (from tensor shape, not boolean)
-        rows: Row indices for unpacking
-        cols: Column indices for unpacking
-        scale: Optional scaling factors (for svec format with sqrt(2) scaling)
-
-    Returns:
-        Full symmetric matrix, shape (*batch, n, n)
-    """
-    rows_t = torch.tensor(rows, dtype=torch.long, device=svec.device)
-    cols_t = torch.tensor(cols, dtype=torch.long, device=svec.device)
-    if scale is not None:
-        scale_t = torch.tensor(scale, dtype=svec.dtype, device=svec.device)
-        data = svec * scale_t
+    """Read one output from a (batch, n) solution tensor; see ``OutputRecovery``."""
+    device = vec.device
+    if out.indices is not None:
+        data = vec[..., torch.as_tensor(out.indices, device=device)]
     else:
-        data = svec
-
-    # Output shape: (*batch, n, n) - works for () or (B,) batch
-    out_shape = batch + (n, n)
-    result = torch.zeros(out_shape, dtype=svec.dtype, device=svec.device)
-
-    # Use ellipsis indexing - works uniformly for any number of batch dimensions
-    result[..., rows_t, cols_t] = data
-    result[..., cols_t, rows_t] = data
-    return result
-
-
-def _unpack_primal_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
-    """Unpack symmetric primal variable from vectorized form.
-
-    CVXPY stores symmetric variables in upper triangular row-major order:
-    [X[0,0], X[0,1], ..., X[0,n-1], X[1,1], X[1,2], ..., X[n-1,n-1]]
-
-    Args:
-        svec: Vectorized symmetric variable
-        n: Matrix dimension
-        batch: Batch dimensions
-
-    Returns:
-        Full symmetric matrix
-    """
-    rows, cols = np.triu_indices(n)
-    return _svec_to_symmetric(svec, n, batch, rows, cols)
-
-
-def _unpack_svec(svec: torch.Tensor, n: int, batch: tuple) -> torch.Tensor:
-    """Unpack scaled vectorized (svec) form to full symmetric matrix.
-
-    The svec format stores a symmetric n x n matrix as a vector of length n*(n+1)/2,
-    with off-diagonal elements scaled by sqrt(2). Uses column-major lower triangular
-    ordering: (0,0), (1,0), (1,1), (2,0), ...
-
-    Args:
-        svec: Scaled vectorized form
-        n: Matrix dimension
-        batch: Batch dimensions
-
-    Returns:
-        Full symmetric matrix with scaling removed
-    """
-    rows_rm, cols_rm = np.tril_indices(n)
-    sort_idx = np.lexsort((rows_rm, cols_rm))
-    rows = rows_rm[sort_idx]
-    cols = cols_rm[sort_idx]
-    # Scale: 1.0 for diagonal, 1/sqrt(2) for off-diagonal
-    scale = np.where(rows == cols, 1.0, 1.0 / np.sqrt(2.0))
-    return _svec_to_symmetric(svec, n, batch, rows, cols, scale)
+        rows = torch.as_tensor(out.rows, device=device)
+        cols = torch.as_tensor(out.cols, device=device)
+        vals = torch.as_tensor(out.vals, dtype=vec.dtype, device=device)
+        data = torch.zeros(batch + (out.size,), dtype=vec.dtype, device=device)
+        data = data.index_add(-1, rows, vec[..., cols] * vals)
+    if out.exp:
+        data = torch.exp(data)
+    if out.scatter is not None:
+        dense = torch.zeros(batch + (math.prod(out.shape),), dtype=vec.dtype, device=device)
+        data = dense.index_copy(-1, torch.as_tensor(out.scatter, device=device), data)
+    return _reshape_fortran(data, batch + out.shape)
 
 
 def _recover_results(
@@ -235,58 +141,30 @@ def _recover_results(
     ctx: pa.LayersContext,
     batch: tuple,
 ) -> tuple[torch.Tensor, ...]:
-    """Recover variable values from primal/dual solutions.
+    """Recover the requested variables from the solver's primal/dual solutions.
 
-    Extracts the requested variables from the solver's primal and dual
-    solutions, unpacks symmetric matrices if needed, applies inverse GP
-    transformation, and removes batch dimension for unbatched inputs.
-
-    Args:
-        primal: Primal solution from solver
-        dual: Dual solution from solver
-        ctx: Layer context with variable recovery info
-        batch: Batch dimensions tuple (empty () for unbatched, (B,) for batched)
-
-    Returns:
-        Tuple of recovered variable values
+    The solver always returns 2D tensors (batch_size, n), even for unbatched
+    inputs (batch_size=1); the dummy batch dimension is removed at the end.
     """
-    results = []
-    # Solver always returns 2D tensors (batch_size, num_vars), even for unbatched (batch_size=1)
-    # Use internal_batch for intermediate processing, output_batch for final reshape
-    internal_batch = tuple(primal.shape[:-1])  # (1,) for unbatched, (B,) for batched
-    output_batch = batch  # () for unbatched, (B,) for batched
+    internal_batch = tuple(primal.shape[:-1])
+    return tuple(
+        _recover_output(out, primal if out.source == "primal" else dual, internal_batch)
+        .reshape(batch + out.shape)
+        for out in ctx.outputs
+    )
 
-    for var in ctx.var_recover:
-        # Use pre-computed source field to select data (JIT-compatible)
-        if var.source == "primal":
-            data = primal[..., var.primal]
-        else:  # var.source == "dual"
-            data = dual[..., var.dual]
 
-        # Use pre-computed unpack_fn field (JIT-compatible)
-        if var.unpack_fn == "svec_primal":
-            result = _unpack_primal_svec(data, var.shape[0], internal_batch)
-        elif var.unpack_fn == "svec_dual":
-            result = _unpack_svec(data, var.shape[0], internal_batch)
-        elif var.unpack_fn == "reshape":
-            result = _reshape_fortran(data, internal_batch + var.shape)
-        else:
-            raise ValueError(f"Unknown variable recovery type: {var.unpack_fn}")
-
-        # Reshape to output batch shape (removes dummy batch dim for unbatched)
-        # reshape from (1,) + var.shape to () + var.shape works because total elements match
-        results.append(result.reshape(output_batch + var.shape))
-
-    # Apply exp transformation to recover primal variables from log-space for GP
-    # (dual variables stay in original space - no transformation needed)
-    # Uses pre-computed source field (JIT-compatible)
-    if ctx.gp:
-        results = [
-            torch.exp(r) if var.source == "primal" else r
-            for r, var in zip(results, ctx.var_recover)
-        ]
-
-    return tuple(results)
+def _split_outputs(
+    values: torch.Tensor, ctx: pa.LayersContext, batch: tuple,
+) -> tuple[torch.Tensor, ...]:
+    """Split concatenated variable values (parameter-space solvers)."""
+    offsets = ctx.output_offsets
+    assert ctx.variables is not None
+    return tuple(
+        _reshape_fortran(values[..., offsets[i]:offsets[i + 1]],
+                         tuple(values.shape[:-1]) + var.shape).reshape(batch + var.shape)
+        for i, var in enumerate(ctx.variables)
+    )
 
 
 class CvxpyLayer(torch.nn.Module):
@@ -378,22 +256,15 @@ class CvxpyLayer(torch.nn.Module):
             solver_args=solver_args,
             custom_solver=custom_solver,
         )
-        if self.ctx.reduced_P.reduced_mat is not None:  # type: ignore[attr-defined]
-            self.register_buffer(
-                "P",
-                scipy_csr_to_torch_csr(self.ctx.reduced_P.reduced_mat),  # type: ignore[attr-defined]
-            )
-            self._P_scipy: scipy.sparse.csr_array | None = self.ctx.reduced_P.reduced_mat.tocsr()  # type: ignore[attr-defined]
+        if self.ctx.P_mat is not None:
+            self.register_buffer("P", scipy_csr_to_torch_csr(self.ctx.P_mat))
         else:
             self.P = None
-            self._P_scipy = None
-        self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q.tocsr()))
-        self._q_scipy: scipy.sparse.csr_array = self.ctx.q.tocsr()
-        self.register_buffer(
-            "A",
-            scipy_csr_to_torch_csr(self.ctx.reduced_A.reduced_mat),  # type: ignore[attr-defined]
-        )
-        self._A_scipy: scipy.sparse.csr_array = self.ctx.reduced_A.reduced_mat.tocsr()  # type: ignore[attr-defined]
+        self._P_scipy: scipy.sparse.csr_array | None = self.ctx.P_mat
+        self.register_buffer("q", scipy_csr_to_torch_csr(self.ctx.q_mat))
+        self._q_scipy: scipy.sparse.csr_array = self.ctx.q_mat
+        self.register_buffer("A", scipy_csr_to_torch_csr(self.ctx.A_mat))
+        self._A_scipy: scipy.sparse.csr_array = self.ctx.A_mat
         self._warm_start_cache = None
         if isinstance(self.ctx.solver, SolverInterface):
             self.ctx.solver.setup(self.ctx)
@@ -457,16 +328,12 @@ class CvxpyLayer(torch.nn.Module):
             needs_grad = torch.is_grad_enabled() and any(
                 p.requires_grad for p in params
             )
-            primal, dual, _, _ = _CustomCvxpyLayer.apply(  # type: ignore[misc]
+            values, _, _, _ = _CustomCvxpyLayer.apply(  # type: ignore[misc]
                 None, None, None, self.ctx, solver_args, needs_grad, None, *params
             )
-            return _recover_results(primal, dual, self.ctx, batch)
+            return _split_outputs(values, self.ctx, batch)
 
-        # Apply log transformation to GP parameters
-        params = _apply_gp_log_transform(params, self.ctx)
-
-        # Flatten and batch parameters
-        p_stack = _flatten_and_batch_params(params, self.ctx, batch)
+        p_stack = _prepare_param_stack(params, self.ctx, batch)
 
         # Get dtype and device from input parameters to ensure type/device matching
         param_dtype = p_stack.dtype
