@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from cvxpylayers.interfaces import _merge_verbose
-from cvxpylayers.utils.parse_args import LayersContext, VariableRecovery, parse_args
+from cvxpylayers.utils.parse_args import LayersContext, OutputRecovery, parse_args
 
 
 class TestLayersContextValidateParams:
@@ -115,8 +115,8 @@ class TestParseArgs:
         assert isinstance(ctx, LayersContext)
         assert len(ctx.parameters) == 1
         assert ctx.parameters[0] is p
-        assert len(ctx.var_recover) == 1
-        assert isinstance(ctx.var_recover[0], VariableRecovery)
+        assert len(ctx.outputs) == 1
+        assert isinstance(ctx.outputs[0], OutputRecovery)
 
     def test_parse_args_non_dpp_problem(self):
         """Test that non-DPP problems raise ValueError."""
@@ -193,29 +193,38 @@ class TestParseArgs:
 
         ctx = parse_args(problem, [x, y], [p, q], "DIFFCP")
 
-        assert len(ctx.var_recover) == 2
-        # Check that slices are correct
-        assert ctx.var_recover[0].primal is not None
-        assert ctx.var_recover[1].primal is not None
-        # x has size 2, y has size 3
-        assert ctx.var_recover[0].primal.stop - ctx.var_recover[0].primal.start == 2
-        assert ctx.var_recover[1].primal.stop - ctx.var_recover[1].primal.start == 3
+        assert len(ctx.outputs) == 2
+        # Both are gathers from the primal solution; x has size 2, y has size 3
+        assert [out.source for out in ctx.outputs] == ["primal", "primal"]
+        assert [len(out.indices) for out in ctx.outputs] == [2, 3]
 
-    def test_parse_args_variable_recovery_slices(self):
-        """Test that VariableRecovery slices are constructed correctly."""
+    def test_parse_args_output_recovery(self):
+        """Primal and dual outputs come from CVXPY's recovery maps."""
         x = cp.Variable(5)
         p = cp.Parameter(5)
-        problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [x >= 0])
+        con = x >= 0
+        problem = cp.Problem(cp.Minimize(cp.sum_squares(x - p)), [con])
 
-        ctx = parse_args(problem, [x], [p], "DIFFCP")
+        ctx = parse_args(problem, [x, con.dual_variables[0]], [p], "DIFFCP")
 
-        # Should have one VariableRecovery
-        assert len(ctx.var_recover) == 1
-        var_rec = ctx.var_recover[0]
-        assert var_rec.primal is not None
-        assert var_rec.dual is None
-        # Variable x has size 5
-        assert var_rec.primal.stop - var_rec.primal.start == 5
+        primal, dual = ctx.outputs
+        assert (primal.source, primal.shape, primal.size) == ("primal", (5,), 5)
+        assert (dual.source, dual.shape, dual.size) == ("dual", (5,), 5)
+        assert not primal.exp
+        assert primal.scatter is None
+
+    def test_parse_args_structured_parameters(self):
+        """Structured and GP parameters are handled by CVXPY's transforms."""
+        x = cp.Variable((2, 2))
+        S = cp.Parameter((2, 2), symmetric=True)
+        D = cp.Parameter((2, 2), diag=True)
+        problem = cp.Problem(
+            cp.Minimize(cp.sum_squares(x) + cp.trace(S @ x) + cp.trace(D @ x)))
+
+        ctx = parse_args(problem, [x], [S, D], "DIFFCP")
+
+        assert [t.kind.value for t in ctx.param_transforms] == ["gather", "gather"]
+        assert [size for _, size in ctx.param_layout] == [3, 2]
 
 
 class TestMergeVerbose:

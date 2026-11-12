@@ -25,7 +25,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         run: |
-          uv pip install --system -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git"
+          # TEMPORARY: cvxpy from the canon-param-api branch until cvxpy/cvxpy#3604 is merged; then revert.
+          uv pip install --system -e ".[torch,jax]" "cvxpy @ git+https://github.com/cvxpy/cvxpy.git@canon-param-api"
           uv pip install --system "mlx[cpu]" mpax pytest
       - name: Install Moreau
         run: uv pip install --system moreau
