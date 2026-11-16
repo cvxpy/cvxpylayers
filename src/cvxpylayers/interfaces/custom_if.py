@@ -30,31 +30,25 @@ if TYPE_CHECKING:
 # Helper — pack CVXPY variable values into (1, n) primal / dual numpy arrays
 # ---------------------------------------------------------------------------
 
-def _pack_primal_dual(cl_ctx: pa.LayersContext) -> tuple[np.ndarray, np.ndarray]:
-    """Build ``(1, n_primal)`` and ``(1, n_dual)`` arrays from ``var.value``.
+def _pack_outputs(cl_ctx: pa.LayersContext) -> np.ndarray:
+    """Concatenate the requested variables' values into a ``(1, n)`` array.
 
-    After a parametric solve, each ``var.value`` is set to the solution.  This
-    function packs those values into the flat primal/dual vectors that
-    :func:`~cvxpylayers.torch.cvxpylayer._recover_results` expects.
+    After a parametric solve, each ``var.value`` is set to the solution. The
+    values are concatenated (Fortran order, at ``cl_ctx.output_offsets``) so
+    they pass through autograd as a single tensor.
     """
     assert cl_ctx.variables is not None
-    primal_size = max(
-        (v.primal.stop for v in cl_ctx.var_recover if v.primal is not None),
-        default=0,
-    )
-    dual_size = max(
-        (v.dual.stop for v in cl_ctx.var_recover if v.dual is not None),
-        default=0,
-    )
-    primal = np.zeros((1, primal_size))
-    dual   = np.zeros((1, dual_size))
-    for var_info, cvxpy_var in zip(cl_ctx.var_recover, cl_ctx.variables):
-        val = np.asarray(cvxpy_var.value)
-        if var_info.source == "primal" and var_info.primal is not None:
-            primal[0, var_info.primal] = val.flatten(order="F")
-        elif var_info.source == "dual" and var_info.dual is not None:
-            dual[0, var_info.dual] = val.flatten(order="F")
-    return primal, dual
+    return np.concatenate(
+        [np.asarray(v.value, dtype=float).ravel(order="F") for v in cl_ctx.variables]
+    )[np.newaxis]
+
+
+def _unpack_output_gradients(cl_ctx: pa.LayersContext, grad: np.ndarray) -> None:
+    """Set ``var.gradient`` from the gradient of the packed outputs."""
+    assert cl_ctx.variables is not None
+    offsets = cl_ctx.output_offsets
+    for i, var in enumerate(cl_ctx.variables):
+        var.gradient = grad[offsets[i]:offsets[i + 1]].reshape(var.shape, order="F")
 
 
 try:
@@ -105,12 +99,12 @@ try:
                     solver._solve(problem, **solver_args)
                     state = None
 
-                primal_np, dual_np = _pack_primal_dual(cl_ctx)
                 dtype  = params[0].dtype  if params else _torch.float64
                 device = params[0].device if params else _torch.device("cpu")
-                primal = _torch.tensor(primal_np, dtype=dtype, device=device)
-                dual   = _torch.tensor(dual_np,   dtype=dtype, device=device)
-                return primal, dual, state, False
+                values = _torch.tensor(_pack_outputs(cl_ctx), dtype=dtype, device=device)
+                # The packed variable values take the place of the primal
+                # solution; there is no separate dual vector.
+                return values, values.new_zeros((1, 0)), state, False
 
             # ------------------------------------------------------------------
             # Canonical-matrix path
@@ -174,14 +168,8 @@ try:
                 solver = cl_ctx.solver
                 assert cl_ctx.variables is not None
 
-                # Unpack dprimal/ddual into CVXPY variable .gradient attributes.
-                for var_info, cvxpy_var in zip(cl_ctx.var_recover, cl_ctx.variables):
-                    if var_info.source == "primal" and var_info.primal is not None:
-                        g = dprimal[0, var_info.primal].detach().cpu().numpy()
-                        cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
-                    elif var_info.source == "dual" and var_info.dual is not None:
-                        g = ddual[0, var_info.dual].detach().cpu().numpy()
-                        cvxpy_var.gradient = g.reshape(cvxpy_var.shape, order="F")
+                # Unpack the packed-output gradient into var.gradient.
+                _unpack_output_gradients(cl_ctx, dprimal[0].detach().cpu().numpy())
 
                 # Run the solver's backward pass; sets param.gradient for each param.
                 solver._gradient(cl_ctx.problem, ctx.state)

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 import diffcp
 import numpy as np
 import scipy.sparse as sp
+from cvxpy.reductions.canonical_maps import MatrixStructure
 from cvxpy.reductions.solvers.conic_solvers.scs_conif import dims_to_solver_dict
 
 try:
@@ -46,28 +47,24 @@ def _detect_batch_size(con_values: TensorLike) -> tuple[int, bool]:
 def _build_diffcp_matrices(
     con_values: TensorLike,
     lin_obj_values: TensorLike,
-    A_structure: tuple[np.ndarray, np.ndarray],
-    A_shape: tuple[int, int],
-    b_idx: np.ndarray,
+    A_structure: MatrixStructure,
     batch_size: int,
-) -> tuple[list[sp.csc_matrix], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-    """Build DIFFCP matrices from constraint and objective values."""
-    As, bs, cs, b_idxs = [], [], [], []
+) -> tuple[list[sp.csc_matrix], list[np.ndarray], list[np.ndarray]]:
+    """Assemble DIFFCP's ``A``, ``b``, ``c`` from evaluated canonical maps.
 
+    ``con_values`` stacks the stored values of ``A`` (in ``A_structure``)
+    above ``b``; ``lin_obj_values`` is ``c``. Both have one column per
+    problem in the batch.
+    """
+    nnz = A_structure.indices.size
+    As, bs, cs = [], [], []
     for i in range(batch_size):
         con_vals_i = np.array(con_values[:, i])
-        lin_vals_i = np.array(lin_obj_values[:-1, i])
-
-        A_aug = sp.csc_matrix(
-            (con_vals_i, *A_structure),
-            shape=A_shape,
-        )
-        As.append(-A_aug[:, :-1])
-        bs.append(A_aug[:, -1].toarray().flatten())
-        cs.append(lin_vals_i)
-        b_idxs.append(b_idx)
-
-    return As, bs, cs, b_idxs
+        As.append(sp.csc_matrix((con_vals_i[:nnz], A_structure.indices, A_structure.indptr),
+                                shape=A_structure.shape))
+        bs.append(con_vals_i[nnz:])
+        cs.append(np.array(lin_obj_values[:, i]))
+    return As, bs, cs
 
 
 def _compute_gradients(
@@ -75,47 +72,28 @@ def _compute_gradients(
     dprimal: TensorLike,
     ddual: TensorLike,
     bs: list[np.ndarray],
-    b_idxs: list[np.ndarray],
     batch_size: int,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """Compute gradients using DIFFCP's adjoint method."""
+    """Compute gradients with respect to ``c`` and ``[A values; b]``."""
     dxs = [np.array(dprimal[i]) for i in range(batch_size)]
     dys = [np.array(ddual[i]) for i in range(batch_size)]
     dss = [np.zeros_like(bs[i]) for i in range(batch_size)]
 
     dAs, dbs, dcs = adj_batch(dxs, dys, dss)
 
-    dq_batch = []
-    dA_batch = []
-    for i in range(batch_size):
-        con_grad = np.hstack([-dAs[i].data, dbs[i][b_idxs[i]]])
-        lin_grad = np.hstack([dcs[i], np.array([0.0])])
-        dA_batch.append(con_grad)
-        dq_batch.append(lin_grad)
-
-    return dq_batch, dA_batch
+    # DIFFCP returns dA in A's sparsity structure.
+    dA_batch = [np.hstack([dAs[i].data, dbs[i]]) for i in range(batch_size)]
+    return list(dcs), dA_batch
 
 
 class DIFFCP_ctx:
-    A_structure: tuple[np.ndarray, np.ndarray]
-    A_shape: tuple[int, int]
-    b_idx: np.ndarray
+    """DIFFCP inputs from CVXPY's canonical maps (SCS input format)."""
+
+    A_structure: MatrixStructure
     dims: dict
 
-    def __init__(
-        self,
-        objective_structure,
-        constraint_structure,
-        dims,
-        lower_bounds,
-        upper_bounds,
-        options=None,
-    ):
-        con_indices, con_ptr, (m, np1) = constraint_structure
-
-        self.A_structure = (con_indices, con_ptr)
-        self.A_shape = (m, np1)
-        self.b_idx = con_indices[con_ptr[-2]: con_ptr[-1]]
+    def __init__(self, A_structure, dims, options=None):
+        self.A_structure = A_structure
         self.dims = dims
         self.options = options or {}
 
@@ -133,20 +111,14 @@ class DIFFCP_ctx:
             con_values = jnp.expand_dims(con_values, 1)
             lin_obj_values = jnp.expand_dims(lin_obj_values, 1)
 
-        As, bs, cs, b_idxs = _build_diffcp_matrices(
-            con_values,
-            lin_obj_values,
-            self.A_structure,
-            self.A_shape,
-            self.b_idx,
-            batch_size,
+        As, bs, cs = _build_diffcp_matrices(
+            con_values, lin_obj_values, self.A_structure, batch_size,
         )
 
         return DIFFCP_data(
             As=As,
             bs=bs,
             cs=cs,
-            b_idxs=b_idxs,
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
@@ -178,20 +150,14 @@ class DIFFCP_ctx:
             con_values_np = np.expand_dims(con_values_np, 1)
             lin_obj_values_np = np.expand_dims(lin_obj_values_np, 1)
 
-        As, bs, cs, b_idxs = _build_diffcp_matrices(
-            con_values_np,
-            lin_obj_values_np,
-            self.A_structure,
-            self.A_shape,
-            self.b_idx,
-            batch_size,
+        As, bs, cs = _build_diffcp_matrices(
+            con_values_np, lin_obj_values_np, self.A_structure, batch_size,
         )
 
         return DIFFCP_data(
             As=As,
             bs=bs,
             cs=cs,
-            b_idxs=b_idxs,
             cone_dict=dims_to_solver_dict(self.dims),
             batch_size=batch_size,
             originally_unbatched=originally_unbatched,
@@ -204,7 +170,6 @@ class DIFFCP_data:
     As: list[sp.csc_matrix]
     bs: list[np.ndarray]
     cs: list[np.ndarray]
-    b_idxs: list[np.ndarray]
     cone_dict: dict[str, int | list[int]]
     batch_size: int
     originally_unbatched: bool
@@ -250,7 +215,7 @@ class DIFFCP_data:
 
     def jax_derivative(self, dprimal, ddual, adj_batch):
         dq_batch, dA_batch = _compute_gradients(
-            adj_batch, dprimal, ddual, self.bs, self.b_idxs, self.batch_size
+            adj_batch, dprimal, ddual, self.bs, self.batch_size
         )
 
         dq_stacked = jnp.stack([jnp.array(g) for g in dq_batch]).T
@@ -305,7 +270,7 @@ class DIFFCP_data:
             ddual_np = ddual_np[np.newaxis, :]
 
         dq_batch, dA_batch = _compute_gradients(
-            adj_batch, dprimal_np, ddual_np, self.bs, self.b_idxs, self.batch_size
+            adj_batch, dprimal_np, ddual_np, self.bs, self.batch_size
         )
 
         dq_stacked = mx.stack([mx.array(g, dtype=mx.float32) for g in dq_batch])
@@ -344,14 +309,7 @@ if torch is not None:
                 A_eval = A_eval.unsqueeze(1)
                 q_eval = q_eval.unsqueeze(1)
 
-            As, bs, cs, b_idxs = _build_diffcp_matrices(
-                A_eval,
-                q_eval,
-                ctx.A_structure,
-                ctx.A_shape,
-                ctx.b_idx,
-                batch_size,
-            )
+            As, bs, cs = _build_diffcp_matrices(A_eval, q_eval, ctx.A_structure, batch_size)
 
             # Merge layer options with per-call solver_args
             merged_args = {**ctx.options}
@@ -374,7 +332,7 @@ if torch is not None:
             primal = torch.stack([torch.from_numpy(x) for x in xs])
             dual = torch.stack([torch.from_numpy(y) for y in ys])
 
-            return primal, dual, adj_batch, (bs, b_idxs, batch_size, originally_unbatched)
+            return primal, dual, adj_batch, (bs, batch_size, originally_unbatched)
 
         @staticmethod
         def setup_context(ctx: Any, inputs: tuple, outputs: tuple) -> None:
@@ -387,10 +345,10 @@ if torch is not None:
         def backward(
             ctx: Any, dprimal: torch.Tensor, ddual: torch.Tensor, _adj: Any, _data: Any
         ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor, None, None, None]:
-            bs, b_idxs, batch_size, originally_unbatched = ctx.backward_data
+            bs, batch_size, originally_unbatched = ctx.backward_data
 
             dq_batch, dA_batch = _compute_gradients(
-                ctx.adj_batch, dprimal, ddual, bs, b_idxs, batch_size
+                ctx.adj_batch, dprimal, ddual, bs, batch_size
             )
 
             dq_stacked = torch.stack([torch.from_numpy(g) for g in dq_batch]).T

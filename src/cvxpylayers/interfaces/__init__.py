@@ -11,6 +11,23 @@ def _merge_verbose(kwargs, verbose):
     return kwargs.copy() if kwargs else kwargs
 
 
+def get_canonical_solver_ctx(solver, canon, kwargs, verbose=False):
+    """Solver context for a solver whose inputs come from CVXPY's canonical maps.
+
+    Args:
+        solver: Solver name.
+        canon: ``cvxpy.reductions.canonical_maps.CanonicalMaps`` for the solver.
+        kwargs: Default solver options.
+        verbose: Whether to print solver output.
+    """
+    options = _merge_verbose(kwargs, verbose)
+    if solver == "DIFFCP":
+        from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
+
+        return DIFFCP_ctx(canon.structures["A"], canon.cone_dims, options)
+    raise RuntimeError(f"{solver} does not take its inputs from canonical maps.")
+
+
 def get_solver_ctx(
     solver,
     param_prob,
@@ -19,25 +36,12 @@ def get_solver_ctx(
     kwargs,
     verbose=False,
 ):
+    """Solver context for a solver that reads CVXPY's internal parameter tensors.
+
+    Transitional: once the solver's CVXPY interface exports canonical maps,
+    it moves to :func:`get_canonical_solver_ctx`.
+    """
     options = _merge_verbose(kwargs, verbose)
-
-    match solver:
-        case SolverInterface():
-            # Custom solver object is stored directly on LayersContext.solver;
-            # no separate solver context is needed.
-            return None
-
-    if solver == "DIFFCP":
-        from cvxpylayers.interfaces.diffcp_if import DIFFCP_ctx
-
-        return DIFFCP_ctx(
-            param_prob.reduced_P.problem_data_index,
-            param_prob.reduced_A.problem_data_index,
-            cone_dims,
-            data.get("lower_bound"),
-            data.get("upper_bound"),
-            options,
-        )
 
     # All non-DIFFCP solvers need CSR format.
     # convert_to_csr is pure; we apply the row permutation here so that

@@ -9,23 +9,26 @@ Three solver implementations are tested:
 Also tests:
   (d) SolverInterface.from_functions() — functional-wrapping factory
 
-Mocks (a) and (b) delegate to diffcp via the structure stored in a
-DiffcpSolverContext so that we can compare the output with the reference
-diffcp-based CvxpyLayer.
+Mocks (a) and (b) delegate to diffcp. Custom solvers receive CVXPY's
+internal problem-data tensors (values of ``P``, ``[q; d]`` and ``[A | b]`` in
+CVXPY's CSC structure); the mocks rebuild diffcp's inputs from that
+structure so that we can compare the output with the reference diffcp-based
+CvxpyLayer.
 """
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
+import scipy.sparse as sp
 
 torch = pytest.importorskip("torch")
 import cvxpy as cp  # noqa: E402
 import diffcp  # noqa: E402
-
-from cvxpylayers.interfaces.base import SolverInterface  # noqa: E402
-from cvxpylayers.interfaces.diffcp_if import (  # noqa: E402
-    _build_diffcp_matrices,
-    _compute_gradients,
+from cvxpy.reductions.solvers.conic_solvers.scs_conif import (  # noqa: E402
     dims_to_solver_dict,
 )
+
+from cvxpylayers.interfaces.base import SolverInterface  # noqa: E402
 from cvxpylayers.torch import CvxpyLayer  # noqa: E402
 
 torch.set_default_dtype(torch.double)
@@ -45,6 +48,38 @@ def _make_problem():
     problem = cp.Problem(objective, [x >= 0])
     assert problem.is_dpp()
     return problem, A, b, x
+
+
+def _legacy_structure(problem):
+    """The structure of the tensors a custom solver receives for ``problem``."""
+    data, _, _ = problem.get_problem_data("DIFFCP")
+    indices, indptr, shape = data[cp.settings.PARAM_PROB].reduced_A.problem_data_index
+    return SimpleNamespace(A_structure=(indices, indptr), A_shape=shape,
+                           b_idx=indices[indptr[-2]:indptr[-1]], dims=data["dims"])
+
+
+def _build_diffcp_matrices(con_values, lin_obj_values, A_structure, A_shape, b_idx,
+                           batch_size):
+    """diffcp's A, b, c from the values of ``[A | b]`` and ``[q; d]``."""
+    As, bs, cs, b_idxs = [], [], [], []
+    for i in range(batch_size):
+        A_aug = sp.csc_matrix((np.array(con_values[:, i]), *A_structure), shape=A_shape)
+        As.append(-A_aug[:, :-1])
+        bs.append(A_aug[:, -1].toarray().flatten())
+        cs.append(np.array(lin_obj_values[:-1, i]))
+        b_idxs.append(b_idx)
+    return As, bs, cs, b_idxs
+
+
+def _compute_gradients(adj_batch, dprimal, ddual, bs, b_idxs, batch_size):
+    """Gradients with respect to the values of ``[q; d]`` and ``[A | b]``."""
+    dxs = [np.array(dprimal[i]) for i in range(batch_size)]
+    dys = [np.array(ddual[i]) for i in range(batch_size)]
+    dss = [np.zeros_like(bs[i]) for i in range(batch_size)]
+    dAs, dbs, dcs = adj_batch(dxs, dys, dss)
+    dq_batch = [np.hstack([dcs[i], [0.0]]) for i in range(batch_size)]
+    dA_batch = [np.hstack([-dAs[i].data, dbs[i][b_idxs[i]]]) for i in range(batch_size)]
+    return dq_batch, dA_batch
 
 
 def _reference_layer(problem, A_param, b_param, x_var):
@@ -221,7 +256,7 @@ def test_require_one_of_both_ok():
 
 def test_layer_construction_numpy_mock(problem_and_ref):
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
     layer = CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var],
                        solver=mock)
     assert isinstance(layer.ctx.solver, SolverInterface)
@@ -230,7 +265,7 @@ def test_layer_construction_numpy_mock(problem_and_ref):
 
 def test_layer_construction_torch_mock(problem_and_ref):
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = TorchBatchMock(ref.ctx.solver_ctx)
+    mock = TorchBatchMock(_legacy_structure(problem))
     layer = CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var],
                        solver=mock)
     assert isinstance(layer.ctx.solver, SolverInterface)
@@ -244,7 +279,7 @@ def test_layer_construction_torch_mock(problem_and_ref):
 def test_forward_numpy_mock_matches_reference(problem_and_ref):
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -259,7 +294,7 @@ def test_forward_numpy_mock_matches_reference(problem_and_ref):
 def test_forward_torch_mock_matches_reference(problem_and_ref):
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = TorchBatchMock(ref.ctx.solver_ctx)
+    mock = TorchBatchMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -278,7 +313,7 @@ def test_forward_torch_mock_matches_reference(problem_and_ref):
 def test_forward_torch_mock_batched(problem_and_ref):
     n, m, B = 2, 3, 4
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = TorchBatchMock(ref.ctx.solver_ctx)
+    mock = TorchBatchMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -297,7 +332,7 @@ def test_forward_torch_mock_batched(problem_and_ref):
 def test_backward_numpy_mock(problem_and_ref):
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -317,7 +352,7 @@ def test_backward_numpy_mock(problem_and_ref):
 def test_backward_torch_mock(problem_and_ref):
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = TorchBatchMock(ref.ctx.solver_ctx)
+    mock = TorchBatchMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -337,7 +372,7 @@ def test_backward_torch_mock(problem_and_ref):
 def test_backward_torch_mock_batched(problem_and_ref):
     n, m, B = 2, 3, 4
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = TorchBatchMock(ref.ctx.solver_ctx)
+    mock = TorchBatchMock(_legacy_structure(problem))
     custom_layer = CvxpyLayer(problem, parameters=[A_param, b_param],
                               variables=[x_var], solver=mock)
 
@@ -363,7 +398,7 @@ def test_ring_numpy_single_to_torch_layer(problem_and_ref):
     when called through the Torch CvxpyLayer (ring converts automatically)."""
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
 
     # Explicitly use the torch layer — ring will call solve_torch_batch →
     # solve_torch → solve_numpy
@@ -383,7 +418,7 @@ def test_from_functions_forward(problem_and_ref):
     """from_functions() wrapping a pair of lambdas matches the reference."""
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
 
     solver = SolverInterface.from_functions(
         solve      = mock.solve_numpy,
@@ -402,7 +437,7 @@ def test_from_functions_backward(problem_and_ref):
     """from_functions() gradient matches the reference."""
     n, m = 2, 3
     problem, A_param, b_param, x_var, ref = problem_and_ref
-    mock = NumpySingleMock(ref.ctx.solver_ctx)
+    mock = NumpySingleMock(_legacy_structure(problem))
 
     solver = SolverInterface.from_functions(
         solve      = mock.solve_numpy,
