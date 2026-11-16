@@ -1425,7 +1425,7 @@ def test_float32_solution_dtype():
     layer = CvxpyLayer(problem, [p], [x, nonneg.dual_variables[0]])
 
     value = torch.tensor([-1.0, 2.0], dtype=torch.float32, requires_grad=True)
-    primal, dual = layer(value, solver_args={"eps": 1e-8})
+    primal, dual = layer(value)
     assert primal.dtype == dual.dtype == value.dtype
 
     (primal + dual).sum().backward()
