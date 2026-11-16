@@ -162,7 +162,7 @@ print("Installation successful!")
 
 ## GPU Acceleration
 
-### Moreau (Default for PyTorch and JAX)
+### Moreau (Default Backend)
 
 :::{admonition} Moreau — Best Performance on CPU & GPU
 :class: tip
@@ -170,9 +170,7 @@ print("Installation successful!")
 [Moreau](https://docs.moreau.so/) is the recommended solver for best performance.
 :::
 
-Moreau >= 0.4.1 is installed with CVXPYlayers and is the default backend for
-PyTorch and JAX. It is open source under the Apache 2.0 license and available on
-PyPI. MLX continues to use DIFFCP.
+CVXPYlayers installs Moreau >= 0.4.1 as the default backend. MLX uses the CPU solver.
 
 For GPU acceleration, install the matching Moreau CUDA wheel
 (see the [Moreau installation guide](https://docs.moreau.so/installation.html) for details):
@@ -245,7 +243,7 @@ b_gpu = b_t.cuda()
 | NumPy | >= 1.22.4 | Array operations |
 | CVXPY | >= 1.9.3 | Problem specification |
 | diffcp | >= 1.1.0 | Differentiable cone programming |
-| Moreau | >= 0.4.1 | Default PyTorch/JAX backend |
+| Moreau | >= 0.4.1 | Default backend |
 :::
 
 :::{dropdown} Framework Dependencies

@@ -6,9 +6,9 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 | Solver | Type | Best For |
 |--------|------|----------|
-| **diffcp w/ SCS** (MLX default) | CPU | General use, most problem types |
+| **diffcp w/ SCS** | CPU | General use, most problem types |
 | **diffcp w/ Clarabel** | CPU | Higher accuracy |
-| **[Moreau](https://docs.moreau.so/)** (PyTorch/JAX default) | CPU/GPU | Best performance |
+| **[Moreau](https://docs.moreau.so/)** (default) | CPU/GPU | Best performance |
 | **MPAX*** | CPU | LPs/QPs |
 | **CuClarabel w/ diffqcp** | GPU | Open-source GPU alternative |
 
@@ -16,9 +16,8 @@ CVXPYlayers supports multiple solver backends for different use cases.
 
 ## Specifying a Solver
 
-Omitting `solver` (or passing `None`) selects Moreau for PyTorch and JAX.
-MLX defaults to DIFFCP. Select `solver=cp.DIFFCP` explicitly to retain the
-previous PyTorch/JAX backend. A backend is selected at construction;
+Omitting `solver` (or passing `None`) selects Moreau.
+Select `solver=cp.DIFFCP` to use DIFFCP. A backend is selected at construction;
 `solver_args` configures that backend at call time.
 
 ### At Construction
@@ -175,9 +174,7 @@ layer = CvxpyLayer(problem, parameters=[A, b], variables=[x],
 [Moreau](https://docs.moreau.so/) is the default backend for PyTorch and JAX on CPU and GPU.
 It supports PyTorch and JAX with native autograd integration, warm starts, and `jax.jit` compatibility.
 
-MLX also supports Moreau via `solver=cp.MOREAU`. Its solve and backward pass use
-the CPU interior-point solver, without Metal or CUDA acceleration. See the
-[MLX API](../api/mlx.rst) for installation and a gradient example.
+MLX uses Moreau’s CPU solver. See the [MLX API](../api/mlx.rst) for a gradient example.
 
 ### Setup
 

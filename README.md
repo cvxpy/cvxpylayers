@@ -56,9 +56,9 @@ Additionally, install one of the following frameworks:
 
 ### GPU-accelerated pathway
 
-[Moreau](https://docs.moreau.so/) is the default backend for PyTorch and JAX and is
+[Moreau](https://docs.moreau.so/) is the default backend for PyTorch, JAX, and MLX and is
 installed with CVXPYlayers. It is open source under the Apache 2.0 license and
-available on PyPI. MLX uses DIFFCP by default.
+available on PyPI. MLX uses Moreau on CPU.
 
 For GPU support, install the matching Moreau CUDA wheel (see the
 [Moreau installation guide](https://docs.moreau.so/installation.html) for details):
@@ -228,7 +228,7 @@ sum_of_solution.backward()
 
 ## Solvers
 
-CVXPYlayers supports multiple solvers including [Moreau](https://docs.moreau.so/) (default for PyTorch and JAX),
+CVXPYlayers supports multiple solvers including [Moreau](https://docs.moreau.so/) (the default),
 [Clarabel](https://github.com/oxfordcontrol/Clarabel.rs),
 [SCS](https://github.com/cvxgrp/scs), and [CuClarabel](https://github.com/oxfordcontrol/Clarabel.jl/tree/CuClarabel/).
 
