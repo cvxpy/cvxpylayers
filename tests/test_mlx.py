@@ -236,7 +236,7 @@ def test_infeasible():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(param), [x >= 1, x <= -1])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver=cp.DIFFCP)
     param_mx = mx.ones(1, dtype=mx.float32)
     with pytest.raises(diffcp.SolverError):
         layer(param_mx)
@@ -247,7 +247,7 @@ def test_unbounded():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(x), [x <= param])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver=cp.DIFFCP)
     param_mx = mx.ones(1, dtype=mx.float32)
     with pytest.raises(diffcp.SolverError):
         layer(param_mx)
@@ -599,7 +599,7 @@ def test_solver_args_actually_used():
     obj = cp.sum_squares(A @ x - b) + 0.01 * cp.sum_squares(x)
     prob = cp.Problem(cp.Minimize(obj))
 
-    layer = CvxpyLayer(prob, [A, b], [x])
+    layer = CvxpyLayer(prob, [A, b], [x], solver=cp.DIFFCP)
 
     A_mx = mx.array(rng.standard_normal((m, n)), dtype=mx.float32)
     b_mx = mx.array(rng.standard_normal(m), dtype=mx.float32)

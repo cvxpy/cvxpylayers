@@ -74,24 +74,35 @@ Compute both value and gradient efficiently:
    value_and_grad_fn = mx.value_and_grad(loss_fn, argnums=[0, 1])
    loss_val, (dA, db) = value_and_grad_fn(A_mx, b_mx)
 
-Apple Silicon Optimization
---------------------------
+Moreau CPU Backend
+------------------
 
-MLX automatically uses the unified memory architecture of Apple Silicon,
-allowing efficient computation without explicit device management:
+MLX defaults to Moreau’s CPU solver.
+Select ``solver=cp.DIFFCP`` to use DIFFCP. Install the ``mlx`` extra (on Linux,
+also install ``mlx[cpu]``):
+
+.. code-block:: bash
+
+   pip install "cvxpylayers[mlx]"
 
 .. code-block:: python
 
-   # No need to move tensors to GPU - MLX handles this automatically
-   A_mx = mx.random.normal((1000, 500))
-   b_mx = mx.random.normal((1000,))
+   import cvxpy as cp
+   import mlx.core as mx
+   from cvxpylayers.mlx import CvxpyLayer
 
-   (x_sol,) = layer(A_mx, b_mx)
-   mx.eval(x_sol)  # Force evaluation
+   x = cp.Variable(2)
+   q = cp.Parameter(2)
+   problem = cp.Problem(
+       cp.Minimize(0.5 * cp.sum_squares(x) + q @ x),
+       [x >= 0],
+   )
+   layer = CvxpyLayer(problem, parameters=[q], variables=[x])
 
-Notes
------
+   with mx.stream(mx.cpu):
+       q_mx = mx.array([-2.0, 3.0])
+       x_sol = layer(q_mx)[0]  # [2.0, 0.0]
+       dq = mx.grad(lambda q: mx.sum(layer(q)[0]))(q_mx)  # [-1.0, 0.0]
+       mx.eval(x_sol, dq)
 
-- MLX uses lazy evaluation; call ``mx.eval()`` to force computation
-- The MLX layer supports batched execution like PyTorch and JAX
-- For best performance on Apple Silicon, prefer MLX over PyTorch CPU
+Pass Moreau settings through ``solver_args`` at construction or call time.
