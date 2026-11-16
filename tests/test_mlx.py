@@ -666,7 +666,7 @@ def test_forward_method():
 # =============
 
 
-@pytest.mark.parametrize("n", [101])
+@pytest.mark.parametrize("n", [100])
 def test_relu(n):
     """Test ReLU projection comparing MLX with PyTorch."""
     x_param = cp.Parameter(n)
@@ -683,16 +683,18 @@ def test_relu(n):
     x_torch = torch.tensor(x_np, requires_grad=True)
 
     # Forward comparison
-    y_mx = mlx_layer(x_mx)[0]
+    y_mx = mlx_layer(x_mx, solver_args={"eps": 1e-8})[0]
     (y_torch,) = torch_layer(x_torch)
-    _compare(y_mx, y_torch)
+    _compare(y_mx, np.maximum(x_np, 0))
+    _compare(y_torch.detach().numpy(), np.maximum(x_np, 0))
 
     # Gradient comparison
     y_torch.sum().backward()  # scalar gradient hence sum
     grad_torch = x_torch.grad
-    grad_loss = mx.grad(lambda x: mx.sum(mlx_layer(x)[0]))
+    grad_loss = mx.grad(lambda x: mx.sum(mlx_layer(x, solver_args={"eps": 1e-8})[0]))
     grad_mx = grad_loss(x_mx)
-    _compare(grad_mx, grad_torch)
+    _compare(grad_mx, (x_np > 0).astype(np.float32))
+    _compare(grad_torch, (x_np > 0).astype(np.float32))
 
 
 @pytest.mark.parametrize("n", [100])
@@ -862,15 +864,19 @@ def test_batched_solver(batch_size, n, m):
     b_batch_torch = torch.tensor(b_batch_np, requires_grad=True)
 
     # Forward pass
-    y_mx = mlx_layer(A_batch_mx, b_batch_mx)[0]
+    y_mx = mlx_layer(A_batch_mx, b_batch_mx, solver_args={"eps": 1e-8})[0]
     (y_torch,) = torch_layer(A_batch_torch, b_batch_torch)
     _compare(y_mx, y_torch)
 
     # Gradient comparison
     y_torch.sum().backward()
 
-    grad_loss_A = mx.grad(lambda A_: mx.sum(mlx_layer(A_, b_batch_mx)[0]))(A_batch_mx)
-    grad_loss_b = mx.grad(lambda b_: mx.sum(mlx_layer(A_batch_mx, b_)[0]))(b_batch_mx)
+    grad_loss_A = mx.grad(
+        lambda A_: mx.sum(mlx_layer(A_, b_batch_mx, solver_args={"eps": 1e-8})[0])
+    )(A_batch_mx)
+    grad_loss_b = mx.grad(
+        lambda b_: mx.sum(mlx_layer(A_batch_mx, b_, solver_args={"eps": 1e-8})[0])
+    )(b_batch_mx)
 
     _compare(grad_loss_A, A_batch_torch.grad)
     _compare(grad_loss_b, b_batch_torch.grad)

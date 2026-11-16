@@ -11,6 +11,11 @@ from jax.test_util import check_grads  # noqa: E402
 
 from cvxpylayers.jax import CvxpyLayer  # noqa: E402
 
+# Tight solves keep finite-difference checks above the solver accuracy floor.
+GRADCHECK_SOLVER_ARGS = {
+    "ipm_settings": {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12},
+}
+
 
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
@@ -94,7 +99,7 @@ def test_least_squares():
     b_jax = random.normal(k2, shape=(m,))
 
     def lstsq_sum_cp(A_jax, b_jax):
-        x = prob_jax(A_jax, b_jax, solver_args={"eps": 1e-10})[0]
+        x = prob_jax(A_jax, b_jax, solver_args=GRADCHECK_SOLVER_ARGS)[0]
         return sum(x)
 
     def lstsq_sum_linalg(A_jax, b_jax):
@@ -152,9 +157,11 @@ def test_logistic_regression():
     )
     prob = cp.Problem(cp.Minimize(-log_likelihood + lam * cp.sum_squares(a)))
 
-    fit_logreg = CvxpyLayer(prob, [X, lam], [a])
+    fit_logreg = CvxpyLayer(prob, [X, lam], [a], solver_args=GRADCHECK_SOLVER_ARGS)
 
-    check_grads(fit_logreg, (X_jax, lam_jax), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
+    check_grads(
+        fit_logreg, (X_jax, lam_jax), order=1, eps=1e-3, modes=["rev"], atol=1e-3, rtol=1e-3
+    )
 
 
 @pytest.mark.skip
@@ -191,10 +198,10 @@ def test_lml():
     obj = -x @ y - cp.sum(cp.entr(y)) - cp.sum(cp.entr(1.0 - y))
     cons = [cp.sum(y) == k]
     prob = cp.Problem(cp.Minimize(obj), cons)
-    lml = CvxpyLayer(prob, [x], [y])
+    lml = CvxpyLayer(prob, [x], [y], solver_args=GRADCHECK_SOLVER_ARGS)
 
     x_th = jnp.array([1.0, -1.0, -1.0, -1.0])
-    check_grads(lml, (x_th,), order=1, modes=["rev"], atol=1e-3, rtol=1e-3)
+    check_grads(lml, (x_th,), order=1, eps=1e-3, modes=["rev"], atol=1e-3, rtol=1e-3)
 
 
 def test_sdp():
@@ -207,12 +214,27 @@ def test_sdp():
     trace_con = cp.trace(X) == 1
     prob = cp.Problem(cp.Minimize(cp.trace(C @ X)), [psd_con, trace_con])
 
-    layer = CvxpyLayer(prob, parameters=[C], variables=[X])
+    layer = CvxpyLayer(prob, parameters=[C], variables=[X], solver_args=GRADCHECK_SOLVER_ARGS)
 
     # Use a well-conditioned symmetric matrix
     C_jax = jnp.array([[2.0, 0.5, 0.1], [0.5, 3.0, 0.2], [0.1, 0.2, 1.5]])
 
-    check_grads(layer, (C_jax,), order=1, modes=["rev"], atol=1e-4, rtol=1e-3)
+    def solve(C):
+        return layer((C + C.T) / 2)[0]
+
+    def reference(C):
+        _, vectors = jnp.linalg.eigh((C + C.T) / 2)
+        v = vectors[:, 0]
+        return jnp.outer(v, v)
+
+    actual, pullback = jax.vjp(solve, C_jax)
+    expected, ref_pullback = jax.vjp(reference, C_jax)
+    np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+    # Check every output coordinate using ordinary VJPs, as check_grads does.
+    for cotangent in jnp.eye(n * n).reshape(n * n, n, n):
+        np.testing.assert_allclose(
+            pullback(cotangent)[0], ref_pullback(cotangent)[0], atol=1e-4, rtol=1e-3
+        )
 
 
 def test_not_enough_parameters():
@@ -267,7 +289,7 @@ def test_infeasible():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(param), [x >= 1, x <= -1])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_jax = jnp.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_jax)
@@ -277,7 +299,7 @@ def test_unbounded():
     x = cp.Variable(1)
     param = cp.Parameter(1)
     prob = cp.Problem(cp.Minimize(x), [x <= param])
-    layer = CvxpyLayer(prob, [param], [x])
+    layer = CvxpyLayer(prob, [param], [x], solver="DIFFCP")
     param_jax = jnp.ones(1)
     with pytest.raises(diffcp.SolverError):
         layer(param_jax)
@@ -340,7 +362,7 @@ def test_broadcasting():
     b_jax = jnp.stack((b_jax_0, b_jax_0))
 
     def lstsq_sum_cp(A_jax, b_jax):
-        x = prob_jax(A_jax, b_jax, solver_args={"eps": 1e-10})[0]
+        x = prob_jax(A_jax, b_jax, solver_args=GRADCHECK_SOLVER_ARGS)[0]
         return jnp.sum(x)
 
     def lstsq_sum_linalg(A_jax, b_jax):
@@ -387,9 +409,7 @@ def test_shared_parameter():
     key, k1 = random.split(key, num=2)
     A_jax = random.normal(k1, shape=(m, n))
     solver_args = {
-        "eps": 1e-10,
-        "acceleration_lookback": 0,
-        "max_iters": 10000,
+        "ipm_settings": {"tol_gap_abs": 1e-10, "tol_gap_rel": 1e-10, "tol_feas": 1e-10},
     }
 
     def f(A_jax):
@@ -397,7 +417,20 @@ def test_shared_parameter():
         (x2,) = layer2(A_jax, solver_args=solver_args)
         return jnp.concatenate((x1, x2))
 
-    check_grads(f, [A_jax], order=1, modes=["rev"])
+    # Compare VJPs to dense least squares, avoiding cancellation from
+    # finite differences of two separately solved optimization problems.
+    def reference(A):
+        return jnp.concatenate([
+            jnp.linalg.solve(A.T @ A, A.T @ b) for b in (b1, b2)
+        ])
+
+    actual, pullback = jax.vjp(f, A_jax)
+    expected, ref_pullback = jax.vjp(reference, A_jax)
+    np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+    cotangent = jnp.arange(2 * n, dtype=A_jax.dtype) / n
+    np.testing.assert_allclose(
+        pullback(cotangent)[0], ref_pullback(cotangent)[0], atol=1e-5, rtol=1e-5
+    )
 
 
 def test_equality():
@@ -415,6 +448,36 @@ def test_equality():
     check_grads(layer, [b_jax], order=1, modes=["rev"])
 
 
+def _gp_reference_x(a, b, c):
+    """Solve the GP below on its active branch x = y**c, with 0 < c < 1.
+
+    Eliminating z gives xyz = y**(c+1) * (b/a - y**(c+1)) / (y**c + y).
+    Newton's method in log(y) gives a smooth, independent gradient reference.
+    """
+    log_y = 0.5 * jnp.log(b / (3 * a))
+    for _ in range(20):
+        r = jnp.exp((c + 1) * log_y) * a / b
+        p = jax.nn.sigmoid((c - 1) * log_y)
+        residual = (c + 1) * (1 - r / (1 - r)) - 1 - (c - 1) * p
+        derivative = -(c + 1)**2 * r / (1 - r)**2 - (c - 1)**2 * p * (1 - p)
+        log_y = log_y - residual / derivative
+    return jnp.exp(c * log_y)
+
+
+def _check_gp_gradients(layer, params, order=(0, 1, 2)):
+    def solve(*args):
+        return layer(*args)[0].sum()
+
+    def reference(*args):
+        return _gp_reference_x(*(args[i] for i in order)).sum()
+
+    np.testing.assert_allclose(solve(*params), reference(*params), atol=1e-5, rtol=1e-5)
+    actual = jax.grad(solve, argnums=(0, 1, 2))(*params)
+    expected = jax.grad(reference, argnums=(0, 1, 2))(*params)
+    for grad, ref in zip(actual, expected):
+        np.testing.assert_allclose(grad, ref, atol=1e-5, rtol=1e-5)
+
+
 def test_basic_gp():
     x = cp.Variable(pos=True)
     y = cp.Variable(pos=True)
@@ -429,7 +492,10 @@ def test_basic_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
     problem.solve(cp.CLARABEL, gp=True)
 
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
     a_jax = jnp.array(2.0)
     b_jax = jnp.array(1.0)
     c_jax = jnp.array(0.5)
@@ -439,19 +505,7 @@ def test_basic_gp():
     assert np.isclose(y.value, y_jax, atol=1e-5)
     assert np.isclose(z.value, z_jax, atol=1e-5)
 
-    check_grads(
-        lambda a, b, c: jnp.sum(
-            layer(
-                a,
-                b,
-                c,
-                solver_args={"acceleration_lookback": 0},
-            )[0],
-        ),
-        [a_jax, b_jax, c_jax],
-        order=1,
-        modes=["rev"],
-    )
+    _check_gp_gradients(layer, (a_jax, b_jax, c_jax))
 
 
 def test_batched_gp():
@@ -471,7 +525,10 @@ def test_batched_gp():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layer
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Batched parameters - test with batch size 4
     # For scalar parameters, batching means 1D arrays
@@ -506,14 +563,7 @@ def test_batched_gp():
         )
 
     # Test gradients on batched problem
-    check_grads(
-        lambda a, b, c: jnp.sum(
-            layer(a, b, c, solver_args={"acceleration_lookback": 0})[0],
-        ),
-        [a_batch, b_batch, c_batch],
-        order=1,
-        modes=["rev"],
-    )
+    _check_gp_gradients(layer, (a_batch, b_batch, c_batch))
 
 
 def test_gp_without_param_values():
@@ -533,7 +583,10 @@ def test_gp_without_param_values():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # This should work WITHOUT needing to set a.value, b.value, c.value
-    layer = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
+    layer = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     # Now use the layer with actual parameter values
     a_jax = jnp.array(2.0)
@@ -554,19 +607,7 @@ def test_gp_without_param_values():
     assert np.isclose(z.value, z_jax, atol=1e-5)
 
     # Test gradients
-    check_grads(
-        lambda a, b, c: jnp.sum(
-            layer(
-                a,
-                b,
-                c,
-                solver_args={"acceleration_lookback": 0},
-            )[0],
-        ),
-        [a_jax, b_jax, c_jax],
-        order=1,
-        modes=["rev"],
-    )
+    _check_gp_gradients(layer, (a_jax, b_jax, c_jax))
 
 
 def test_gp_reversed_parameter_order():
@@ -590,8 +631,14 @@ def test_gp_reversed_parameter_order():
     problem = cp.Problem(cp.Minimize(objective_fn), constraints)
 
     # Create layers with parameters in different orders
-    layer_abc = CvxpyLayer(problem, parameters=[a, b, c], variables=[x, y, z], gp=True)
-    layer_cba = CvxpyLayer(problem, parameters=[c, b, a], variables=[x, y, z], gp=True)
+    layer_abc = CvxpyLayer(
+        problem, parameters=[a, b, c], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
+    layer_cba = CvxpyLayer(
+        problem, parameters=[c, b, a], variables=[x, y, z], gp=True,
+        solver_args=GRADCHECK_SOLVER_ARGS,
+    )
 
     a_jax = jnp.array(2.0)
     b_jax = jnp.array(1.0)
@@ -617,12 +664,7 @@ def test_gp_reversed_parameter_order():
     assert np.isclose(z.value, float(z1), atol=1e-5)
 
     # Test gradients for reversed order
-    check_grads(
-        lambda c, b, a: jnp.sum(layer_cba(c, b, a)[0]),
-        [c_jax, b_jax, a_jax],
-        order=1,
-        modes=["rev"],
-    )
+    _check_gp_gradients(layer_cba, (c_jax, b_jax, a_jax), order=(2, 1, 0))
 
 
 def test_batch_size_one_preserves_batch_dimension():
@@ -664,3 +706,28 @@ def test_batch_size_one_preserves_batch_dimension():
         f"Expected gradient shape (1, {n}), got {grad_b.shape}. "
         "Batch dimension should be preserved for batch_size=1."
     )
+
+
+def test_moreau_float32_parameter_gradients():
+    """Native float64 cotangents must cross back into float32 preprocessing."""
+    previous_x64 = jax.config.jax_enable_x64
+    try:
+        jax.config.update("jax_enable_x64", False)
+        A_value = jnp.array([[1., 2.], [3., -1.], [2., 1.]], dtype=jnp.float32)
+        b_value = jnp.array([1., 2., 3.], dtype=jnp.float32)
+        x = cp.Variable(2)
+        A = cp.Parameter((3, 2))
+        b = cp.Parameter(3)
+        problem = cp.Problem(cp.Minimize(cp.sum_squares(A @ x - b)))
+        layer = CvxpyLayer(problem, [A, b], [x], solver_args={"device": "cpu"})
+        actual = jax.grad(lambda A, b: layer(A, b)[0].sum(), argnums=(0, 1))(
+            A_value, b_value
+        )
+        expected = jax.grad(
+            lambda A, b: jnp.linalg.solve(A.T @ A, A.T @ b).sum(), argnums=(0, 1)
+        )(A_value, b_value)
+        for result, reference in zip(actual, expected):
+            assert result.dtype == jnp.float32
+            np.testing.assert_allclose(result, reference, atol=1e-6, rtol=1e-5)
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)

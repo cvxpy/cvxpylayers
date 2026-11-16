@@ -155,8 +155,8 @@ def test_batched_dual_vs_torch():
         variables=[x, eq_con.dual_variables[0]],
     )
 
-    np.random.seed(42)
-    c_np = np.random.randn(batch_size, n)
+    # Separate the costs so the LP has a unique, stable minimizer.
+    c_np = np.array([[1.0, 2.0], [3.0, 1.0], [-2.0, -1.0]])
     b_np = np.ones(batch_size)
 
     c_torch = torch.tensor(c_np)
@@ -165,13 +165,17 @@ def test_batched_dual_vs_torch():
 
     c_mlx = mx.array(c_np)
     b_mlx = mx.array(b_np)
-    x_mlx, eq_dual_mlx = mlx_layer(c_mlx, b_mlx)
+    x_mlx, eq_dual_mlx = mlx_layer(c_mlx, b_mlx, solver_args={"eps": 1e-8})
 
     assert x_mlx.shape == (batch_size, n)
     assert eq_dual_mlx.shape == (batch_size,)
 
-    _compare(x_mlx, x_torch)
-    _compare(eq_dual_mlx, eq_dual_torch)
+    expected_x = np.eye(n)[np.argmin(c_np, axis=1)]
+    expected_dual = -np.min(c_np, axis=1)
+    for result in (x_mlx, x_torch):
+        _compare(result, expected_x)
+    for result in (eq_dual_mlx, eq_dual_torch):
+        _compare(result, expected_dual)
 
 
 def test_soc_dual_vs_torch():

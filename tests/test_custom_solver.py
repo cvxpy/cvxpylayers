@@ -48,7 +48,7 @@ def _make_problem():
 
 
 def _reference_layer(problem, A_param, b_param, x_var):
-    return CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var])
+    return CvxpyLayer(problem, parameters=[A_param, b_param], variables=[x_var], solver="DIFFCP")
 
 
 def _random_inputs(m, n, seed=0):
