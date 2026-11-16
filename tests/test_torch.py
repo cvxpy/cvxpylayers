@@ -1415,3 +1415,29 @@ def test_quad_form_psd_rejects_in_constraints():
     )
     with pytest.raises(ValueError, match="only supported in the objective"):
         CvxpyLayer(prob, parameters=[P], variables=[x], solver="MOREAU")
+
+
+def test_float32_solution_dtype():
+    p = cp.Parameter(2)
+    x = cp.Variable(2)
+    nonneg = x >= 0
+    problem = cp.Problem(cp.Minimize(0.5 * cp.sum_squares(x - p)), [nonneg])
+    layer = CvxpyLayer(problem, [p], [x, nonneg.dual_variables[0]])
+
+    value = torch.tensor([-1.0, 2.0], dtype=torch.float32, requires_grad=True)
+    primal, dual = layer(value)
+    assert primal.dtype == dual.dtype == value.dtype
+
+    (primal + dual).sum().backward()
+    torch.testing.assert_close(value.grad, value.new_tensor([-1.0, 1.0]))
+
+
+def test_integer_parameter_retains_fractional_solution():
+    p = cp.Parameter()
+    x = cp.Variable()
+    problem = cp.Problem(cp.Minimize(cp.square(2 * x - p)))
+    layer = CvxpyLayer(problem, [p], [x])
+
+    (solution,) = layer(torch.tensor(3))
+    assert solution.is_floating_point()
+    torch.testing.assert_close(solution, solution.new_tensor(1.5))
