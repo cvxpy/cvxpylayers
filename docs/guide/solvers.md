@@ -17,8 +17,11 @@ CVXPYlayers supports multiple solver backends for different use cases.
 ## Specifying a Solver
 
 Omitting `solver` (or passing `None`) selects Moreau.
-Select `solver=cp.DIFFCP` to use DIFFCP. A backend is selected at construction;
-`solver_args` configures that backend at call time.
+Select `solver=cp.DIFFCP` to use DIFFCP, or `solver=cp.CUCLARABEL` for CuClarabel.
+A backend is selected at construction; `solver_args` configures that backend at
+call time. To select SCS or Clarabel within diffcp, use
+`solver_args={"solve_method": "SCS"}` or
+`solver_args={"solve_method": "Clarabel"}`; do not pass them as `solver`.
 
 ### At Construction
 
@@ -31,7 +34,7 @@ layer = CvxpyLayer(
     parameters=[A, b],
     variables=[x],
     solver=cp.DIFFCP,
-    solver_args={'solve_method': cp.CLARABEL}  # Use Clarabel
+    solver_args={"solve_method": cp.CLARABEL}  # Use Clarabel within diffcp
 )
 ```
 

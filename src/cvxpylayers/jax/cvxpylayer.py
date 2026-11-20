@@ -306,7 +306,9 @@ class CvxpyLayer:
             solver: Solver backend (e.g., ``cp.MOREAU``, ``cp.DIFFCP``),
                 a :class:`~cvxpylayers.interfaces.base.SolverInterface` instance
                 for a custom solver (e.g. CVXPYgen), or ``None`` (uses Moreau
-                by default).
+                by default). To select SCS or Clarabel within diffcp, use
+                ``solver_args={"solve_method": "SCS"}`` or
+                ``solver_args={"solve_method": "Clarabel"}``.
             gp: If True, problem is a geometric program. Parameters will be
                 log-transformed before solving.
             verbose: If True, print solver output.
